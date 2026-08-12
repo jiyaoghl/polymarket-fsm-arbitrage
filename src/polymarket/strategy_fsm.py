@@ -398,9 +398,19 @@ class ArbitrageBotFSM(BaseStrategy):
                                 fsm.transition_to(TradeState.PENDING_LEG2, order_info=fallback_order)
 
         except Exception as e:
-            logger.error(f"[FSM WS] 监听异常 {market_id}: {e}")
+            e_str = str(e)
+            if "1000 (OK)" in e_str or "no close frame received" in e_str or "keepalive ping timeout" in e_str:
+                if fsm.current_state == TradeState.IDLE:
+                    logger.info(f"[FSM WS] 市场 {market_id} 结算完毕，连接已正常关闭。")
+                    fsm.transition_to(TradeState.SETTLED, reason="Market Closed")
+                    return
+                else:
+                    logger.warning(f"[FSM WS] 监听中断 {market_id}: {e_str}")
+            else:
+                logger.error(f"[FSM WS] 监听异常 {market_id}: {e_str}")
+                
             if fsm.current_state not in (TradeState.LOCKED, TradeState.SETTLED):
-                fsm.transition_to(TradeState.FAILED, reason=str(e))
+                fsm.transition_to(TradeState.FAILED, reason=e_str)
                 
     def _fsm_timeout_daemon(self):
         """全局守护线程，专门处理所有处于耗时的轮询和超时事件"""
