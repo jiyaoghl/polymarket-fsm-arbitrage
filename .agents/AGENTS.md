@@ -21,3 +21,8 @@
 ## 5. 类型与中文规范
 - **Python 类型提示**：新加入或修改的函数必须附带标准的 `typing` 类型提示 (Type Hints)。
 - **中文原生意图**：在输出思考、注释或提交记录时，应坚守“中文主谓宾结构 + 英文术语”的 Native Architect 规则，维持可读性。
+
+## 6. Dev-Prod 分离与云端流水线规范 (Cloud-Native Workflow)
+- **本地断网开发假设**：AI Agent 应当知晓用户的本地 Windows 环境连接 Polymarket 主网极度不稳定。因此，**严禁**在本地开发时要求用户“直接跑一下连网脚本看看效果”。
+- **闭环调试协议**：所有的增量开发、策略参数调整，都应在本地仅执行“静态检查”与“离线代码推理”。修改完毕后，必须提示用户通过 `git commit & push` 提交，依赖于 VPS 上输出的 `trading.db` 交易记录和云端日志来提供反馈，做离线数据回溯优化。
+- **跨平台路径安全**：生产环境已迁至 Ubuntu 24.04 (Python 3.12)，开发环境为 Windows (Python 3.10+)。所有涉及目录拼接、读取文件等 I/O 操作，**必须**使用 `pathlib` 或是严格的 `os.path.join`，绝不允许硬编码 `\` 或 `/` 路径符。在云端启动项目的统一入口需保持 `PYTHONPATH=src python3 -m apps.dashboard`。
