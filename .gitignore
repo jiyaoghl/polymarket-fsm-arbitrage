@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env
+.env
+
+# Logs
+*.log
+*.log.*
+trade*.log*
+
+# Backtest outputs & caches
+backtest_out/
+backtest_cache/
+
+# Local DBs / artifacts
+*.db
+smoke_test_halt/
+

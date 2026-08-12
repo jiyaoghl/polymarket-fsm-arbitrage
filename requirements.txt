@@ -1,0 +1,16 @@
+requests
+websockets
+python-dotenv
+fastapi
+uvicorn
+pycryptodome
+eth-account
+eip712
+py-clob-client-v2>=0.1.0
+setuptools>=68
+wheel
+
+# 测试依赖
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
