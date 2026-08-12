@@ -400,6 +400,20 @@ class BaseStrategy:
                 for key, value in kwargs.items():
                     trade[key] = value
 
+    def _add_trade_event(self, market_id: str, state: str, msg: str, max_events: int = 30) -> None:
+        """线程安全地追加交易事件到事件流队列。"""
+        with self._trades_lock:
+            trade = self.active_trades.get(market_id)
+            if trade:
+                events = trade.setdefault("events", [])
+                events.append({
+                    "time": time.time(),
+                    "state": state,
+                    "msg": msg
+                })
+                if len(events) > max_events:
+                    trade["events"] = events[-max_events:]
+
     def _get_all_active_trades(self) -> Dict[str, Dict[str, Any]]:
         """线程安全地获取所有活跃交易（副本）。"""
         with self._trades_lock:

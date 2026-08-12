@@ -46,6 +46,7 @@ class TradeModel(BaseModel):
     profit_usdc: float
     time_to_expiry: float
     strategy_id: str
+    events: List[Dict[str, Any]] = []
 
 
 class StrategyStatusModel(BaseModel):
@@ -76,92 +77,154 @@ def index() -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>5min Symmetric Bot Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0b1120; color:#e5e7eb; margin:0; padding:0; min-height: 100vh; }
+    body { 
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; 
+        background: radial-gradient(circle at 10% 20%, #1e1b4b 0%, #0f172a 40%, #020617 100%);
+        background-attachment: fixed;
+        color: #f8fafc; 
+        margin: 0; padding: 0; min-height: 100vh; 
+    }
     
     /* 通知样式 */
     #notifications { position: fixed; top: 16px; right: 16px; z-index: 1000; max-width: 400px; }
-    .notification { background: #1f2937; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; border-left: 4px solid #3b82f6; animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .notification { 
+        background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; 
+        border-left: 4px solid #3b82f6; animation: slideIn 0.3s ease; box-shadow: 0 8px 32px rgba(0,0,0,0.4); 
+    }
     .notification.success { border-left-color: #10b981; }
     .notification.warning { border-left-color: #f59e0b; }
     .notification.error { border-left-color: #ef4444; }
     .notification .title { font-weight: 600; margin-bottom: 4px; }
-    .notification .message { font-size: 12px; color: #9ca3af; }
+    .notification .message { font-size: 12px; color: #94a3b8; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     
-    header { padding: 16px 24px; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 8px; }
-    .tag { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #111827; color: #9ca3af; }
-    .tag.active { background: #10b98133; color: #6ee7b7; }
+    header { 
+        padding: 20px 32px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; 
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: rgba(0,0,0,0.2); backdrop-filter: blur(10px);
+    }
+    h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 12px; font-weight: 700; }
+    .tag { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.1); color: #cbd5e1; font-weight: 500; }
+    .tag.active { background: rgba(16, 185, 129, 0.15); color: #34d399; box-shadow: 0 0 10px rgba(16, 185, 129, 0.2); }
     
     /* 倒计时样式 */
-    .countdown-container { display: flex; align-items: center; gap: 16px; }
-    .countdown { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; color: #6ee7b7; }
-    .countdown.warning { color: #fbbf24; }
-    .countdown.danger { color: #f87171; }
-    .next-market { font-size: 12px; color: #9ca3af; }
+    .countdown-container { display: flex; align-items: center; gap: 16px; text-align: right; }
+    .countdown { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; color: #34d399; text-shadow: 0 0 16px rgba(52,211,153,0.3); }
+    .countdown.warning { color: #fbbf24; text-shadow: 0 0 16px rgba(251,191,36,0.3); }
+    .countdown.danger { color: #f87171; text-shadow: 0 0 16px rgba(248,113,113,0.3); }
+    .next-market { font-size: 12px; color: #94a3b8; }
     
-    main { padding: 16px 24px; display: grid; grid-template-columns: 1fr 1.5fr; gap: 16px; }
-    @media (max-width: 1024px) { main { grid-template-columns: 1fr; } }
+    main { 
+        padding: 24px 32px; display: grid; grid-template-columns: repeat(12, 1fr); gap: 24px; max-width: 1800px; margin: 0 auto;
+    }
+    @media (max-width: 1200px) { main { grid-template-columns: 1fr; } }
     
-    section { background: #020617; border-radius: 12px; border: 1px solid #1f2937; padding: 16px; }
-    h2 { font-size: 16px; margin: 0 0 12px 0; display: flex; align-items: center; gap: 8px; }
-    h2 .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #3b82f633; color: #93c5fd; }
+    section { 
+        background: rgba(15, 23, 42, 0.4); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); padding: 20px; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); 
+    }
+    /* Grid 占位 */
+    .section-market { grid-column: span 4; }
+    .section-defense { grid-column: span 8; }
+    .section-strategy { grid-column: span 7; }
+    .section-terminal { grid-column: span 5; display: flex; flex-direction: column; }
+    
+    @media (max-width: 1200px) {
+        .section-market, .section-defense, .section-strategy, .section-terminal { grid-column: span 12; }
+    }
+    
+    h2 { font-size: 16px; font-weight: 600; margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px; letter-spacing: 0.5px; }
+    h2 .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+    
+    /* 卡片共用 (Glassmorphism) */
+    .glass-card {
+        background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 12px;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .glass-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.5); border-color: rgba(255,255,255,0.1); }
     
     /* 价格卡片 */
     .price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
-    .price-card { background: #111827; border-radius: 8px; padding: 12px; border: 1px solid #1f2937; }
-    .price-card .label { font-size: 11px; color: #6b7280; margin-bottom: 4px; text-transform: uppercase; }
+    .price-card .label { font-size: 11px; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; font-weight: 500; }
     .price-card .price-row { display: flex; justify-content: space-between; align-items: center; }
-    .price-card .side { font-weight: 600; font-size: 14px; }
-    .price-card .side.YES { color: #6ee7b7; }
+    .price-card .side { font-weight: 700; font-size: 15px; }
+    .price-card .side.YES { color: #34d399; }
     .price-card .side.NO { color: #f87171; }
-    .price-card .prices { font-size: 12px; color: #9ca3af; }
+    .price-card .prices { font-size: 12px; color: #cbd5e1; font-variant-numeric: tabular-nums; }
     .price-card .ask { color: #fbbf24; }
-    .price-card .bid { color: #6ee7b7; }
-    .price-card .spread { font-size: 10px; color: #6b7280; margin-top: 4px; }
+    .price-card .bid { color: #34d399; }
+    .price-card .spread { font-size: 10px; color: #64748b; margin-top: 6px; }
+    
+    /* 闪烁更新动效 */
+    .flash-update { animation: flashColor 0.5s ease-out; }
+    @keyframes flashColor { 0% { background-color: rgba(255,255,255,0.2); } 100% { background-color: transparent; } }
     
     /* 市场信息 */
-    .market-info { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 12px; }
-    .info-item { display: flex; flex-direction: column; gap: 2px; }
-    .info-item .label { color: #6b7280; font-size: 10px; }
-    .info-item .value { font-variant-numeric: tabular-nums; }
+    .market-info { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; font-size: 12px; }
+    .info-item { display: flex; flex-direction: column; gap: 4px; }
+    .info-item .label { color: #64748b; font-size: 10px; font-weight: 500; text-transform: uppercase; }
+    .info-item .value { font-variant-numeric: tabular-nums; color: #e2e8f0; }
     
     /* 策略卡片 */
-    .strategy-card { background: #111827; border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #1f2937; }
-    .strategy-card.has-trades { border-color: #3b82f6; }
+    .strategy-card { margin-bottom: 16px; }
+    .strategy-card.has-trades { border-color: rgba(59, 130, 246, 0.4); box-shadow: 0 0 15px rgba(59, 130, 246, 0.1); }
     .strategy-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .strategy-name { font-weight: 600; }
-    .strategy-mode { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
-    .strategy-mode.live { background: #10b98133; color: #6ee7b7; }
-    .strategy-mode.paper { background: #6b728033; color: #9ca3af; }
-    .strategy-params { font-size: 11px; color: #6b7280; margin-bottom: 8px; }
+    .strategy-name { font-weight: 600; font-size: 14px; }
+    .strategy-mode { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+    .strategy-mode.live { background: rgba(16,185,129,0.2); color: #34d399; }
+    .strategy-mode.paper { background: rgba(100,116,139,0.2); color: #94a3b8; }
+    .strategy-params { font-size: 11px; color: #94a3b8; margin-bottom: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
     
     /* 仓位表格 */
-    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-    th, td { padding: 6px 8px; text-align: left; }
-    th { background: #0b1120; color: #6b7280; font-weight: 500; border-bottom: 1px solid #1f2937; }
-    tr:nth-child(even) td { background: #0b1120; }
-    .pill { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500; }
-    .pill-open { background: #0f766e33; color: #6ee7b7; }
-    .pill-locked { background: #1d4ed833; color: #93c5fd; }
-    .pill-stopped { background: #b91c1c33; color: #fecaca; }
-    .pill-leg1_only { background: #f59e0b33; color: #fbbf24; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; margin-top: 8px; }
+    th, td { padding: 8px 12px; text-align: left; }
+    th { color: #64748b; font-weight: 500; text-transform: uppercase; font-size: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    tr { transition: background 0.2s; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    td { border-bottom: 1px solid rgba(255,255,255,0.02); color: #cbd5e1; }
     
-    .no-trades { color: #6b7280; font-size: 12px; font-style: italic; }
+    .pill { padding: 3px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; display: inline-block; }
+    .pill-open { background: rgba(15,118,110,0.2); color: #2dd4bf; }
+    .pill-locked { background: rgba(29,78,216,0.2); color: #60a5fa; box-shadow: 0 0 8px rgba(96,165,250,0.2); }
+    .pill-stopped { background: rgba(185,28,28,0.2); color: #fca5a5; }
+    .pill-leg1_only { background: rgba(245,158,11,0.2); color: #fbbf24; animation: pulse 2s infinite; }
     
-    /* 状态指示器 */
-    .status-indicator { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #6b7280; }
-    .status-dot.active { background: #10b981; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .no-trades { color: #64748b; font-size: 12px; font-style: italic; padding: 12px; text-align: center; background: rgba(0,0,0,0.2); border-radius: 8px; }
     
     /* 统计卡片 */
-    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
-    .stat-card { background: #111827; border-radius: 6px; padding: 8px 12px; text-align: center; }
-    .stat-card .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .stat-card .label { font-size: 10px; color: #6b7280; }
+    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .stat-card .value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+    .stat-card .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 500; }
+    
+    /* 进度条 */
+    .progress-track { background: rgba(0,0,0,0.3); border-radius: 99px; height: 8px; margin-top: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); }
+    .progress-bar { background: linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899); height: 100%; width: 0%; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+    
+    /* FSM 终端 */
+    .terminal { 
+        background: rgba(0, 0, 0, 0.5); border-radius: 8px; padding: 16px; 
+        font-family: 'Courier New', Courier, monospace; font-size: 11px; 
+        flex: 1; min-height: 400px; max-height: 600px; overflow-y: auto; color: #a3a8b4; 
+        border: 1px solid rgba(255,255,255,0.05); box-shadow: inset 0 2px 10px rgba(0,0,0,0.5);
+    }
+    .terminal::-webkit-scrollbar { width: 6px; }
+    .terminal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    
+    .terminal .line { margin-bottom: 6px; line-height: 1.5; display: flex; gap: 8px; }
+    .terminal .time { color: #64748b; white-space: nowrap; }
+    .terminal .market { color: #a78bfa; white-space: nowrap; }
+    .terminal .state { padding: 0 4px; border-radius: 3px; font-weight: bold; white-space: nowrap; font-size: 10px; }
+    .state-idle { color: #94a3b8; }
+    .state-pending { color: #fbbf24; background: rgba(180,83,9,0.3); }
+    .state-leg1_only { color: #ef4444; background: rgba(185,28,28,0.3); animation: pulse 2s infinite; }
+    .state-pending_leg2 { color: #fbbf24; background: rgba(180,83,9,0.3); }
+    .state-locked { color: #60a5fa; background: rgba(29,78,216,0.3); }
+    .state-settled { color: #34d399; background: rgba(4,120,87,0.3); }
+    .state-failed { color: #f87171; background: rgba(153,27,27,0.3); }
+    .terminal .msg { color: #e2e8f0; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -170,10 +233,11 @@ def index() -> str:
   <header>
     <div>
       <h1>
-        5min Symmetric Bot Dashboard
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #8b5cf6;"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+        5min Symmetric Bot
         <span class="tag active" id="status-tag">● 运行中</span>
       </h1>
-      <div style="font-size: 12px; color: #6b7280; margin-top: 4px;" id="server-time">--</div>
+      <div style="font-size: 12px; color: #94a3b8; margin-top: 6px; font-variant-numeric: tabular-nums;" id="server-time">--</div>
     </div>
     <div class="countdown-container">
       <div>
@@ -184,12 +248,11 @@ def index() -> str:
   </header>
   
   <main>
-    <section>
+    <!-- 第一行: 左4 右8 -->
+    <section class="section-market">
       <h2>📊 当前市场 <span class="badge" id="market-badge">等待中</span></h2>
-      
-      <!-- 实时价格 -->
       <div class="price-grid">
-        <div class="price-card">
+        <div class="glass-card price-card" id="yes-card">
           <div class="label">YES Token</div>
           <div class="price-row">
             <span class="side YES">YES</span>
@@ -197,7 +260,7 @@ def index() -> str:
           </div>
           <div class="spread" id="yes-spread">spread: --</div>
         </div>
-        <div class="price-card">
+        <div class="glass-card price-card" id="no-card">
           <div class="label">NO Token</div>
           <div class="price-row">
             <span class="side NO">NO</span>
@@ -207,7 +270,6 @@ def index() -> str:
         </div>
       </div>
       
-      <!-- 市场信息 -->
       <div class="market-info">
         <div class="info-item">
           <span class="label">市场描述</span>
@@ -228,57 +290,64 @@ def index() -> str:
       </div>
     </section>
     
-    <section>
+    <section class="section-defense">
       <h2>🛡️ 系统防御与战绩 (System Metrics)</h2>
       <div class="stats-row" id="risk-stats-row">
-        <div class="stat-card">
-          <div class="value" id="stat-intercept-count" style="color: #ef4444;">0</div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-intercept-count" style="color: #f87171;">0</div>
           <div class="label">风控拦截笔数</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="value" id="stat-intercept-amt" style="color: #fbbf24;">$0.00</div>
           <div class="label">挽回资金 (USDC)</div>
         </div>
-        <div class="stat-card">
-          <div class="value" id="stat-retry-win" style="color: #10b981;">0 / 0</div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-retry-win" style="color: #34d399;">0 / 0</div>
           <div class="label">滑点微调成功</div>
         </div>
-        <div class="stat-card">
-          <div class="value" id="stat-exposure" style="color: #3b82f6;">0.0%</div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-exposure" style="color: #60a5fa;">0.0%</div>
           <div class="label">实时敞口利用率</div>
         </div>
       </div>
       
-      <div style="background: #374151; border-radius: 99px; height: 8px; margin-top: 12px; overflow: hidden;">
-        <div id="exposure-bar" style="background: linear-gradient(90deg, #3b82f6, #f59e0b); height: 100%; width: 0%; transition: width 0.5s ease;"></div>
+      <div class="progress-track">
+        <div class="progress-bar" id="exposure-bar"></div>
       </div>
-      <div style="font-size: 10px; color: #9ca3af; text-align: right; margin-top: 4px;" id="exposure-text">0.00 / 0.00 USDC</div>
+      <div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; font-variant-numeric: tabular-nums;" id="exposure-text">0.00 / 0.00 USDC</div>
     </section>
     
-    <section>
+    <!-- 第二行: 左7 右5 -->
+    <section class="section-strategy">
       <h2>🎯 策略与持仓</h2>
       
-      <!-- 统计信息 -->
       <div class="stats-row">
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="value" id="stat-strategies">0</div>
           <div class="label">策略数</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="value" id="stat-trades">0</div>
           <div class="label">活跃仓位</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="value" id="stat-locked">0</div>
           <div class="label">已锁仓</div>
         </div>
-        <div class="stat-card">
-          <div class="value" id="stat-ev">$0</div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-ev" style="color: #a78bfa;">$0</div>
           <div class="label">总EV</div>
         </div>
       </div>
       
       <div id="strategies"></div>
+    </section>
+    
+    <section class="section-terminal">
+      <h2>📜 FSM 实况追踪流 (Live Trace)</h2>
+      <div class="terminal" id="terminal">
+        <div class="line" style="color: #64748b; font-style: italic;">等待 FSM 状态流转...</div>
+      </div>
     </section>
   </main>
   
@@ -286,6 +355,9 @@ def index() -> str:
     // 状态管理
     let lastTrades = {};
     let lastMarketId = null;
+    let printedEvents = new Set();
+    let isTerminalInitialized = false;
+    let lastPrices = {yes: null, no: null};
     
     // 通知系统
     function showNotification(title, message, type = 'info') {
@@ -314,6 +386,49 @@ def index() -> str:
       return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     }
     
+    // 追加日志到终端
+    function appendTerminal(event) {
+      const term = document.getElementById('terminal');
+      if (!isTerminalInitialized) {
+        term.innerHTML = '';
+        isTerminalInitialized = true;
+      }
+      
+      const isScrolledToBottom = term.scrollHeight - term.clientHeight <= term.scrollTop + 10;
+      
+      const line = document.createElement('div');
+      line.className = 'line';
+      
+      const d = new Date(event.time * 1000);
+      const timeStr = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}.${d.getMilliseconds().toString().padStart(3, '0')}`;
+      const marketShort = event.market_id.slice(0, 10);
+      
+      line.innerHTML = `
+          <span class="time">[${timeStr}]</span>
+          <span class="market">[${marketShort}]</span>
+          <span class="state state-${event.state}">${event.state.toUpperCase()}</span>
+          <span class="msg">${event.msg}</span>
+      `;
+      term.appendChild(line);
+      
+      if (term.childNodes.length > 200) {
+          term.removeChild(term.firstChild);
+      }
+      
+      if (isScrolledToBottom) {
+          term.scrollTop = term.scrollHeight;
+      }
+    }
+    
+    // 触发闪烁动画
+    function triggerFlash(elId) {
+        const el = document.getElementById(elId);
+        if(!el) return;
+        el.classList.remove('flash-update');
+        void el.offsetWidth; // 触发重绘
+        el.classList.add('flash-update');
+    }
+
     // 计算下一个5分钟窗口
     function getNextWindow(serverTime) {
       const nextTs = (Math.floor(serverTime / 300) + 1) * 300;
@@ -366,8 +481,14 @@ def index() -> str:
         if (data.yes) {
           const yesAsk = data.yes.ask?.toFixed(4) || '--';
           const yesBid = data.yes.bid?.toFixed(4) || '--';
+          
+          if (lastPrices.yes !== yesAsk + yesBid) {
+              triggerFlash('yes-card');
+              lastPrices.yes = yesAsk + yesBid;
+          }
+
           document.getElementById('yes-price').innerHTML = 
-            `<span class="ask">Ask: ${yesAsk}</span> <span class="bid">Bid: ${yesBid}</span>`;
+            `<span class="ask">Ask: ${yesAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${yesBid}</span>`;
           const spread = data.yes.ask && data.yes.bid ? 
             ((data.yes.ask - data.yes.bid) * 100).toFixed(2) : '--';
           document.getElementById('yes-spread').textContent = `spread: ${spread}%`;
@@ -376,8 +497,14 @@ def index() -> str:
         if (data.no) {
           const noAsk = data.no.ask?.toFixed(4) || '--';
           const noBid = data.no.bid?.toFixed(4) || '--';
+          
+          if (lastPrices.no !== noAsk + noBid) {
+              triggerFlash('no-card');
+              lastPrices.no = noAsk + noBid;
+          }
+
           document.getElementById('no-price').innerHTML = 
-            `<span class="ask">Ask: ${noAsk}</span> <span class="bid">Bid: ${noBid}</span>`;
+            `<span class="ask">Ask: ${noAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${noBid}</span>`;
           const spread = data.no.ask && data.no.bid ? 
             ((data.no.ask - data.no.bid) * 100).toFixed(2) : '--';
           document.getElementById('no-spread').textContent = `spread: ${spread}%`;
@@ -395,7 +522,7 @@ def index() -> str:
         
         // 更新服务器时间
         document.getElementById('server-time').textContent = 
-          '服务器时间: ' + new Date(data.server_time * 1000).toLocaleString('zh-CN');
+          'Server Time: ' + new Date(data.server_time * 1000).toLocaleString('zh-CN');
         
         // 更新倒计时
         const nextWindow = getNextWindow(data.server_time);
@@ -408,7 +535,7 @@ def index() -> str:
         // 下一个市场时间
         const nextTs = (Math.floor(data.server_time / 300) + 1) * 300;
         document.getElementById('next-market').textContent = 
-          '下一期: ' + new Date(nextTs * 1000).toLocaleTimeString('zh-CN');
+          'Next Round: ' + new Date(nextTs * 1000).toLocaleTimeString('zh-CN');
         
         // 市场信息
         const m = data.current_market;
@@ -440,6 +567,23 @@ def index() -> str:
         
         // 检测新交易
         checkNewTrades(data.strategies);
+        
+        // 收集所有 events 并输出
+        let allEvents = [];
+        data.strategies.forEach(s => {
+          s.active_trades.forEach(t => {
+            if (t.events && t.events.length) {
+              t.events.forEach(e => {
+                const eventId = `${t.market_id}-${e.time}-${e.state}`;
+                if (!printedEvents.has(eventId)) {
+                  allEvents.push({...e, market_id: t.market_id});
+                  printedEvents.add(eventId);
+                }
+              });
+            }
+          });
+        });
+        allEvents.sort((a, b) => a.time - b.time).forEach(appendTerminal);
         
         // 统计信息
         let totalTrades = 0, lockedTrades = 0, totalEV = 0;
@@ -475,7 +619,7 @@ def index() -> str:
         
         data.strategies.forEach((s) => {
           const div = document.createElement('div');
-          div.className = `strategy-card ${s.active_trades.length ? 'has-trades' : ''}`;
+          div.className = `glass-card strategy-card ${s.active_trades.length ? 'has-trades' : ''}`;
           
           let html = `
             <div class="strategy-header">
@@ -483,10 +627,10 @@ def index() -> str:
               <span class="strategy-mode ${s.is_live ? 'live' : 'paper'}">${s.is_live ? 'LIVE' : 'PAPER'}</span>
             </div>
             <div class="strategy-params">
-              入场价 ≤ ${s.entry_max_price.toFixed(3)} | 
-              补仓触发 < ${s.reentry_trigger.toFixed(3)} | 
-              仓位 $${s.amount.toFixed(2)} | 
-              <strong style="color:${s.strategy_total_pnl > 0 ? '#6ee7b7' : (s.strategy_total_pnl < 0 ? '#f87171' : '#9ca3af')}">总盈亏: $${s.strategy_total_pnl.toFixed(4)}</strong>
+              <span>入场价 ≤ ${s.entry_max_price.toFixed(3)}</span> 
+              <span>补仓触发 < ${s.reentry_trigger.toFixed(3)}</span> 
+              <span>仓位 $${s.amount.toFixed(2)}</span> 
+              <strong style="color:${s.strategy_total_pnl > 0 ? '#34d399' : (s.strategy_total_pnl < 0 ? '#f87171' : '#cbd5e1')}">总盈亏: $${s.strategy_total_pnl.toFixed(4)}</strong>
             </div>
           `;
           
@@ -508,12 +652,12 @@ def index() -> str:
               const timeStr = new Date(t.end_time * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
               
               html += `<tr>
-                <td style="font-size:10px;" title="${t.market_id}">${timeStr}</td>
+                <td style="font-size:10px; color:#94a3b8;" title="${t.market_id}">${timeStr}</td>
                 <td>${statusPill(t.status)}</td>
                 <td>${leg1}</td>
                 <td>${leg2}</td>
-                <td>${formatCountdown(t.time_to_expiry)}</td>
-                <td style="color:${t.profit_usdc > 0 ? '#6ee7b7' : '#f87171'};">${t.profit_usdc.toFixed(4)}</td>
+                <td style="font-variant-numeric: tabular-nums;">${formatCountdown(t.time_to_expiry)}</td>
+                <td style="color:${t.profit_usdc > 0 ? '#34d399' : '#f87171'}; font-weight: 500;">${t.profit_usdc.toFixed(4)}</td>
               </tr>`;
             });
             
@@ -594,7 +738,16 @@ def api_status() -> DashboardStatusModel:
         active_trades: List[TradeModel] = []
         for market_id, trade in bot.active_trades.items():
             ttl = trade.get("end_time", 0) - now
+            status = trade.get("status") or ""
             
+            # 【过滤】不向前端发送毫无意义的历史残留订单（比如完全没建仓的 idle 或已过期的闲置单）
+            is_inactive = status in ("idle", "settled", "failed")
+            has_no_leg1 = not trade.get("leg1")
+            is_expired = ttl < -60
+            
+            if (has_no_leg1 and is_inactive) or is_expired:
+                continue
+                
             profit_usdc = float(trade.get("profit_usdc", 0.0))
             leg1 = trade.get("leg1")
             leg2 = trade.get("leg2")
@@ -621,6 +774,7 @@ def api_status() -> DashboardStatusModel:
                     profit_usdc=float(trade.get("profit_usdc", 0.0)),
                     time_to_expiry=float(ttl),
                     strategy_id=bot.strategy_id,
+                    events=trade.get("events", [])
                 )
             )
 

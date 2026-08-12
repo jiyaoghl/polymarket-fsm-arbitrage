@@ -127,6 +127,7 @@ class ArbitrageBotFSM(BaseStrategy):
             "end_time": float(market.get("endDate", time.time() + 300)), 
             "start_time": time.time(),
         })
+        self._add_trade_event(market_id, TradeState.IDLE.value, "开始监听此市场的盘口流动性。")
 
         # 启动事件循环专门监听这个市场的 WebSocket
         threading.Thread(
@@ -139,7 +140,9 @@ class ArbitrageBotFSM(BaseStrategy):
     # =========================================================
 
     def on_pending_leg1(self, fsm: TradeFSM, **kwargs):
-        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG1 状态。首腿发单：{kwargs}")
+        msg = f"首腿发单：{kwargs.get('order_info', {}).get('order_id', 'unknown')}"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG1 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.PENDING_LEG1.value, msg)
         order = kwargs.get("order_info", {})
         leg1_data = {
             "order_id": order.get("order_id"),
@@ -151,7 +154,9 @@ class ArbitrageBotFSM(BaseStrategy):
         self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG1.value, leg1=leg1_data)
 
     def on_leg1_only(self, fsm: TradeFSM, **kwargs):
-        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 LEG1_ONLY 状态。启动单边敞口倒计时。")
+        msg = "单边敞口倒计时启动，等待另一侧回落锁单。"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 LEG1_ONLY 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.LEG1_ONLY.value, msg)
         self._update_trade_status(
             fsm.market_id, 
             TradeState.LEG1_ONLY.value, 
@@ -159,7 +164,10 @@ class ArbitrageBotFSM(BaseStrategy):
         )
 
     def on_pending_leg2(self, fsm: TradeFSM, **kwargs):
-        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG2 状态。执行对冲或止损发单。")
+        is_stop_loss = kwargs.get("is_stop_loss", False)
+        msg = f"二腿发单({'止损' if is_stop_loss else '对冲'})：{kwargs.get('order_info', {}).get('order_id', 'unknown')}"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG2 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.PENDING_LEG2.value, msg)
         order = kwargs.get("order_info", {})
         leg2_data = {
             "order_id": order.get("order_id"),
@@ -174,16 +182,23 @@ class ArbitrageBotFSM(BaseStrategy):
         self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG2.value, leg2_order_id=order_id, leg2=leg2_data, leg2_issued_time=time.time())
 
     def on_locked(self, fsm: TradeFSM, **kwargs):
-        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 LOCKED 状态。双腿安全对冲。")
+        msg = "双腿全量成交，成功套利锁仓！"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 LOCKED 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.LOCKED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.LOCKED.value)
 
     def on_settled(self, fsm: TradeFSM, **kwargs):
-        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 SETTLED 状态。流程结束。")
+        msg = "市场到期或清盘结算。"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 SETTLED 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.SETTLED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.SETTLED.value)
         self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, self.order_amount)
 
     def on_failed(self, fsm: TradeFSM, **kwargs):
-        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 FAILED 状态。异常原因：{kwargs.get('reason')}")
+        reason = kwargs.get('reason', '未知')
+        msg = f"操作失败或中断，原因：{reason}"
+        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 FAILED 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.FAILED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.FAILED.value)
         self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, self.order_amount)
 
@@ -419,6 +434,19 @@ class ArbitrageBotFSM(BaseStrategy):
             for market_id, fsm in list(self.fsms.items()):
                 trade = self.active_trades.get(market_id)
                 if not trade:
+                    continue
+                    
+                # 【清理机制】回收历史无效订单与内存
+                # 规则：已过期 (>60s) 且 (完全没建仓 或 已进入终态)
+                is_expired = time.time() > trade.get("end_time", 0) + 60
+                has_no_leg1 = not trade.get("leg1")
+                is_terminal = fsm.current_state in (TradeState.SETTLED, TradeState.FAILED, TradeState.LOCKED)
+                
+                if is_expired and (has_no_leg1 or is_terminal):
+                    logger.info(f"[策略FSM：{self.strategy_id}] 清理历史过期/无效订单内存: {market_id}")
+                    with self._trades_lock:
+                        self.active_trades.pop(market_id, None)
+                    self.fsms.pop(market_id, None)
                     continue
                     
                 if fsm.current_state == TradeState.LEG1_ONLY:
