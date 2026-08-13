@@ -1,6 +1,19 @@
 import requests
 from polymarket.config import HTTP_PROXY, HTTPS_PROXY, BTC_CHOP_MAX_AMPLITUDE, BTC_CHOP_MAX_NET_CHANGE
 from polymarket.logger import logger
+import time
+
+# 缓存最近一次检测的结果
+_last_btc_status = {
+    "is_choppy": True,
+    "amplitude": 0.0,
+    "net_change": 0.0,
+    "timestamp": 0,
+    "error": ""
+}
+
+def get_last_btc_status() -> dict:
+    return _last_btc_status
 
 def is_btc_choppy(limit: int = 10) -> bool:
     """
@@ -30,6 +43,7 @@ def is_btc_choppy(limit: int = 10) -> bool:
         
         if not data or len(data) < limit:
             logger.warning("[风控] 无法获取足够的 Binance K 线数据，保守放行。")
+            _last_btc_status.update({"is_choppy": True, "error": "数据不足", "timestamp": time.time()})
             return True
             
         highs = [float(k[2]) for k in data]
@@ -55,10 +69,16 @@ def is_btc_choppy(limit: int = 10) -> bool:
         else:
             logger.info(f"[风控] BTC 行情稳定 (振幅 {amplitude:.3f}%)，允许入场。")
             
+        _last_btc_status.update({
+            "is_choppy": is_choppy,
+            "amplitude": amplitude,
+            "net_change": net_change,
+            "error": "",
+            "timestamp": time.time()
+        })
         return is_choppy
         
     except Exception as e:
         logger.error(f"[风控] Binance K 线获取异常，报错: {e}。保守放行。")
-        # 考虑到 API 限制或网络波动，保守起见在接口挂掉时，不强行阻止策略运行，避免永远不交易。
-        # 这里可以选择 True (信任其他风控) 或 False (绝对安全)。
+        _last_btc_status.update({"is_choppy": True, "error": str(e), "timestamp": time.time()})
         return True

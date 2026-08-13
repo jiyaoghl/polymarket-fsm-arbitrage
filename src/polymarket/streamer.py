@@ -115,8 +115,10 @@ class MarketDataStreamer:
             self.ws = None
             await asyncio.sleep(1)  # 退避重连
 
-    async def _send_subscription(self, ws, assets: List[str]):
-        if not ws:
+    async def _send_subscription(self, ws: websockets.WebSocketClientProtocol, assets: List[str]):
+        """发送订阅/重置命令，Polymarket 会全量覆盖"""
+        if not assets:
+            logger.info("[Streamer] 活跃资产列表为空，跳过向远端发送空订阅。")
             return
         msg = {
             "type": "market",

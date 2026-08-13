@@ -88,6 +88,22 @@ class ArbitrageBotFSM(BaseStrategy):
                 from polymarket.config import DB_PATH
                 current_status = trade.get("status")
                 if current_status in (TradeState.LOCKED.value, TradeState.SETTLED.value, TradeState.FAILED.value):
+                    ev = 0.0
+                    if current_status == TradeState.LOCKED.value:
+                        leg1 = trade.get("leg1")
+                        leg2 = trade.get("leg2")
+                        if leg1 and leg2:
+                            try:
+                                c1 = float(leg1.get("cost", 0.0))
+                                s1 = float(leg1.get("size", 0.0))
+                                c2 = float(leg2.get("cost", 0.0))
+                                s2 = float(leg2.get("size", 0.0))
+                                if s1 > 0 and s2 > 0:
+                                    ev = min(s1, s2) - (c1 * s1 + c2 * s2)
+                                    trade["profit_usdc"] = ev
+                            except Exception:
+                                pass
+                    _db.archive_trade(market_id, self.strategy_id, json.dumps(trade), ev, DB_PATH)
                     _db.delete_trade_cache(market_id, self.strategy_id, DB_PATH)
                 else:
                     _db.upsert_trade_cache(market_id, self.strategy_id, json.dumps(trade), DB_PATH)
