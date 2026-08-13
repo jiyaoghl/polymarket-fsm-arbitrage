@@ -648,9 +648,11 @@ class PolyClient:
                     encoding = response.headers.get("Content-Encoding", "").lower()
                     
                     if "br" in encoding:
-                        import brotli
                         try:
+                            import brotli
                             data_bytes = brotli.decompress(data_bytes)
+                        except ImportError:
+                            pass # 未安装 brotli 时直接降级尝试解析明文
                         except Exception:
                             # 典型的中间人代理 Bug：代理已在底层透明解压，但忘了抹除 Header，这里直接吞异常容错
                             pass
