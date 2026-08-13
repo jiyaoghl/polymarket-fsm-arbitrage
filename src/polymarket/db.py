@@ -68,6 +68,18 @@ def init_db(path: str = _DB_PATH) -> None:
         """)
         conn.commit()
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS historical_trades (
+                market_id TEXT,
+                strategy_id TEXT,
+                trade_json TEXT,
+                ev REAL,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (market_id, strategy_id)
+            )
+        """)
+        conn.commit()
+
 # ================= active_trades_cache 操作 =================
 
 def upsert_trade_cache(market_id: str, strategy_id: str, trade_json: str, path: str = _DB_PATH) -> None:
@@ -90,6 +102,25 @@ def get_all_trade_caches(strategy_id: str, path: str = _DB_PATH) -> list:
     with get_conn(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT market_id, trade_json FROM active_trades_cache WHERE strategy_id=?", (strategy_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+# ================= historical_trades 操作 =================
+
+def archive_trade(market_id: str, strategy_id: str, trade_json: str, ev: float = 0.0, path: str = _DB_PATH) -> None:
+    with get_conn(path) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO historical_trades (market_id, strategy_id, trade_json, ev, archived_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (market_id, strategy_id, trade_json, ev))
+        conn.commit()
+
+def get_historical_trades(strategy_id: str, limit: int = 10, path: str = _DB_PATH) -> list:
+    with get_conn(path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT market_id, strategy_id, trade_json, ev, archived_at FROM historical_trades WHERE strategy_id=? ORDER BY archived_at DESC LIMIT ?", 
+            (strategy_id, limit)
+        ).fetchall()
         return [dict(r) for r in rows]
 
 # ================= processed_markets 操作 =================

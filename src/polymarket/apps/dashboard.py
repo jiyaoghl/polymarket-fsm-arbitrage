@@ -43,6 +43,8 @@ class TradeModel(BaseModel):
     end_time: float
     leg1: LegModel | None = None
     leg2: LegModel | None = None
+    leg1_dir: str = ""
+    leg2_dir: str = ""
     profit_usdc: float
     time_to_expiry: float
     strategy_id: str
@@ -65,7 +67,7 @@ class DashboardStatusModel(BaseModel):
     current_market: Dict[str, Any] | None
     strategies: List[StrategyStatusModel]
     risk_metrics: Dict[str, Any] = {}
-
+    btc_status: Dict[str, Any] = {}
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
@@ -99,20 +101,19 @@ def index() -> str:
     .notification.warning { border-left-color: #f59e0b; }
     .notification.error { border-left-color: #ef4444; }
     .notification .title { font-weight: 600; margin-bottom: 4px; }
-    .notification .message { font-size: 12px; color: #94a3b8; }
-    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .notification .message { font-size: 12px; color: #94a3b8; }    /* Header */
+    header { padding: 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(0,0,0,0.2); }
+    .title-area { display: flex; align-items: center; gap: 12px; }
+    h1 { margin: 0; font-size: 20px; font-weight: 700; background: linear-gradient(to right, #60a5fa, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-running { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+    .header-right { text-align: right; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+    .time-display { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; color: #34d399; text-shadow: 0 0 20px rgba(52, 211, 153, 0.4); line-height: 1; }
+    .date-display { font-size: 11px; color: #94a3b8; }
     
-    header { 
-        padding: 20px 32px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; 
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: rgba(0,0,0,0.2); backdrop-filter: blur(10px);
-    }
-    h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 12px; font-weight: 700; }
-    .tag { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.1); color: #cbd5e1; font-weight: 500; }
-    .tag.active { background: rgba(16, 185, 129, 0.15); color: #34d399; box-shadow: 0 0 10px rgba(16, 185, 129, 0.2); }
-    
-    /* 倒计时样式 */
-    .countdown-container { display: flex; align-items: center; gap: 16px; text-align: right; }
-    .countdown { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; color: #34d399; text-shadow: 0 0 16px rgba(52,211,153,0.3); }
+    .btc-risk-badge { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.3); }
+    .btc-risk-badge.choppy { color: #34d399; border-color: rgba(52,211,153,0.3); }
+    .btc-risk-badge.volatile { color: #f87171; border-color: rgba(248,113,113,0.3); animation: pulse 2s infinite; } .countdown { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; color: #34d399; text-shadow: 0 0 16px rgba(52,211,153,0.3); }
     .countdown.warning { color: #fbbf24; text-shadow: 0 0 16px rgba(251,191,36,0.3); }
     .countdown.danger { color: #f87171; text-shadow: 0 0 16px rgba(248,113,113,0.3); }
     .next-market { font-size: 12px; color: #94a3b8; }
@@ -231,21 +232,17 @@ def index() -> str:
   <div id="notifications"></div>
   
   <header>
-    <div>
-      <h1>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #8b5cf6;"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-        5min Symmetric Bot
-        <span class="tag active" id="status-tag">● 运行中</span>
-      </h1>
-      <div style="font-size: 12px; color: #94a3b8; margin-top: 6px; font-variant-numeric: tabular-nums;" id="server-time">--</div>
-    </div>
-    <div class="countdown-container">
-      <div>
-        <div class="countdown" id="countdown">--:--</div>
-        <div class="next-market" id="next-market">下一个市场</div>
+      <div class="title-area">
+        <h1>5min Symmetric Bot</h1>
+        <span class="status-badge status-running">● 运行中</span>
       </div>
-    </div>
-  </header>
+      <div class="header-right">
+        <div class="time-display" id="countdown">00:00</div>
+        <div class="next-market" id="next-market" style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">下一个市场</div>
+        <div class="date-display" id="server-time">Server Time: --</div>
+        <div id="btc-status-ui" style="margin-top: 8px;"></div>
+      </div>
+    </header>
   
   <main>
     <!-- 第一行: 左4 右8 -->
@@ -587,6 +584,19 @@ def index() -> str:
         
         // 统计信息
         let totalTrades = 0, lockedTrades = 0, totalEV = 0;
+        
+        // 5. 更新 BTC 风控状态
+        const btcStatusEl = document.getElementById('btc-status-ui');
+        if (data.btc_status && btcStatusEl) {
+          const bs = data.btc_status;
+          if (bs.timestamp > 0) {
+            const isChoppy = bs.is_choppy;
+            const text = isChoppy ? '🟢 BTC 震荡 (允许入场)' : `🔴 BTC 单边波动大 (暂停入场) 振幅:${bs.amplitude.toFixed(2)}%`;
+            btcStatusEl.innerHTML = `<div class="btc-risk-badge ${isChoppy ? 'choppy' : 'volatile'}">${text}</div>`;
+          } else {
+            btcStatusEl.innerHTML = `<div class="btc-risk-badge" style="color:#94a3b8;">⚪ BTC 风控未初始化</div>`;
+          }
+        }
         data.strategies.forEach(s => {
           totalTrades += s.active_trades.length;
           s.active_trades.forEach(t => {
@@ -638,15 +648,19 @@ def index() -> str:
             html += '<div class="no-trades">暂无活跃仓位</div>';
           } else {
             html += `<table><thead><tr>
-              <th>Market</th><th>状态</th><th>首腿</th><th>二腿</th><th>TTL</th><th>EV</th>
+              <th>Market</th><th>状态</th><th>首腿</th><th>二腿</th><th>TTL</th>
+              <th style="text-align: right;">EV (USDC)</th>
             </tr></thead><tbody>`;
             
             s.active_trades.forEach((t) => {
+              const leg1DirHTML = t.leg1_dir ? `<span style="font-size:10px; padding:2px 4px; border-radius:4px; background:${t.leg1_dir==='UP'?'rgba(52,211,153,0.2)':'rgba(248,113,113,0.2)'}; color:${t.leg1_dir==='UP'?'#34d399':'#f87171'}; margin-right:4px;">${t.leg1_dir}</span>` : '';
+              const leg2DirHTML = t.leg2_dir ? `<span style="font-size:10px; padding:2px 4px; border-radius:4px; background:${t.leg2_dir==='UP'?'rgba(52,211,153,0.2)':'rgba(248,113,113,0.2)'}; color:${t.leg2_dir==='UP'?'#34d399':'#f87171'}; margin-right:4px;">${t.leg2_dir}</span>` : '';
+              
               const leg1 = t.leg1 
-                ? `${t.leg1.side} ${t.leg1.cost.toFixed(3)}×${t.leg1.size.toFixed(2)}`
+                ? `${leg1DirHTML}${t.leg1.side} ${t.leg1.cost.toFixed(3)}×${t.leg1.size.toFixed(2)}`
                 : '--';
               const leg2 = t.leg2 
-                ? `${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}`
+                ? `${leg2DirHTML}${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}`
                 : '--';
                 
               const timeStr = new Date(t.end_time * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
@@ -673,11 +687,20 @@ def index() -> str:
       }
     }
     
+                    }
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+    }
+
     // 启动
     refresh();
     updatePrices();
     setInterval(refresh, 2000);
     setInterval(updatePrices, 1000);  // 价格每秒更新
+    setInterval(updateMarketResults, 2500); // 结算结果查询（延时加载）
   </script>
 </body>
 </html>
@@ -685,7 +708,7 @@ def index() -> str:
 
 
 @app.get("/api/prices")
-def api_prices():
+async def api_prices():
     """获取当前市场的实时价格。"""
     if not manager.last_market:
         return {"yes": None, "no": None}
@@ -698,7 +721,7 @@ def api_prices():
     
     try:
         if yes_token:
-            prices = price_client.get_market_price(yes_token)
+            prices = await price_client.get_market_price_async(yes_token)
             if prices:
                 result["yes"] = prices
     except Exception:
@@ -706,7 +729,7 @@ def api_prices():
     
     try:
         if no_token:
-            prices = price_client.get_market_price(no_token)
+            prices = await price_client.get_market_price_async(no_token)
             if prices:
                 result["no"] = prices
     except Exception:
@@ -771,12 +794,45 @@ def api_status() -> DashboardStatusModel:
                     end_time=trade.get("end_time", 0.0),
                     leg1=LegModel(**trade["leg1"]) if trade.get("leg1") else None,
                     leg2=LegModel(**trade["leg2"]) if trade.get("leg2") else None,
+                    leg1_dir="UP" if trade.get("leg1", {}).get("token") == trade.get("yes_token") else ("DOWN" if trade.get("leg1", {}).get("token") == trade.get("no_token") else ""),
+                    leg2_dir="UP" if trade.get("leg2", {}).get("token") == trade.get("yes_token") else ("DOWN" if trade.get("leg2", {}).get("token") == trade.get("no_token") else ""),
                     profit_usdc=float(trade.get("profit_usdc", 0.0)),
                     time_to_expiry=float(ttl),
                     strategy_id=bot.strategy_id,
                     events=trade.get("events", [])
                 )
             )
+
+        from polymarket import db as _db
+        from polymarket.config import DB_PATH
+        import json
+        historical_rows = _db.get_historical_trades(bot.strategy_id, limit=5, path=DB_PATH)
+        for row in historical_rows:
+            hist_market_id = row["market_id"]
+            # 去重：如果这个市场还在内存活跃列表里（还没被定时清理掉），就不重复从历史表里加载
+            if hist_market_id in bot.active_trades:
+                continue
+                
+            try:
+                trade = json.loads(row["trade_json"])
+                profit_usdc = row["ev"] or 0.0
+                active_trades.append(
+                    TradeModel(
+                        market_id=hist_market_id,
+                        status=trade.get("status") or "",
+                        end_time=trade.get("end_time", 0.0),
+                        leg1=LegModel(**trade["leg1"]) if trade.get("leg1") else None,
+                        leg2=LegModel(**trade["leg2"]) if trade.get("leg2") else None,
+                        leg1_dir="UP" if trade.get("leg1", {}).get("token") == trade.get("yes_token") else ("DOWN" if trade.get("leg1", {}).get("token") == trade.get("no_token") else ""),
+                        leg2_dir="UP" if trade.get("leg2", {}).get("token") == trade.get("yes_token") else ("DOWN" if trade.get("leg2", {}).get("token") == trade.get("no_token") else ""),
+                        profit_usdc=profit_usdc,
+                        time_to_expiry=-1.0,
+                        strategy_id=bot.strategy_id,
+                        events=trade.get("events", [])
+                    )
+                )
+            except Exception:
+                pass
 
         strategy_total_pnl = sum(float(t.get("profit_usdc", 0.0)) for t in bot.active_trades.values())
 
@@ -794,15 +850,17 @@ def api_status() -> DashboardStatusModel:
         )
 
     from polymarket.risk_manager import RiskManager
+    from polymarket.kline_analyzer import get_last_btc_status
     return DashboardStatusModel(
         server_time=now,
         current_market=current_market,
         strategies=strategies,
         risk_metrics=RiskManager().get_status(),
+        btc_status=get_last_btc_status(),
     )
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8888, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8888, reload=False, access_log=False)
 
