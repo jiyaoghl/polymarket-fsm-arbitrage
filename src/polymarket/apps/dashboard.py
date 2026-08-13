@@ -686,21 +686,12 @@ def index() -> str:
         console.error('Refresh error:', e);
       }
     }
-    
-                    }
-                }
-            } catch(e) {
-                console.error(e);
-            }
-        }
-    }
 
     // 启动
     refresh();
     updatePrices();
     setInterval(refresh, 2000);
     setInterval(updatePrices, 1000);  // 价格每秒更新
-    setInterval(updateMarketResults, 2500); // 结算结果查询（延时加载）
   </script>
 </body>
 </html>
