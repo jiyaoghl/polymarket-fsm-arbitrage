@@ -481,7 +481,8 @@ class PolyClient:
         领奖接口：调用 CLOB API 执行 redeem/payout。
         """
         mode_str = "实盘" if self.is_live else "模拟"
-        logger.info(f"[{mode_str}] 执行 redeem 市场：{market_id}")
+        if self.is_live:
+            logger.info(f"[{mode_str}] 执行 redeem 市场：{market_id}")
 
         if not self.is_live:
             return {
@@ -674,3 +675,14 @@ class PolyClient:
         except Exception as e:
             logger.exception(f"[异步] V2 下单失败：{e}")
             return None
+
+# ================= 全局单例池 =================
+_CLIENT_POOL: Dict[bool, PolyClient] = {}
+_client_lock = threading.Lock()
+
+def get_client(is_live: bool = False, rate_limit: float = 10.0) -> PolyClient:
+    """获取单例 PolyClient 实例。基于 is_live 作为缓存键，实现全局连接池化。"""
+    with _client_lock:
+        if is_live not in _CLIENT_POOL:
+            _CLIENT_POOL[is_live] = PolyClient(is_live=is_live, rate_limit=rate_limit)
+        return _CLIENT_POOL[is_live]

@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 import websockets
 
-from polymarket.client import PolyClient
+from polymarket.client import PolyClient, get_client
 from polymarket.config import (
     INITIAL_ENTRY_MAX_PRICE,
     REENTRY_TRIGGER_PRICE,
@@ -39,7 +39,7 @@ class BaseStrategy:
         self.config = strategy_config
         self.strategy_id = strategy_config.get("strategy_id", "default")
         self.is_live = strategy_config.get("is_live", False)
-        self.client = PolyClient(is_live=self.is_live)
+        self.client = get_client(is_live=self.is_live)
         self.active_trades: Dict[str, Dict[str, Any]] = {}
 
         # 线程安全锁

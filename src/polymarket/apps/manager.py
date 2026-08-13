@@ -4,7 +4,7 @@ import threading
 from typing import List, Dict, Any, Optional, Set
 
 from polymarket.strategy_fsm import ArbitrageBotFSM as ArbitrageBot
-from polymarket.client import PolyClient
+from polymarket.client import PolyClient, get_client
 from polymarket.trade_state import TradeStateStore
 from polymarket.logger import logger
 from polymarket.config import DAILY_MAX_DRAWDOWN, INITIAL_CAPITAL, STOP_LOSS_TIME_REMAINING
@@ -42,8 +42,8 @@ class StrategyManager:
             config_path = str(paths.configs_dir() / "strategies.json")
         self.config_path = config_path
         self.bots: List[ArbitrageBot] = []
-        self.scanner = PolyClient(is_live=False)  # 扫描器只需读取权限
-        self.redeem_client = PolyClient(is_live=False)
+        self.scanner = get_client(is_live=False)  # 扫描器只需读取权限
+        self.redeem_client = get_client(is_live=False)
         self.last_market: Dict[str, Any] | None = None
         
         # 风控模块
@@ -241,7 +241,8 @@ class StrategyManager:
                     continue
                 try:
                     res = self.redeem_client.redeem(m_id)
-                    logger.info(f"市场 {m_id} redeem 结果：{res}")
+                    if res.get("status") != "SIMULATED":
+                        logger.info(f"市场 {m_id} redeem 结果：{res}")
                     redeemed.add(m_id)
                 except Exception as e:
                     logger.warning(f"redeem {m_id} 失败：{e}")

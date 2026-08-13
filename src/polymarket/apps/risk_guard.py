@@ -25,7 +25,7 @@ from polymarket.config import (
     MAX_SINGLE_MARKET_PCT, MAX_OPEN_MARKETS,
 )
 import polymarket.db as db
-from polymarket.client import PolyClient
+from polymarket.client import PolyClient, get_client
 from polymarket.logger import logger
 from polymarket import paths
 
@@ -233,7 +233,7 @@ def main():
                 f"初始资金={INITIAL_CAPITAL} USDC")
 
     # 使用模拟模式仅用于开发（实盘时 is_live=True）
-    client = PolyClient(is_live=False)
+    client = get_client(is_live=False)
 
     while True:
         try:

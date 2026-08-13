@@ -8,12 +8,12 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from polymarket.apps.manager import StrategyManager
-from polymarket.client import PolyClient
+from polymarket.client import PolyClient, get_client
 
 
 # 全局共享的策略管理器与行情客户端
 manager = StrategyManager()
-price_client = PolyClient(is_live=False)
+price_client = get_client(is_live=False)
 
 
 @asynccontextmanager

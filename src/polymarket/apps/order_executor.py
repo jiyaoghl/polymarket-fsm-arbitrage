@@ -25,7 +25,7 @@ from polymarket.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
 )
 import polymarket.db as db
-from polymarket.client import PolyClient
+from polymarket.client import PolyClient, get_client
 from polymarket.logger import logger
 from polymarket import paths
 
@@ -376,7 +376,7 @@ def main():
     db.init_db(DB_PATH)
     logger.info("[OrderExecutor] 启动，轮询间隔=2s")
 
-    client = PolyClient(is_live=False)
+    client = get_client(is_live=False)
 
     while True:
         try:
