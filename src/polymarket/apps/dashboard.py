@@ -702,6 +702,8 @@ def index() -> str:
 @app.get("/api/prices")
 async def api_prices():
     """获取当前市场的实时价格。"""
+    import logging
+    logging.info("--> [API] /api/prices was called from frontend.")
     if not manager.last_market:
         return {"yes": None, "no": None}
     
@@ -717,17 +719,17 @@ async def api_prices():
             if prices:
                 result["yes"] = prices
     except Exception as e:
-        import logging
-        logging.error(f"Error fetching YES price: {e}", exc_info=True)
-    
+        import traceback
+        result["error_yes"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        
     try:
         if no_token:
             prices = await price_client.get_market_price_async(no_token)
             if prices:
                 result["no"] = prices
     except Exception as e:
-        import logging
-        logging.error(f"Error fetching NO price: {e}", exc_info=True)
+        import traceback
+        result["error_no"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
     
     return result
 

@@ -670,8 +670,6 @@ class PolyClient:
                     best_bid = max((float(b['price']) for b in bids), default=0.0)
                     return {'ask': best_ask, 'bid': best_bid}
             except Exception as e:
-                if hasattr(e, "status") and getattr(e, "status") == 404:
-                    return None
                 logger.warning(f"[异步] 获取价格失败 token={token_id}: {e}")
                 if attempt < 2: await asyncio.sleep(1.0 * (2 ** attempt))
         return None
