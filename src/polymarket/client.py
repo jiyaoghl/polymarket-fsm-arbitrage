@@ -637,13 +637,31 @@ class PolyClient:
 
     async def get_market_price_async(self, token_id: str) -> Optional[Dict[str, float]]:
         import asyncio
+        import json
         session = await self.get_aio_session()
         for attempt in range(3):
             try:
                 url = f"{self.host}/book?token_id={token_id}"
-                async with session.get(url, proxy=self._aio_proxy, timeout=10) as response:
+                async with session.get(url, proxy=self._aio_proxy, timeout=10, auto_decompress=False) as response:
                     response.raise_for_status()
-                    data = await response.json()
+                    data_bytes = await response.read()
+                    encoding = response.headers.get("Content-Encoding", "").lower()
+                    
+                    if "br" in encoding:
+                        import brotli
+                        try:
+                            data_bytes = brotli.decompress(data_bytes)
+                        except Exception:
+                            # 典型的中间人代理 Bug：代理已在底层透明解压，但忘了抹除 Header，这里直接吞异常容错
+                            pass
+                    elif "gzip" in encoding:
+                        import gzip
+                        try:
+                            data_bytes = gzip.decompress(data_bytes)
+                        except Exception:
+                            pass
+                            
+                    data = json.loads(data_bytes)
                     asks = data.get('asks', []) or []
                     bids = data.get('bids', []) or []
                     best_ask = min((float(a['price']) for a in asks), default=1.0)
