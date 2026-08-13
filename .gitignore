@@ -21,3 +21,4 @@ backtest_cache/
 *.db
 smoke_test_halt/
 
+.agents/

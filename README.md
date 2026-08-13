@@ -70,6 +70,17 @@ python -m apps.dashboard
 
 ---
 
+## 🗺️ 架构演进与重构路线图 (Roadmap)
+
+当前系统使用 **“每策略/每市场 -> 独立 WebSocket 线程”** 的解耦架构，适合研发期的逻辑隔离和稳定性测试。但在未来的极高频实盘（千万级交易量）下，Python GIL 会由于海量 JSON 解析产生严重的 CPU 锁争抢（导致慢消费 1013 Slow Consumer 断连）。
+
+**[长期重构任务] 迁移至“全异步单例多路复用 (Multiplexing) 架构”：**
+- **统一数据总线 (Event Bus)**：全局只维护 **1** 个 `MarketDataStreamer` WebSocket 连接，彻底解决 Polymarket IP 频率限制。
+- **一次解析，多次消费**：`json.loads` 和 `_parse_ws_prices_full` 每帧数据只执行一次，随后通过 `asyncio.Queue` 或钩子发布给底层 8 个以上的策略实例。
+- **消除 GIL 阻塞**：废弃 `threading.Thread` 的多事件循环模型，使整个系统运行在单线程纯异步环境下，性能上限可提升 10 倍以上。
+
+---
+
 ## ⚠️ 免责声明 (Disclaimer)
 
 本项目仅作为算法交易的研究与学习交流使用。Polymarket 和 Crypto 预测市场风险极高，任何交易策略都无法保证 100% 胜率，且可能因 API 宕机、极端单边波动导致严重亏损。使用本代码造成的任何资金损失均由使用者本人承担。
