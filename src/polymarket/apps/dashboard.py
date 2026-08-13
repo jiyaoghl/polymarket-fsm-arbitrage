@@ -13,7 +13,8 @@ from polymarket.client import PolyClient, get_client
 
 # 全局共享的策略管理器与行情客户端
 manager = StrategyManager()
-price_client = get_client(is_live=False)
+# UI 获取价格应与主网一致，否则获取实际 token 的 book 会返回 404
+price_client = get_client(is_live=True)
 
 
 @asynccontextmanager
@@ -715,16 +716,18 @@ async def api_prices():
             prices = await price_client.get_market_price_async(yes_token)
             if prices:
                 result["yes"] = prices
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.error(f"Error fetching YES price: {e}", exc_info=True)
     
     try:
         if no_token:
             prices = await price_client.get_market_price_async(no_token)
             if prices:
                 result["no"] = prices
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.error(f"Error fetching NO price: {e}", exc_info=True)
     
     return result
 
