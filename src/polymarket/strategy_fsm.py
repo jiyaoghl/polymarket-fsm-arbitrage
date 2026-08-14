@@ -324,7 +324,7 @@ class ArbitrageBotFSM(BaseStrategy):
                     if best_ask_yes is None or best_ask_no is None:
                         continue
                         
-                    # 【波动率盾牌】：价差过大直接拦截首腿开仓
+                    # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
                         continue
                     if best_bid_no is not None and (best_ask_no - best_bid_no) > 0.05:
@@ -345,14 +345,8 @@ class ArbitrageBotFSM(BaseStrategy):
                         if unhedged_count >= self.max_concurrent_unhedged_trades:
                             continue
                             
-                        # 2. 从原始 WS 消息中提取 Ask 深度并校验 VWAP 与滑点
-                        asks_list = []
-                        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
-                        for item in items:
-                            if isinstance(item, dict) and (item.get("asset_id") == str(token_id) or item.get("token_id") == str(token_id)):
-                                asks_list = item.get("asks", [])
-                                break
-
+                        # 2. 从原始 WS 深度中提取 Ask 深度并精确校验全量 VWAP 与滑点
+                        asks_list, _ = self._extract_token_depth(data, str(token_id))
                         if asks_list:
                             is_valid, vwap_price, filled_usdc, reason_msg = self._check_orderbook_depth_and_vwap(
                                 asks=asks_list,
@@ -361,8 +355,9 @@ class ArbitrageBotFSM(BaseStrategy):
                                 max_slippage_tolerance=self.max_slippage_tolerance,
                             )
                             if not is_valid:
+                                logger.debug(f"[首腿深度拦截] {market_id} {choice}: {reason_msg}")
                                 continue
-                            # 使用 VWAP 作为实际下单价格
+                            # 使用实际加权均价 VWAP 作为成交/出价基准
                             entry_price = vwap_price
 
                         entry_price = round(entry_price, 4)
@@ -372,7 +367,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, amount):
                             continue
                             
-                        logger.info(f"[FSM 引擎] {market_id} 触发首腿: {choice} @ {entry_price:.4f}")
+                        logger.info(f"[FSM 引擎] {market_id} 触发首腿: {choice} @ VWAP={entry_price:.4f}")
                         order = await self._adaptive_post_order(
                             token_id, entry_price, amount, side="BUY", initial_order_type=self.leg1_order_type, max_slippage=self.max_slippage_tolerance
                         )
@@ -386,39 +381,152 @@ class ArbitrageBotFSM(BaseStrategy):
                             fsm.transition_to(TradeState.FAILED, reason="首腿 API 请求失败")
 
                 elif fsm.current_state == TradeState.LEG1_ONLY and trade:
-                    # 监控二腿逻辑
+                    # 监控二腿补仓与对冲逻辑
                     leg1_info = trade.get("leg1")
                     if not leg1_info:
                         continue
                         
                     leg1_cost = float(leg1_info.get("cost", 0.0))
+                    leg1_size = float(leg1_info.get("size", self.order_amount))
                     if leg1_cost <= 0.0:
                         leg1_cost = self.entry_max_price
 
-                    other_token_id = no_token if str(leg1_info.get("token_id")) == str(yes_token) else yes_token
+                    other_token_id = no_token if str(leg1_info.get("token") or leg1_info.get("token_id")) == str(yes_token) else yes_token
                     other_info = prices.get(str(other_token_id), {})
                     other_ask = other_info.get("ask")
+                    other_bid = other_info.get("bid", 0.0)
                     
+                    # 理论最高允许对冲上限（扣除 1% 最低保底利润空间）
                     dynamic_reentry_max = 1.0 - leg1_cost - 0.01
-                    
-                    if other_ask and other_ask <= dynamic_reentry_max:
-                        other_ask = round(other_ask, 4)
-                        amount = round(self.order_amount, 2)
-                        logger.info(f"[FSM 引擎] {market_id} 动态阈值触发({other_ask} <= {dynamic_reentry_max:.4f}) 锁利二腿!")
-                        order = await self.client.post_order_async(
-                            other_token_id, other_ask, amount, side="BUY", order_type=self.leg2_order_type
-                        )
-                        if order and not order.get("error"):
-                            fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
-                        else:
-                            logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker 遭遇拒单或滑点过大，开启降级至 GTC (Maker)")
-                            fallback_price = round(dynamic_reentry_max, 4)
-                            fallback_order = await self.client.post_order_async(
-                                other_token_id, fallback_price, amount, side="BUY", order_type="GTC"
+                    amount = round(self.order_amount, 2)
+                    other_asks, other_bids = self._extract_token_depth(data, str(other_token_id))
+
+                    # ──────────────────────────────────────────────────────────
+                    # 模式 1：二腿 Taker 吃单对冲
+                    # ──────────────────────────────────────────────────────────
+                    if self.leg2_order_type == "FOK" or self.leg2_price_mode == "ask":
+                        if other_ask and other_ask <= dynamic_reentry_max:
+                            # 深度与 VWAP 穿透保护
+                            vwap_leg2 = other_ask
+                            if other_asks:
+                                is_valid, vwap_est, _, reason_msg = self._check_orderbook_depth_and_vwap(
+                                    asks=other_asks,
+                                    target_usdc_amount=amount,
+                                    max_price_threshold=dynamic_reentry_max,
+                                    max_slippage_tolerance=self.max_slippage_tolerance,
+                                )
+                                if not is_valid:
+                                    logger.debug(f"[二腿深度拦截] {market_id}: {reason_msg}")
+                                    continue
+                                vwap_leg2 = vwap_est
+
+                            # 双腿净收益严格数学检验 (Net EV Check)
+                            is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
+                                leg1_cost=leg1_cost,
+                                leg1_size=leg1_size,
+                                leg2_cost=vwap_leg2,
+                                leg2_size=amount,
+                                min_profit_margin=0.01
                             )
-                            if fallback_order and not fallback_order.get("error"):
-                                logger.info(f"[FSM 引擎] 成功降级为 Maker (GTC) 挂单: {fallback_order.get('order_id')}")
-                                fsm.transition_to(TradeState.PENDING_LEG2, order_info=fallback_order)
+                            if not is_profit:
+                                logger.warning(f"[二腿锁利拦截] {market_id}: {profit_msg}")
+                                continue
+
+                            final_order_price = round(vwap_leg2, 4)
+                            logger.info(f"[FSM 引擎] {market_id} 满足二腿 Taker 条件: @ VWAP={final_order_price:.4f} (预期 EV: {est_ev:.4f})")
+                            order = await self.client.post_order_async(
+                                other_token_id, final_order_price, amount, side="BUY", order_type="FOK"
+                            )
+                            if order and not order.get("error"):
+                                fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+                            else:
+                                if self.leg2_fallback_to_taker:
+                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker 未完全成交，智能降级为 Maker (GTC) 挂单")
+                                    # 挂在买一前沿
+                                    pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
+                                    fallback_price = round(pegged_bid, 4)
+                                    fallback_order = await self.client.post_order_async(
+                                        other_token_id, fallback_price, amount, side="BUY", order_type="GTC"
+                                    )
+                                    if fallback_order and not fallback_order.get("error"):
+                                        logger.info(f"[FSM 引擎] 降级 Maker 挂单成功: {fallback_order.get('order_id')} @ {fallback_price}")
+                                        trade["pegged_price"] = fallback_price
+                                        trade["last_peg_time"] = time.time()
+                                        fsm.transition_to(TradeState.PENDING_LEG2, order_info=fallback_order)
+
+                    # ──────────────────────────────────────────────────────────
+                    # 模式 2：二腿 Maker 智能挂单对冲 (Order Pegging)
+                    # ──────────────────────────────────────────────────────────
+                    else:
+                        best_bid_avail = other_bid if other_bid > 0 else (dynamic_reentry_max - 0.05)
+                        pegged_bid = min(best_bid_avail + 0.001, dynamic_reentry_max)
+                        pegged_bid = round(pegged_bid, 4)
+
+                        is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
+                            leg1_cost=leg1_cost,
+                            leg1_size=leg1_size,
+                            leg2_cost=pegged_bid,
+                            leg2_size=amount,
+                            min_profit_margin=0.01
+                        )
+                        if is_profit and pegged_bid <= dynamic_reentry_max:
+                            logger.info(f"[FSM 引擎] {market_id} 发起智能 Maker 挂单: @ {pegged_bid:.4f}")
+                            maker_order = await self.client.post_order_async(
+                                other_token_id, pegged_bid, amount, side="BUY", order_type="GTC"
+                            )
+                            if maker_order and not maker_order.get("error"):
+                                trade["pegged_price"] = pegged_bid
+                                trade["last_peg_time"] = time.time()
+                                fsm.transition_to(TradeState.PENDING_LEG2, order_info=maker_order)
+
+                elif fsm.current_state == TradeState.PENDING_LEG2 and trade:
+                    # ──────────────────────────────────────────────────────────
+                    # 实时 Maker 动态钉盘追单处理 (Active Pegging Monitor)
+                    # ──────────────────────────────────────────────────────────
+                    leg2_order_id = trade.get("leg2_order_id")
+                    pegged_price = trade.get("pegged_price")
+                    last_peg_time = trade.get("last_peg_time", 0.0)
+                    now_ts = time.time()
+
+                    if leg2_order_id and pegged_price and (now_ts - last_peg_time) >= 1.0:
+                        leg1_info = trade.get("leg1", {})
+                        leg1_cost = float(leg1_info.get("cost", self.entry_max_price))
+                        dynamic_reentry_max = 1.0 - leg1_cost - 0.01
+
+                        other_token_id = trade.get("leg2", {}).get("token") or trade.get("no_token")
+                        other_info = prices.get(str(other_token_id), {})
+                        current_best_bid = other_info.get("bid", 0.0)
+
+                        # 如果当前买一价高于我方挂单价，且新价格依然满足利润上限，自动发起撤改单
+                        if current_best_bid > pegged_price and (current_best_bid - pegged_price) >= 0.002:
+                            new_pegged = min(current_best_bid + 0.001, dynamic_reentry_max)
+                            new_pegged = round(new_pegged, 4)
+
+                            if new_pegged <= dynamic_reentry_max:
+                                logger.info(
+                                    f"[Maker 动态钉盘] {market_id} 盘口上移 ({pegged_price} -> {new_pegged})，撤销旧单并追挂买一！"
+                                )
+                                if self.is_live:
+                                    try:
+                                        self.client.cancel_order(leg2_order_id)
+                                    except Exception as e:
+                                        logger.warning(f"[Maker 钉盘] 撤销旧挂单异常: {e}")
+
+                                amount = round(self.order_amount, 2)
+                                new_order = await self.client.post_order_async(
+                                    other_token_id, new_pegged, amount, side="BUY", order_type="GTC"
+                                )
+                                if new_order and not new_order.get("error"):
+                                    trade["leg2_order_id"] = new_order.get("order_id")
+                                    trade["pegged_price"] = new_pegged
+                                    trade["last_peg_time"] = now_ts
+                                    trade["leg2"] = {
+                                        "order_id": new_order.get("order_id"),
+                                        "token": other_token_id,
+                                        "side": "BUY",
+                                        "cost": new_pegged,
+                                        "size": amount
+                                    }
 
         except Exception as e:
             logger.error(f"[策略FSM：{self.strategy_id}] 数据总线分发异常 {market_id}: {e}")

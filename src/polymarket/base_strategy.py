@@ -247,6 +247,65 @@ class BaseStrategy:
 
         return True, vwap, total_spent_usdc, "OK"
 
+    @staticmethod
+    def _extract_token_depth(data: Any, token_id: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        从 WS 消息中提取指定 token_id 的 asks 和 bids 深度列表。
+        兼容单 dict、list of dict、price_change 以及标准 book 快照格式。
+        """
+        asks_list: List[Dict[str, Any]] = []
+        bids_list: List[Dict[str, Any]] = []
+        token_str = str(token_id)
+
+        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            tid = str(item.get("asset_id") or item.get("token_id") or "")
+            if tid == token_str:
+                asks_list = item.get("asks", [])
+                bids_list = item.get("bids", [])
+                break
+
+        return asks_list, bids_list
+
+    @staticmethod
+    def _verify_hedged_profitability(
+        leg1_cost: float,
+        leg1_size: float,
+        leg2_cost: float,
+        leg2_size: float,
+        min_profit_margin: float = 0.01,
+    ) -> Tuple[bool, float, str]:
+        """
+        严密校验双腿对冲成交后的净套利收益率 (Net EV Margin)。
+        
+        套利确定性回报 = min(leg1_size, leg2_size) * 1.0 USDC
+        双腿总支出成本 = leg1_cost * leg1_size + leg2_cost * leg2_size
+        净期望收益 (EV) = 确定性回报 - 总成本
+        
+        Returns:
+            (is_profitable, net_ev, reason_msg)
+        """
+        if leg1_cost <= 0 or leg1_size <= 0 or leg2_cost <= 0 or leg2_size <= 0:
+            return False, 0.0, "双腿价格或数量必须大于 0"
+
+        total_spent = leg1_cost * leg1_size + leg2_cost * leg2_size
+        hedged_shares = min(leg1_size, leg2_size)
+        guaranteed_payout = hedged_shares * 1.0
+        net_ev = guaranteed_payout - total_spent
+
+        # 综合平均单位成本 (每 1 份对冲份额的组合买入成本)
+        unit_combined_cost = total_spent / hedged_shares if hedged_shares > 0 else 2.0
+
+        if unit_combined_cost >= (1.0 - min_profit_margin):
+            return False, net_ev, (
+                f"双腿组合成本过高: {unit_combined_cost:.4f} >= 允许上限 {1.0 - min_profit_margin:.4f} "
+                f"(预期 EV: {net_ev:.4f} USDC)"
+            )
+
+        return True, net_ev, f"OK (预估净 EV: {net_ev:.4f} USDC, 收益率: {(net_ev/total_spent)*100:.2f}%)"
+
     def _get_unhedged_trade_count(self) -> int:
         """获取当前处于未对冲（leg1_only 或 monitoring）状态的交易数量。"""
         with self._trades_lock:
