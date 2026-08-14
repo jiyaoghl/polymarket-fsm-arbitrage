@@ -36,16 +36,17 @@ setup_environment() {
         sudo apt update && sudo apt install -y python3-pip python3-venv
     fi
 
-    # 创建虚拟环境
-    if [ ! -d "$VENV_DIR" ]; then
-        echo "创建 Python 虚拟环境: $VENV_DIR ..."
+    # 创建或修复虚拟环境
+    if [ ! -f "$VENV_DIR/bin/pip" ] || [ ! -f "$VENV_DIR/bin/python3" ]; then
+        echo "正在初始化/重建 Python 虚拟环境: $VENV_DIR ..."
+        rm -rf "$VENV_DIR"
         python3 -m venv "$VENV_DIR"
     fi
 
     # 激活虚拟环境并安装/更新依赖
     echo "安装/更新 requirements.txt 依赖..."
-    "$VENV_DIR/bin/pip" install --upgrade pip -q
-    "$VENV_DIR/bin/pip" install -r requirements.txt -q
+    "$VENV_DIR/bin/python3" -m pip install --upgrade pip -q
+    "$VENV_DIR/bin/python3" -m pip install -r requirements.txt -q
     echo "✅ 环境与依赖检查完毕！"
 }
 
