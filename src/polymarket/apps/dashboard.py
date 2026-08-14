@@ -830,7 +830,7 @@ def api_status() -> DashboardStatusModel:
             except Exception:
                 pass
 
-        strategy_total_pnl = sum(float(t.get("profit_usdc", 0.0)) for t in bot.active_trades.values())
+        strategy_total_pnl = sum(float(t.profit_usdc) for t in active_trades)
 
         strategies.append(
             StrategyStatusModel(
