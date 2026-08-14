@@ -78,6 +78,9 @@ class MarketDataStreamer:
                         try:
                             if msg == "OK":
                                 continue
+                            if msg == "INVALID OPERATION":
+                                logger.warning("[Streamer] 远端返回了 INVALID OPERATION，忽略该消息")
+                                continue
                             data = json.loads(msg)
                             prices = BaseStrategy._parse_ws_prices_full(data)
                             if not prices:
@@ -122,8 +125,7 @@ class MarketDataStreamer:
             return
         msg = {
             "type": "market",
-            "assets_ids": assets,
-            "custom_feature_enabled": True
+            "assets_ids": assets
         }
         await ws.send(json.dumps(msg))
 
