@@ -45,22 +45,31 @@ class TradeStateStore:
 
     def _save(self) -> None:
         """
-        原子写入状态文件。
+        原子写入状态文件（包含 Windows 环境下的防占用重试机制）。
 
         使用临时文件 + rename 确保数据完整性：
         1. 先写入临时文件
         2. 成功后原子 rename 替换原文件
         """
+        temp_path = f"{self.path}.tmp"
         try:
-            temp_path = f"{self.path}.tmp"
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, ensure_ascii=False, indent=2)
+            
             # 原子操作：rename 在 POSIX 系统上是原子的
-            os.replace(temp_path, self.path)
+            # 在 Windows 环境下，如果有其他进程在读，os.replace 会触发 WinError 5
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    os.replace(temp_path, self.path)
+                    break
+                except PermissionError as pe:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise pe
         except Exception as e:
             logger.error(f"保存状态文件失败: {e}")
-            # 清理临时文件
-            temp_path = f"{self.path}.tmp"
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)

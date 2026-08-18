@@ -210,6 +210,7 @@ class PolyClient:
         return response.json()
 
     # ========= 市场发现 =========
+    @retry_on_failure(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(requests.exceptions.RequestException,))
     def discover_btc_5m_markets(self) -> List[Dict[str, Any]]:
         """
         基于时间戳 + Gamma API 精准发现最新 BTC 5 分钟 Up/Down 市场。
@@ -462,6 +463,7 @@ class PolyClient:
 
 
     # ========= 结算 / 领奖 =========
+    @retry_on_failure(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(requests.exceptions.RequestException,))
     def list_closed_markets(self) -> List[Dict[str, Any]]:
         """
         从 Gamma API 获取已关闭 (可 redeem) 市场的基本信息。

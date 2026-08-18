@@ -564,9 +564,9 @@ class ArbitrageBotFSM(BaseStrategy):
                     elapsed = time.time() - filled_time
                     
                     if elapsed > self.leg1_max_unhedged_seconds:
-                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 触发超时止损: {market_id} 已持仓 {elapsed:.1f}s")
-                        
                         leg1 = trade.get("leg1", {})
+                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 触发超时止损: {market_id} 已持仓 {elapsed:.1f}s, 当前持有 token={leg1.get('token')} size={leg1.get('size')}")
+                        
                         leg1_token = leg1.get("token")
                         if not leg1_token:
                             fsm.transition_to(TradeState.FAILED, reason="leg1_token为空，无法止损")
@@ -638,8 +638,8 @@ class ArbitrageBotFSM(BaseStrategy):
                             self.client.cancel_order(leg2_order_id)
                             
                         if self.leg2_fallback_to_taker:
-                            logger.info(f"[FSM Timer] 回退到吃单强平模式")
+                            logger.info(f"[FSM Timer] {market_id} 回退到吃单强平模式，准备平掉敞口 token={trade.get('leg1', {}).get('token')}")
                             # 重置回 LEG1_ONLY 状态，使下一个 WS push 判断回吃单价
                             fsm.transition_to(TradeState.LEG1_ONLY)
                         else:
-                            fsm.transition_to(TradeState.FAILED, reason="二腿挂单过期且未配置回退")
+                            fsm.transition_to(TradeState.FAILED, reason=f"二腿挂单过期且未配置回退, 锁定敞口 market_id={market_id}")
