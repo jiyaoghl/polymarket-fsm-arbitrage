@@ -9,6 +9,7 @@ import websockets
 from polymarket.client import PolyClient, get_client
 from polymarket.config import (
     INITIAL_ENTRY_MAX_PRICE,
+    INITIAL_ENTRY_MIN_PRICE,
     REENTRY_TRIGGER_PRICE,
     STOP_LOSS_TIME_REMAINING,
     ORDER_AMOUNT,
@@ -49,6 +50,9 @@ class BaseStrategy:
         # 策略参数注入
         self.entry_max_price = strategy_config.get(
             "entry_max_price", INITIAL_ENTRY_MAX_PRICE
+        )
+        self.entry_min_price = strategy_config.get(
+            "entry_min_price", INITIAL_ENTRY_MIN_PRICE
         )
         self.reentry_trigger = strategy_config.get(
             "reentry_trigger", REENTRY_TRIGGER_PRICE

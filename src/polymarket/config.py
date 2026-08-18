@@ -32,6 +32,7 @@ API_PASSPHRASE = os.getenv("POLX_API_PASSPHRASE")
 
 # 策略阈值
 INITIAL_ENTRY_MAX_PRICE = float(os.getenv("ENTRY_MAX_PRICE", "0.50"))
+INITIAL_ENTRY_MIN_PRICE = float(os.getenv("ENTRY_MIN_PRICE", "0.20"))
 REENTRY_TRIGGER_PRICE = float(os.getenv("REENTRY_TRIGGER_PRICE", "0.40"))
 STOP_LOSS_TIME_REMAINING = int(os.getenv("STOP_LOSS_TIME", "60"))
 ORDER_AMOUNT = float(os.getenv("ORDER_AMOUNT", "10.0"))

@@ -354,6 +354,12 @@ class ArbitrageBotFSM(BaseStrategy):
                             self._last_silent_filter_log[market_id] = now_ts
                         continue
                         
+                    if entry_price < self.entry_min_price:
+                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：极度偏斜盘口 {choice} = {entry_price:.4f} < {self.entry_min_price}")
+                            self._last_silent_filter_log[market_id] = now_ts
+                        continue
+                        
                     if entry_price <= self.entry_max_price:
                         # 1. 检查全账户当前未对冲单腿数量上限
                         unhedged_count = self._get_unhedged_trade_count()
