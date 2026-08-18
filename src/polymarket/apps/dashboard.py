@@ -802,7 +802,7 @@ def api_status() -> DashboardStatusModel:
         from polymarket import db as _db
         from polymarket.config import DB_PATH
         import json
-        historical_rows = _db.get_historical_trades(bot.strategy_id, limit=5, path=DB_PATH)
+        historical_rows = _db.get_historical_trades(bot.strategy_id, limit=50, path=DB_PATH)
         for row in historical_rows:
             hist_market_id = row["market_id"]
             # 去重：如果这个市场还在内存活跃列表里（还没被定时清理掉），就不重复从历史表里加载
