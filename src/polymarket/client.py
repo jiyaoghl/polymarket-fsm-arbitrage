@@ -169,12 +169,12 @@ class PolyClient:
         self._rate_limiter = RateLimiter(rate=rate_limit, period=1.0)
         
         # 如果有私钥，初始化钱包用于签名
-        if PK:
+        if PK and not PK.startswith("your_"):
             try:
                 self.wallet = Account.from_key(PK)
                 logger.info(f"钱包已加载：{self.wallet.address[:8]}...{self.wallet.address[-6:]}")
             except Exception as e:
-                logger.error(f"加载钱包失败：{e}")
+                logger.warning(f"配置的钱包私钥格式有误，加载失败 (如仅运行模拟模式可忽略): {e}")
         
     def _get_auth_headers(self, method: str = "GET", request_path: str = "/", body: str = "") -> Dict[str, str]:
         """生成认证请求头。"""

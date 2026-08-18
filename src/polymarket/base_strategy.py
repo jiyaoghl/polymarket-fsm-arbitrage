@@ -91,7 +91,7 @@ class BaseStrategy:
         self.leg2_order_type = strategy_config.get("leg2_order_type", "GTC")  # 二腿订单类型：FOK(吃单) / GTC(挂单)
         self.leg2_price_mode = strategy_config.get("leg2_price_mode", "bid")   # 二腿价格模式：ask(吃单价) / bid(挂单价)
         self.leg2_cancel_before_expiry = strategy_config.get("leg2_cancel_before_expiry", 30)  # 二腿挂单到期前取消时间
-        self.leg2_fallback_to_taker = strategy_config.get("leg2_fallback_to_taker", True)  # 挂单取消后是否改为吃单
+        self.leg2_fallback_to_maker = strategy_config.get("leg2_fallback_to_maker", True)  # 挂单取消后是否改为吃单
         
         # 挂单状态跟踪
         self.pending_orders: Dict[str, Dict[str, Any]] = {}  # market_id -> order_info

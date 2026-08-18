@@ -368,18 +368,19 @@ class ArbitrageBotFSM(BaseStrategy):
                             
                         # 2. 从原始 WS 深度中提取 Ask 深度并精确校验全量 VWAP 与滑点
                         asks_list, _ = self._extract_token_depth(data, str(token_id))
-                        if asks_list:
-                            is_valid, vwap_price, filled_usdc, reason_msg = self._check_orderbook_depth_and_vwap(
-                                asks=asks_list,
-                                target_usdc_amount=self.order_amount,
-                                max_price_threshold=self.entry_max_price,
-                                max_slippage_tolerance=self.max_slippage_tolerance,
-                            )
-                            if not is_valid:
-                                logger.debug(f"[首腿深度拦截] {market_id} {choice}: {reason_msg}")
-                                continue
-                            # 使用实际加权均价 VWAP 作为成交/出价基准
-                            entry_price = vwap_price
+                        
+                        is_valid, vwap_price, filled_usdc, reason_msg = self._check_orderbook_depth_and_vwap(
+                            asks=asks_list,
+                            target_usdc_amount=self.order_amount,
+                            max_price_threshold=self.entry_max_price,
+                            max_slippage_tolerance=self.max_slippage_tolerance,
+                        )
+                        if not is_valid:
+                            logger.debug(f"[首腿深度拦截] {market_id} {choice}: {reason_msg}")
+                            continue
+                        
+                        # 使用实际加权均价 VWAP 作为成交/出价基准
+                        entry_price = vwap_price
 
                         entry_price = round(entry_price, 4)
                         amount = round(self.order_amount, 2)
@@ -428,18 +429,16 @@ class ArbitrageBotFSM(BaseStrategy):
                     if self.leg2_order_type == "FOK" or self.leg2_price_mode == "ask":
                         if other_ask and other_ask <= dynamic_reentry_max:
                             # 深度与 VWAP 穿透保护
-                            vwap_leg2 = other_ask
-                            if other_asks:
-                                is_valid, vwap_est, _, reason_msg = self._check_orderbook_depth_and_vwap(
-                                    asks=other_asks,
-                                    target_usdc_amount=amount,
-                                    max_price_threshold=dynamic_reentry_max,
-                                    max_slippage_tolerance=self.max_slippage_tolerance,
-                                )
-                                if not is_valid:
-                                    logger.debug(f"[二腿深度拦截] {market_id}: {reason_msg}")
-                                    continue
-                                vwap_leg2 = vwap_est
+                            is_valid, vwap_est, _, reason_msg = self._check_orderbook_depth_and_vwap(
+                                asks=other_asks,
+                                target_usdc_amount=amount,
+                                max_price_threshold=dynamic_reentry_max,
+                                max_slippage_tolerance=self.max_slippage_tolerance,
+                            )
+                            if not is_valid:
+                                logger.debug(f"[二腿深度拦截] {market_id}: {reason_msg}")
+                                continue
+                            vwap_leg2 = vwap_est
 
                             # 双腿净收益严格数学检验 (Net EV Check)
                             is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
@@ -461,7 +460,7 @@ class ArbitrageBotFSM(BaseStrategy):
                             if order and not order.get("error"):
                                 fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
                             else:
-                                if self.leg2_fallback_to_taker:
+                                if self.leg2_fallback_to_maker:
                                     logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker 未完全成交，智能降级为 Maker (GTC) 挂单")
                                     # 挂在买一前沿
                                     pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
@@ -601,18 +600,19 @@ class ArbitrageBotFSM(BaseStrategy):
                             fsm.transition_to(TradeState.FAILED, reason="找不到二腿token")
                             continue
                             
-                        stop_price = round(self._calculate_dynamic_stop_price(other_token_id), 4)
+                        # 【强制逃命止损】为了确保 FOK 能够填满规模并绝对离场，直接设置允许的最大滑点为 0.99（平台撮合会自动用最优价）。
+                        stop_price = 0.99
                         amount = round(self.order_amount, 2)
-                        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Timer] 执行止损二腿: @ {stop_price:.4f}")
+                        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Timer] 执行强制穿透止损二腿: @ {stop_price:.4f} FOK")
                         
                         order = self.client.post_order(
                             other_token_id, stop_price, amount, side="BUY", order_type="FOK"
                         )
                         
-                        if order:
+                        if order and not order.get("error"):
                             fsm.transition_to(TradeState.PENDING_LEG2, is_stop_loss=True, order_info=order)
                         else:
-                            fsm.transition_to(TradeState.FAILED, reason="止损市价单发送失败")
+                            fsm.transition_to(TradeState.FAILED, reason="强制止损市价单发送失败，可能遇到系统级熔断")
                         
                 elif fsm.current_state == TradeState.PENDING_LEG2:
                     leg2_order_id = trade.get("leg2_order_id")
@@ -658,7 +658,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         if self.is_live:
                             self.client.cancel_order(leg2_order_id)
                             
-                        if self.leg2_fallback_to_taker:
+                        if self.leg2_fallback_to_maker:
                             logger.info(f"[FSM Timer] {market_id} 回退到吃单强平模式，准备平掉敞口 token={trade.get('leg1', {}).get('token')}")
                             # 重置回 LEG1_ONLY 状态，使下一个 WS push 判断回吃单价
                             fsm.transition_to(TradeState.LEG1_ONLY)

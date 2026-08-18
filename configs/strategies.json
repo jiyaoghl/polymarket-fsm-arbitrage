@@ -11,7 +11,7 @@
         "leg2_order_type": "FOK",
         "leg2_price_mode": "ask",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "taker_taker_standard",
@@ -25,7 +25,7 @@
         "leg2_order_type": "FOK",
         "leg2_price_mode": "ask",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "taker_taker_aggressive",
@@ -39,7 +39,7 @@
         "leg2_order_type": "FOK",
         "leg2_price_mode": "ask",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "taker_maker_conservative",
@@ -53,7 +53,7 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "taker_maker_standard",
@@ -67,7 +67,7 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "taker_maker_aggressive",
@@ -81,7 +81,7 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "maker_maker_conservative",
@@ -95,7 +95,7 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     },
     {
         "strategy_id": "maker_maker_standard",
@@ -109,6 +109,6 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_taker": true
+        "leg2_fallback_to_maker": true
     }
 ]
