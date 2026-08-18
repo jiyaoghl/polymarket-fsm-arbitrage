@@ -28,6 +28,7 @@ class ArbitrageBotFSM(BaseStrategy):
         
         # market_id -> TradeFSM
         self.fsms: Dict[str, TradeFSM] = {}
+        self._last_silent_filter_log: Dict[str, float] = {}
         # 负责触发超时的后台守护线程
         self._timer_thread = threading.Thread(target=self._fsm_timeout_daemon, daemon=True)
         self._timer_thread.start()
@@ -324,10 +325,18 @@ class ArbitrageBotFSM(BaseStrategy):
                     if best_ask_yes is None or best_ask_no is None:
                         continue
                         
+                    now_ts = time.time()
+                    
                     # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
+                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
+                            self._last_silent_filter_log[market_id] = now_ts
                         continue
                     if best_bid_no is not None and (best_ask_no - best_bid_no) > 0.05:
+                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
+                            self._last_silent_filter_log[market_id] = now_ts
                         continue
                         
                     if best_ask_yes <= best_ask_no:
@@ -338,6 +347,12 @@ class ArbitrageBotFSM(BaseStrategy):
                         choice = "NO"
                         entry_price = best_ask_no
                         token_id = no_token
+                        
+                    if entry_price > self.entry_max_price:
+                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：最优价 {choice} = {entry_price:.4f} > {self.entry_max_price}")
+                            self._last_silent_filter_log[market_id] = now_ts
+                        continue
                         
                     if entry_price <= self.entry_max_price:
                         # 1. 检查全账户当前未对冲单腿数量上限
