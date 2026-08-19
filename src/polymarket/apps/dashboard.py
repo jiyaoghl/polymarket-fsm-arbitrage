@@ -66,7 +66,7 @@ class StrategyStatusModel(BaseModel):
 
 class DashboardStatusModel(BaseModel):
     server_time: float
-    current_market: Dict[str, Any] | None
+    current_markets: List[Dict[str, Any]] = []
     strategies: List[StrategyStatusModel]
     risk_metrics: Dict[str, Any] = {}
     asset_status: Dict[str, dict] = {}
@@ -250,42 +250,8 @@ def index() -> str:
     <!-- 第一行: 左4 右8 -->
     <section class="section-market">
       <h2>📊 当前市场 <span class="badge" id="market-badge">等待中</span></h2>
-      <div class="price-grid">
-        <div class="glass-card price-card" id="yes-card">
-          <div class="label">YES Token</div>
-          <div class="price-row">
-            <span class="side YES">YES</span>
-            <span class="prices" id="yes-price">--</span>
-          </div>
-          <div class="spread" id="yes-spread">spread: --</div>
-        </div>
-        <div class="glass-card price-card" id="no-card">
-          <div class="label">NO Token</div>
-          <div class="price-row">
-            <span class="side NO">NO</span>
-            <span class="prices" id="no-price">--</span>
-          </div>
-          <div class="spread" id="no-spread">spread: --</div>
-        </div>
-      </div>
-      
-      <div class="market-info">
-        <div class="info-item">
-          <span class="label">市场描述</span>
-          <span class="value" id="m-desc">--</span>
-        </div>
-        <div class="info-item">
-          <span class="label">Market ID</span>
-          <span class="value" id="m-id" style="font-size: 10px;">--</span>
-        </div>
-        <div class="info-item">
-          <span class="label">到期时间</span>
-          <span class="value" id="m-expiry">--</span>
-        </div>
-        <div class="info-item">
-          <span class="label">剩余时间</span>
-          <span class="value" id="m-ttl">--</span>
-        </div>
+      <div id="markets-container" style="display: flex; flex-direction: column; gap: 20px;">
+        <div style="color: #64748b; font-size: 12px; font-style: italic; padding: 12px; text-align: center; background: rgba(0,0,0,0.2); border-radius: 8px;">等待新市场发现...</div>
       </div>
       <div id="filter-reason-ui" style="margin-top: 16px; padding: 12px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fbbf24; font-size: 12px; font-weight: 500; display: none;"></div>
     </section>
@@ -354,10 +320,11 @@ def index() -> str:
   <script>
     // 状态管理
     let lastTrades = {};
-    let lastMarketId = null;
+    let lastMarketsKey = null;
     let printedEvents = new Set();
     let isTerminalInitialized = false;
-    let lastPrices = {yes: null, no: null};
+    let lastPrices = {};
+    let currentMarketsData = [];
     
     // 通知系统
     function showNotification(title, message, type = 'info') {
@@ -475,40 +442,51 @@ def index() -> str:
     // 更新价格显示
     async function updatePrices() {
       try {
+        if (!currentMarketsData || currentMarketsData.length === 0) return;
         const res = await fetch('/api/prices');
         const data = await res.json();
+        const marketsPrices = data.markets || {};
         
-        if (data.yes) {
-          const yesAsk = data.yes.ask?.toFixed(4) || '--';
-          const yesBid = data.yes.bid?.toFixed(4) || '--';
+        currentMarketsData.forEach(m => {
+          const mPrice = marketsPrices[m.id];
+          if (!mPrice) return;
           
-          if (lastPrices.yes !== yesAsk + yesBid) {
-              triggerFlash('yes-card');
-              lastPrices.yes = yesAsk + yesBid;
+          if (mPrice.yes) {
+            const yesAsk = mPrice.yes.ask?.toFixed(4) || '--';
+            const yesBid = mPrice.yes.bid?.toFixed(4) || '--';
+            
+            const yesKey = m.id + '-yes';
+            if (lastPrices[yesKey] !== yesAsk + yesBid) {
+                triggerFlash('yes-card-' + m.id);
+                lastPrices[yesKey] = yesAsk + yesBid;
+            }
+            
+            const elPrice = document.getElementById('yes-price-' + m.id);
+            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${yesAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${yesBid}</span>`;
+            
+            const spread = mPrice.yes.ask && mPrice.yes.bid ? ((mPrice.yes.ask - mPrice.yes.bid) * 100).toFixed(2) : '--';
+            const elSpread = document.getElementById('yes-spread-' + m.id);
+            if(elSpread) elSpread.textContent = `spread: ${spread}%`;
           }
-
-          document.getElementById('yes-price').innerHTML = 
-            `<span class="ask">Ask: ${yesAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${yesBid}</span>`;
-          const spread = data.yes.ask && data.yes.bid ? 
-            ((data.yes.ask - data.yes.bid) * 100).toFixed(2) : '--';
-          document.getElementById('yes-spread').textContent = `spread: ${spread}%`;
-        }
-        
-        if (data.no) {
-          const noAsk = data.no.ask?.toFixed(4) || '--';
-          const noBid = data.no.bid?.toFixed(4) || '--';
           
-          if (lastPrices.no !== noAsk + noBid) {
-              triggerFlash('no-card');
-              lastPrices.no = noAsk + noBid;
+          if (mPrice.no) {
+            const noAsk = mPrice.no.ask?.toFixed(4) || '--';
+            const noBid = mPrice.no.bid?.toFixed(4) || '--';
+            
+            const noKey = m.id + '-no';
+            if (lastPrices[noKey] !== noAsk + noBid) {
+                triggerFlash('no-card-' + m.id);
+                lastPrices[noKey] = noAsk + noBid;
+            }
+            
+            const elPrice = document.getElementById('no-price-' + m.id);
+            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${noAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${noBid}</span>`;
+            
+            const spread = mPrice.no.ask && mPrice.no.bid ? ((mPrice.no.ask - mPrice.no.bid) * 100).toFixed(2) : '--';
+            const elSpread = document.getElementById('no-spread-' + m.id);
+            if(elSpread) elSpread.textContent = `spread: ${spread}%`;
           }
-
-          document.getElementById('no-price').innerHTML = 
-            `<span class="ask">Ask: ${noAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${noBid}</span>`;
-          const spread = data.no.ask && data.no.bid ? 
-            ((data.no.ask - data.no.bid) * 100).toFixed(2) : '--';
-          document.getElementById('no-spread').textContent = `spread: ${spread}%`;
-        }
+        });
       } catch (e) {
         console.error('Price update error:', e);
       }
@@ -537,32 +515,64 @@ def index() -> str:
         document.getElementById('next-market').textContent = 
           'Next Round: ' + new Date(nextTs * 1000).toLocaleTimeString('zh-CN');
         
-        // 市场信息
-        const m = data.current_market;
-        if (m) {
-          document.getElementById('market-badge').textContent = '监控中';
-          document.getElementById('m-desc').textContent = m.description || '--';
-          document.getElementById('m-id').textContent = m.id ? m.id.slice(0, 20) + '...' : '--';
+        // 市场信息 (多品种并列渲染)
+        const markets = data.current_markets || [];
+        currentMarketsData = markets;
+        
+        const containerM = document.getElementById('markets-container');
+        if (markets.length > 0) {
+          document.getElementById('market-badge').textContent = '监控中 (' + markets.length + ')';
           
-          if (m.end_time) {
-            const expiry = new Date(m.end_time * 1000);
-            document.getElementById('m-expiry').textContent = expiry.toLocaleTimeString('zh-CN');
-            
-            const ttl = m.end_time - data.server_time;
-            document.getElementById('m-ttl').textContent = formatCountdown(ttl);
+          const newMarketsKey = markets.map(m => m.id).join(',');
+          
+          // 如果市场发生了轮转或新增，才全量重建 DOM，防止破坏价格闪烁动画
+          if (lastMarketsKey !== newMarketsKey) {
+              let html = '';
+              markets.forEach((m, idx) => {
+                  html += `
+                  <div class="market-block" id="market-block-${m.id}" style="padding-bottom: 16px; border-bottom: ${idx === markets.length - 1 ? 'none' : '1px dashed rgba(255,255,255,0.1)'}">
+                    <div style="font-weight: 600; font-size: 13px; color: #a78bfa; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                      <span style="background: rgba(167, 139, 250, 0.2); padding: 2px 6px; border-radius: 4px; font-size: 10px;">${m.asset || 'N/A'}</span>
+                      ${m.description || '--'}
+                    </div>
+                    <div class="price-grid">
+                      <div class="glass-card price-card" id="yes-card-${m.id}">
+                        <div class="label">YES Token</div>
+                        <div class="price-row"><span class="side YES">YES</span><span class="prices" id="yes-price-${m.id}">--</span></div>
+                        <div class="spread" id="yes-spread-${m.id}">spread: --</div>
+                      </div>
+                      <div class="glass-card price-card" id="no-card-${m.id}">
+                        <div class="label">NO Token</div>
+                        <div class="price-row"><span class="side NO">NO</span><span class="prices" id="no-price-${m.id}">--</span></div>
+                        <div class="spread" id="no-spread-${m.id}">spread: --</div>
+                      </div>
+                    </div>
+                    <div class="market-info">
+                      <div class="info-item"><span class="label">Market ID</span><span class="value" style="font-size: 10px;">${m.id ? m.id.slice(0, 20) + '...' : '--'}</span></div>
+                      <div class="info-item"><span class="label">剩余时间 / 到期</span><span class="value" id="m-ttl-${m.id}">--</span></div>
+                    </div>
+                  </div>`;
+              });
+              containerM.innerHTML = html;
+              lastMarketsKey = newMarketsKey;
           }
           
-          // 检测市场切换
-          if (lastMarketId && lastMarketId !== m.id) {
-            showNotification('🔄 市场切换', `新市场: ${m.description || m.id.slice(0, 15)}`, 'warning');
-          }
-          lastMarketId = m.id;
+          // 始终更新每个市场的倒计时
+          markets.forEach(m => {
+              if (m.end_time) {
+                  const ttl = m.end_time - data.server_time;
+                  const expiry = new Date(m.end_time * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+                  const ttlEl = document.getElementById(`m-ttl-${m.id}`);
+                  if (ttlEl) {
+                      ttlEl.innerHTML = `<strong style="color: ${ttl < 60 ? '#f87171' : (ttl < 120 ? '#fbbf24' : '#34d399')}; font-variant-numeric: tabular-nums;">${formatCountdown(ttl)}</strong> (至 ${expiry})`;
+                  }
+              }
+          });
+          
         } else {
           document.getElementById('market-badge').textContent = '等待中';
-          document.getElementById('m-desc').textContent = '等待新市场...';
-          document.getElementById('m-id').textContent = '--';
-          document.getElementById('m-expiry').textContent = '--';
-          document.getElementById('m-ttl').textContent = '--';
+          containerM.innerHTML = '<div style="color: #64748b; font-size: 12px; font-style: italic; padding: 12px; text-align: center; background: rgba(0,0,0,0.2); border-radius: 8px;">等待新市场发现...</div>';
+          lastMarketsKey = null;
         }
         
         // 检测新交易
@@ -716,34 +726,33 @@ def index() -> str:
 @app.get("/api/prices")
 async def api_prices():
     """获取当前市场的实时价格。"""
-    import logging
-    logging.info("--> [API] /api/prices was called from frontend.")
-    if not manager.last_market:
-        return {"yes": None, "no": None}
-    
-    tokens = manager.last_market.get("tokens", {})
-    yes_token = tokens.get("YES")
-    no_token = tokens.get("NO")
-    
-    result = {"yes": None, "no": None, "timestamp": time.time()}
-    
-    try:
-        if yes_token:
-            prices = await price_client.get_market_price_async(yes_token)
-            if prices:
-                result["yes"] = prices
-    except Exception as e:
-        import traceback
-        result["error_yes"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+    result = {"timestamp": time.time(), "markets": {}}
+    for m in manager.current_markets:
+        market_id = m.get("id")
+        if not market_id:
+            continue
+        tokens = m.get("tokens", {})
+        yes_token = tokens.get("YES")
+        no_token = tokens.get("NO")
         
-    try:
-        if no_token:
-            prices = await price_client.get_market_price_async(no_token)
-            if prices:
-                result["no"] = prices
-    except Exception as e:
-        import traceback
-        result["error_no"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        m_result = {"yes": None, "no": None}
+        try:
+            if yes_token:
+                prices = await price_client.get_market_price_async(yes_token)
+                if prices:
+                    m_result["yes"] = prices
+        except Exception as e:
+            m_result["error_yes"] = str(e)
+            
+        try:
+            if no_token:
+                prices = await price_client.get_market_price_async(no_token)
+                if prices:
+                    m_result["no"] = prices
+        except Exception as e:
+            m_result["error_no"] = str(e)
+            
+        result["markets"][market_id] = m_result
     
     return result
 
@@ -754,16 +763,15 @@ def api_status() -> DashboardStatusModel:
     now = time.time()
 
     # 当前市场
-    current_market = None
-    if manager.last_market:
-        m = manager.last_market.copy()
-        # 统一字段名
-        current_market = {
+    current_markets = []
+    for m in manager.current_markets:
+        current_markets.append({
             "id": m.get("id"),
             "description": m.get("description"),
+            "asset": m.get("__asset_type"),
             "tokens": m.get("tokens"),
             "end_time": m.get("expiry"),
-        }
+        })
 
     strategies: List[StrategyStatusModel] = []
 
@@ -865,7 +873,7 @@ def api_status() -> DashboardStatusModel:
     from polymarket.config import SUPPORTED_ASSETS
     return DashboardStatusModel(
         server_time=now,
-        current_market=current_market,
+        current_markets=current_markets,
         strategies=strategies,
         risk_metrics=RiskManager().get_status(),
         asset_status={a: get_asset_status(a) for a in SUPPORTED_ASSETS},

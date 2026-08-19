@@ -44,7 +44,7 @@ class StrategyManager:
         self.bots: List[ArbitrageBot] = []
         self.scanner = get_client(is_live=False)  # 扫描器只需读取权限
         self.redeem_client = get_client(is_live=False)
-        self.last_market: Dict[str, Any] | None = None
+        self.current_markets: List[Dict[str, Any]] = []
         
         # 风控模块
         self.trade_state = TradeStateStore(initial_capital=INITIAL_CAPITAL)
@@ -215,6 +215,7 @@ class StrategyManager:
                 continue
 
             last_dispatched_ts = next_ts
+            self.current_markets = markets_found
 
             for market in markets_found:
                 for bot in self.bots:
