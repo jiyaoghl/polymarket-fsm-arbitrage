@@ -69,7 +69,7 @@ class DashboardStatusModel(BaseModel):
     current_market: Dict[str, Any] | None
     strategies: List[StrategyStatusModel]
     risk_metrics: Dict[str, Any] = {}
-    btc_status: Dict[str, Any] = {}
+    asset_status: Dict[str, dict] = {}
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
@@ -242,7 +242,7 @@ def index() -> str:
         <div class="time-display" id="countdown">00:00</div>
         <div class="next-market" id="next-market" style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">下一个市场</div>
         <div class="date-display" id="server-time">Server Time: --</div>
-        <div id="btc-status-ui" style="margin-top: 8px;"></div>
+        <div id="asset-status-ui" style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin-top: 8px;"></div>
       </div>
     </header>
   
@@ -589,16 +589,16 @@ def index() -> str:
         let totalTrades = 0, lockedTrades = 0, totalEV = 0;
         let latestFilterReason = null;
         
-        // 5. 更新 BTC 风控状态
-        const btcStatusEl = document.getElementById('btc-status-ui');
-        if (data.btc_status && btcStatusEl) {
-          const bs = data.btc_status;
-          if (bs.timestamp > 0) {
-            const isChoppy = bs.is_choppy;
-            const text = isChoppy ? '🟢 BTC 震荡 (允许入场)' : `🔴 BTC 单边波动大 (暂停入场) 振幅:${bs.amplitude.toFixed(2)}%`;
-            btcStatusEl.innerHTML = `<div class="btc-risk-badge ${isChoppy ? 'choppy' : 'volatile'}">${text}</div>`;
-          } else {
-            btcStatusEl.innerHTML = `<div class="btc-risk-badge" style="color:#94a3b8;">⚪ BTC 风控未初始化</div>`;
+        // 5. 更新多品种风控状态
+        const assetStatusEl = document.getElementById('asset-status-ui');
+        if (data.asset_status && assetStatusEl) {
+          assetStatusEl.innerHTML = '';
+          for (const [asset, bs] of Object.entries(data.asset_status)) {
+            if (bs.timestamp > 0) {
+              const isChoppy = bs.is_choppy;
+              const text = isChoppy ? `🟢 ${asset} 震荡 (允许入场)` : `🔴 ${asset} 单边 (${bs.amplitude.toFixed(2)}%)`;
+              assetStatusEl.innerHTML += `<div class="btc-risk-badge ${isChoppy ? 'choppy' : 'volatile'}">${text}</div>`;
+            }
           }
         }
         data.strategies.forEach(s => {
@@ -861,13 +861,14 @@ def api_status() -> DashboardStatusModel:
         )
 
     from polymarket.risk_manager import RiskManager
-    from polymarket.kline_analyzer import get_last_btc_status
+    from polymarket.kline_analyzer import get_asset_status
+    from polymarket.config import SUPPORTED_ASSETS
     return DashboardStatusModel(
         server_time=now,
         current_market=current_market,
         strategies=strategies,
         risk_metrics=RiskManager().get_status(),
-        btc_status=get_last_btc_status(),
+        asset_status={a: get_asset_status(a) for a in SUPPORTED_ASSETS},
     )
 
 

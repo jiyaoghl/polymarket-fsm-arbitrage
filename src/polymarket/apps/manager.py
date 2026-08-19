@@ -181,39 +181,48 @@ class StrategyManager:
                 time.sleep(10)
                 continue
 
-            slug = f"btc-updown-5m-{next_ts}"
-            logger.info(f"尝试定位市场 slug={slug}")
+            from polymarket.config import SUPPORTED_ASSETS
+            
+            markets_found = []
+            for asset in SUPPORTED_ASSETS:
+                slug = f"{asset.lower()}-updown-5m-{next_ts}"
+                logger.info(f"尝试定位市场 {asset} slug={slug}")
 
-            retries = 3
-            market = None
-            for attempt in range(retries):
-                try:
-                    market = self._fetch_market_by_slug(slug)
-                    if market:
-                        break
-                except Exception as e:
-                    logger.warning(f"获取 {slug} 失败 (attempt {attempt + 1}/{retries}): {e}")
-                time.sleep(3)
+                retries = 3
+                market = None
+                for attempt in range(retries):
+                    try:
+                        market = self._fetch_market_by_slug(slug)
+                        if market:
+                            market["__asset_type"] = asset.upper()
+                            break
+                    except Exception as e:
+                        logger.warning(f"获取 {slug} 失败 (attempt {attempt + 1}/{retries}): {e}")
+                    time.sleep(1)
 
-            if not market:
-                logger.warning(f"本周期未定位到市场 {slug}，等待下期")
+                if market:
+                    markets_found.append(market)
+                    logger.info(
+                        f"已定位市场：{market['description']}，expiry={market['expiry']:.0f}，"
+                        f"YES={market['tokens']['YES'][:12]}... NO={market['tokens']['NO'][:12]}..."
+                    )
+                else:
+                    logger.warning(f"本周期未定位到 {asset} 市场 {slug}")
+
+            if not markets_found:
+                logger.warning(f"本周期未定位到任何配置的 5min 市场，等待下期")
                 last_dispatched_ts = next_ts
                 continue
 
-            self.last_market = market
             last_dispatched_ts = next_ts
 
-            logger.info(
-                f"已定位市场：{market['description']}，expiry={market['expiry']:.0f}，"
-                f"YES={market['tokens']['YES'][:12]}... NO={market['tokens']['NO'][:12]}..."
-            )
-
-            for bot in self.bots:
-                threading.Thread(
-                    target=bot.execute_strategy,
-                    args=(market,),
-                    daemon=True,
-                ).start()
+            for market in markets_found:
+                for bot in self.bots:
+                    threading.Thread(
+                        target=bot.execute_strategy,
+                        args=(market,),
+                        daemon=True,
+                    ).start()
 
     def _get_traded_market_ids(self) -> set:
         """收集所有策略实际交易过的市场 ID。"""

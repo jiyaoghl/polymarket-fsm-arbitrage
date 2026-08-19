@@ -41,8 +41,9 @@ LEG1_MAX_UNHEDGED_SECONDS = int(os.getenv("LEG1_MAX_UNHEDGED_SECONDS", "90"))  #
 MAX_CONCURRENT_UNHEDGED_TRADES = int(os.getenv("MAX_CONCURRENT_UNHEDGED_TRADES", "3"))  # 全账户最大允许未对冲单腿数
 
 # 震荡过滤配置 (Choppy Market Filter)
-BTC_CHOP_MAX_AMPLITUDE = float(os.getenv("BTC_CHOP_MAX_AMPLITUDE", "0.15"))
-BTC_CHOP_MAX_NET_CHANGE = float(os.getenv("BTC_CHOP_MAX_NET_CHANGE", "0.10"))
+SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH").split(",") if x.strip()]
+CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.15"))
+CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.10"))
 # 风控配置（旧版，保留兼容）
 DAILY_MAX_DRAWDOWN = float(os.getenv("DAILY_MAX_DRAWDOWN", "0.05"))  # 5% 最大回撤
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100.0"))       # 小资金默认 100 USDC

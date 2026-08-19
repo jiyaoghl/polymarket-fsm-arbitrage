@@ -24,10 +24,9 @@ flowchart TD
     GAMMA --> DISCOVER
     BINANCE --> CHOP_FILTER
 
-    subgraph Strategy_Matrix [多策略状态机矩阵 (8 组 FSM)]
-        S1[Taker + Taker 保守/标准/激进]
-        S2[Taker + Maker 保守/标准/激进]
-        S3[Maker + Maker 保守/标准]
+    subgraph Strategy_Matrix [多策略状态机矩阵 (5 组 FSM)]
+        S1[Taker + Maker 保守/标准/激进]
+        S2[Maker + Maker 保守/标准]
     end
 
     STREAMER -->|无拷贝分发价格/深度 Bundle| Strategy_Matrix
@@ -91,14 +90,20 @@ flowchart TD
 * **升级解法**：在发单前扫描全量 Ask 深度，计算投入 `ORDER_AMOUNT` 的**实际成交均价 (VWAP)**。
 * **数学拦截器**：执行 `Total_Cost / Hedged_Shares < 0.99` 检验，确保双腿对冲后至少拥有 1% 的确定性净收益，从数学层面 100% 杜绝负 EV 交易。
 
-### 3. 智能 Maker 动态钉盘与追单算法 (Active Order Pegging)
-* 对于 Maker 策略，自动将挂单设置在 `min(Best_Bid + 0.001, dynamic_reentry_max)`，抢占买一档并赚取 Spread。
-* 处于挂单等待期间，系统以 1.0s 冷却节流实时监听盘口，一旦被他人压价立即自动撤单并以最新最优价重挂，大幅提升被动成交率。
+### 3. 微观定价引擎与 OBI 防爆盾 (Micro-Price & OBI Defense)
+* 系统在首腿吃单 (Taker) 入场前，提取多层深度数据计算微观加权价格与**订单簿不平衡度 (OBI)**。
+* 面对盘口虚假繁荣或大户撤单诱多陷阱（如检测到 OBI 处于极度劣势），系统将主动拦截入场，并在前端界面透传静默告警原因（防假死），从微观层面死守资金底线。
 
-### 4. 统一异步多路复用数据总线 (MarketDataStreamer)
-* 全局单条 WebSocket 接入 Polymarket CLOB，一次解析、零拷贝分发给全部 8 套策略的 `asyncio.Queue`，大幅消除 Python GIL 锁争抢与网络重连开销。
+### 4. 智能 Maker 动态防卷机制 (Anti-Pennying War)
+* 坚决摒弃行业内低级的 `Best_Bid + 0.001` 无脑互卷策略。
+* 处于二腿挂单等待期间，系统在被压价后自动触发 **1.5s~3.5s 随机装死迟滞**，有效过滤对手高频假动作。
+* 装死期满若确需追击，系统采用 **0.002~0.004 阶梯式跳跃反卷**，在大幅节省 API 限流配额的同时，形成极强的排位威慑力。
 
-### 5. 三级资金熔断与多层风控 (Risk Defense)
+### 5. 统一异步多路复用数据总线 (MarketDataStreamer)
+* 全局单条 WebSocket 接入 Polymarket CLOB，一次解析、零拷贝分发给全部策略的 `asyncio.Queue`，大幅消除 Python GIL 锁争抢与网络重连开销。
+* 内置自动故障恢复与指数退避 (Exponential Backoff) 重连机制，完美适应长时离线或国内网络波动。
+
+### 6. 三级资金熔断与多层风控 (Risk Defense)
 * **外部行情护盾**：Binance 1m K 线振幅 `> 0.15%` 判定为单边大行情，主动拒绝首腿开仓。
 * **黄牌 (亏损≥10%)**：暂停新市场发现。
 * **橙牌 (亏损≥20%)**：停止所有新开仓，平掉未对冲单腿。
@@ -112,14 +117,13 @@ flowchart TD
 
 | 策略 ID | 策略模式 | 首腿入场 | 二腿补仓 | 核心特性 |
 | :--- | :--- | :--- | :--- | :--- |
-| `taker_taker_conservative` | 吃单 + 吃单 | ≤ 0.45 | < 0.35 | 保守型，追求高确定性低入场价 |
-| `taker_taker_standard` | 吃单 + 吃单 | ≤ 0.50 | < 0.42 | 标准型，兼顾成单率与对冲空间 |
-| `taker_taker_aggressive` | 吃单 + 吃单 | ≤ 0.55 | < 0.45 | 激进型，高频入场快速锁仓 |
-| `taker_maker_conservative` | 吃单 + 挂单 | ≤ 0.45 | 智能钉盘 | 首腿吃单，二腿以买一价 Pegging 挂单赚 Spread |
-| `taker_maker_standard` | 吃单 + 挂单 | ≤ 0.50 | 智能钉盘 | 平衡型 Maker 策略，带超时自动降级 |
-| `taker_maker_aggressive` | 吃单 + 挂单 | ≤ 0.55 | 智能钉盘 | 激进型 Maker，全速争抢二腿挂单 |
-| `maker_maker_conservative` | 挂单 + 挂单 | ≤ 0.45 | 智能钉盘 | 双边 Maker，极低手续费但需更高流动性 |
-| `maker_maker_standard` | 挂单 + 挂单 | ≤ 0.50 | 智能钉盘 | 标准双边做市套利策略 |
+| `taker_maker_conservative` | 吃单 + 挂单 | ≤ 0.45 | 智能反卷 | 首腿吃单，二腿以阶梯跃迁防卷挂单赚 Spread |
+| `taker_maker_standard` | 吃单 + 挂单 | ≤ 0.50 | 智能反卷 | 拥抱长尾市场，兼顾 OBI 风控与高盈亏比 |
+| `taker_maker_aggressive` | 吃单 + 挂单 | ≤ 0.55 | 智能反卷 | 激进型 Taker-Maker，快速建仓吃波段 |
+| `maker_maker_conservative` | 挂单 + 挂单 | ≤ 0.45 | 智能反卷 | 双边挂单，彻底规避滑点且无惧吃单磨损 |
+| `maker_maker_standard` | 挂单 + 挂单 | ≤ 0.50 | 智能反卷 | 标准双边量化套利，长尾低流动性克星 |
+
+> **提示**: 架构组已于 V3 版本彻底废弃了高磨损且天然易滑点的纯双边 Taker (吃单+吃单) 模式。目前系统全面转向 Taker-Maker 或 Maker-Maker，专注赚取流动性溢价。
 
 ---
 

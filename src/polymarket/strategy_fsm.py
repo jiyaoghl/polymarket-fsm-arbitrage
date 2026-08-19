@@ -9,7 +9,7 @@ import websockets
 from polymarket.base_strategy import BaseStrategy
 from polymarket.fsm import TradeFSM, TradeState
 from polymarket.logger import logger
-from polymarket.kline_analyzer import is_btc_choppy
+from polymarket.kline_analyzer import is_asset_choppy
 from polymarket.streamer import MarketDataStreamer
 
 class ArbitrageBotFSM(BaseStrategy):
@@ -133,11 +133,12 @@ class ArbitrageBotFSM(BaseStrategy):
         if self._is_market_processed(market_id):
             return
 
-        # [风控] BTC 单边行情拦截
-        market_desc = market.get("description", "").lower()
-        if "btc" in market_desc or "bitcoin" in market_desc:
-            if not is_btc_choppy():
-                logger.info(f"[策略FSM：{self.strategy_id}] 拒绝入场：检测到单边行情。")
+        # [风控] 动态资产单边行情拦截
+        asset = market.get("__asset_type")
+        from polymarket.config import SUPPORTED_ASSETS
+        if asset and asset in SUPPORTED_ASSETS:
+            if not is_asset_choppy(asset):
+                logger.info(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
                 return
 
         logger.info(f"[策略FSM：{self.strategy_id}] 开始基于 FSM 监控市场：{market_id}")
