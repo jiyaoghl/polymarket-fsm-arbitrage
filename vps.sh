@@ -100,6 +100,9 @@ start_service() {
     echo "  启动 Polymarket Dashboard 服务..."
     echo "=================================================="
 
+    # 尝试提高文件描述符上限，防止高并发或 WS 异常时因 Too many open files 崩溃
+    ulimit -n 65535 2>/dev/null || true
+
     # 后台启动进程
     nohup env PYTHONPATH="$PROJECT_DIR/src" "$VENV_DIR/bin/python3" -m apps.dashboard >> "$LOG_FILE" 2>&1 &
     NEW_PID=$!
