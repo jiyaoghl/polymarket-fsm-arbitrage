@@ -25,13 +25,13 @@ setup_environment() {
     echo "=================================================="
 
     # 检查是否安装了 python3
-    if ! command -v python3 &> /dev/null; then
+    if ! command -v python3 > /dev/null 2>&1; then
         echo "未检测到 Python3，正在通过 apt 安装..."
         sudo apt update && sudo apt install -y python3 python3-pip python3-venv
     fi
 
     # 检查并安装 venv 模块
-    if ! dpkg -s python3-venv &> /dev/null && ! dpkg -s python3-pip &> /dev/null; then
+    if ! dpkg -s python3-venv > /dev/null 2>&1 && ! dpkg -s python3-pip > /dev/null 2>&1; then
         echo "正在安装 python3-venv 与 python3-pip..."
         sudo apt update && sudo apt install -y python3-pip python3-venv
     fi
