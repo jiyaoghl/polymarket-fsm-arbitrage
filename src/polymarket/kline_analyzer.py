@@ -5,6 +5,7 @@ import time
 
 # 缓存最近一次检测的结果
 _asset_status = {}
+_session = requests.Session()
 
 def get_asset_status(asset: str) -> dict:
     return _asset_status.get(asset.upper(), {
@@ -38,7 +39,7 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
         proxies["https"] = HTTPS_PROXY
         
     try:
-        r = requests.get(url, proxies=proxies, timeout=5)
+        r = _session.get(url, proxies=proxies, timeout=5)
         r.raise_for_status()
         data = r.json()
         

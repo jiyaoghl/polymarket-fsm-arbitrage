@@ -1,12 +1,18 @@
 
 
 import sqlite3
+from contextlib import contextmanager
 from typing import Optional
 from polymarket.config import DB_PATH as _DB_PATH
 
 # ================= DB 基础操作 =================
+@contextmanager
 def get_conn(path: str = _DB_PATH):
-    return sqlite3.connect(path)
+    conn = sqlite3.connect(path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_db(path: str = _DB_PATH) -> None:
