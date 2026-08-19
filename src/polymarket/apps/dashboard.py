@@ -40,6 +40,7 @@ class LegModel(BaseModel):
 
 class TradeModel(BaseModel):
     market_id: str
+    asset: str = ""
     status: str
     end_time: float
     leg1: LegModel | None = None
@@ -689,9 +690,10 @@ def index() -> str:
                 : '--';
                 
               const timeStr = new Date(t.end_time * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
+              const assetTag = t.asset ? `<span style="background: rgba(167,139,250,0.2); color:#a78bfa; padding:2px 4px; border-radius:4px; margin-right:4px;">${t.asset}</span>` : '';
               
               html += `<tr>
-                <td style="font-size:10px; color:#94a3b8;" title="${t.market_id}">${timeStr}</td>
+                <td style="font-size:10px; color:#94a3b8;" title="${t.market_id}">${assetTag}${timeStr}</td>
                 <td>${statusPill(t.status)}</td>
                 <td>${leg1}</td>
                 <td>${leg2}</td>
@@ -808,6 +810,7 @@ def api_status() -> DashboardStatusModel:
             active_trades.append(
                 TradeModel(
                     market_id=market_id,
+                    asset=trade.get("asset", ""),
                     status=trade.get("status") or "",
                     end_time=trade.get("end_time", 0.0),
                     leg1=LegModel(**trade["leg1"]) if trade.get("leg1") else None,
@@ -838,6 +841,7 @@ def api_status() -> DashboardStatusModel:
                 active_trades.append(
                     TradeModel(
                         market_id=hist_market_id,
+                        asset=trade.get("asset", ""),
                         status=trade.get("status") or "",
                         end_time=trade.get("end_time", 0.0),
                         leg1=LegModel(**trade["leg1"]) if trade.get("leg1") else None,

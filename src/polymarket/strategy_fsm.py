@@ -284,7 +284,8 @@ class ArbitrageBotFSM(BaseStrategy):
             return
         
         # 预先存下 token，方便 timeout daemon 中使用
-        self._update_trade_status(market_id, None, yes_token=yes_token, no_token=no_token)
+        asset = market.get("__asset_type", "")
+        self._update_trade_status(market_id, None, yes_token=yes_token, no_token=no_token, asset=asset)
         
         streamer = MarketDataStreamer()
         loop = asyncio.get_running_loop()
