@@ -130,8 +130,8 @@ def index() -> str:
         border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); padding: 20px; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); 
     }
     /* Grid 占位 */
-    .section-market { grid-column: span 4; }
-    .section-defense { grid-column: span 8; }
+    .section-market { grid-column: span 5; }
+    .section-defense { grid-column: span 7; }
     .section-strategy { grid-column: span 7; }
     .section-terminal { grid-column: span 5; display: flex; flex-direction: column; }
     
@@ -290,31 +290,31 @@ def index() -> str:
       <div id="filter-reason-ui" style="margin-top: 16px; padding: 12px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fbbf24; font-size: 12px; font-weight: 500; display: none;"></div>
     </section>
     
-    <section class="section-defense">
-      <h2>🛡️ 系统防御与战绩 (System Metrics)</h2>
-      <div class="stats-row" id="risk-stats-row">
-        <div class="glass-card stat-card">
-          <div class="value" id="stat-intercept-count" style="color: #f87171;">0</div>
-          <div class="label">风控拦截笔数</div>
+    <section class="section-defense" style="display: flex; flex-direction: column; justify-content: center;">
+      <h2 style="font-size: 13px; margin-bottom: 16px; color: #64748b; font-weight: 600; text-transform: uppercase;">🛡️ 系统风控墙 (Risk Shield)</h2>
+      <div style="display: flex; gap: 32px; margin-bottom: 16px;">
+        <div>
+          <div id="stat-intercept-count" style="color: #f87171; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;">0</div>
+          <div style="font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase;">拦截笔数</div>
         </div>
-        <div class="glass-card stat-card">
-          <div class="value" id="stat-intercept-amt" style="color: #fbbf24;">$0.00</div>
-          <div class="label">挽回资金 (USDC)</div>
+        <div>
+          <div id="stat-intercept-amt" style="color: #fbbf24; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;">$0.00</div>
+          <div style="font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase;">挽回资金</div>
         </div>
-        <div class="glass-card stat-card">
-          <div class="value" id="stat-retry-win" style="color: #34d399;">0 / 0</div>
-          <div class="label">滑点微调成功</div>
+        <div>
+          <div id="stat-retry-win" style="color: #34d399; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;">0 / 0</div>
+          <div style="font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase;">滑点微调</div>
         </div>
-        <div class="glass-card stat-card">
-          <div class="value" id="stat-exposure" style="color: #60a5fa;">0.0%</div>
-          <div class="label">实时敞口利用率</div>
+        <div>
+          <div id="stat-exposure" style="color: #60a5fa; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;">0.0%</div>
+          <div style="font-size: 11px; color: #64748b; margin-top: 6px; text-transform: uppercase;">实时敞口</div>
         </div>
       </div>
       
-      <div class="progress-track">
-        <div class="progress-bar" id="exposure-bar"></div>
+      <div class="progress-track" style="height: 4px; margin-top: auto;">
+        <div class="progress-bar" id="exposure-bar" style="background: linear-gradient(90deg, #3b82f6, #60a5fa);"></div>
       </div>
-      <div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; font-variant-numeric: tabular-nums;" id="exposure-text">0.00 / 0.00 USDC</div>
+      <div style="font-size: 10px; color: #64748b; text-align: right; margin-top: 6px; font-variant-numeric: tabular-nums;" id="exposure-text">0.00 / 0.00 USDC</div>
     </section>
     
     <!-- 第二行: 左7 右5 -->
