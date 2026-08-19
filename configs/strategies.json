@@ -1,47 +1,5 @@
 [
     {
-        "strategy_id": "taker_taker_conservative",
-        "name": "吃单+吃单 保守策略",
-        "entry_max_price": 0.45,
-        "entry_min_price": 0.30,
-        "reentry_trigger": 0.35,
-        "amount": 5.0,
-        "is_live": false,
-        "leg1_order_type": "FOK",
-        "leg2_order_type": "FOK",
-        "leg2_price_mode": "ask",
-        "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
-    },
-    {
-        "strategy_id": "taker_taker_standard",
-        "name": "吃单+吃单 标准策略",
-        "entry_max_price": 0.50,
-        "entry_min_price": 0.25,
-        "reentry_trigger": 0.42,
-        "amount": 10.0,
-        "is_live": false,
-        "leg1_order_type": "FOK",
-        "leg2_order_type": "FOK",
-        "leg2_price_mode": "ask",
-        "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
-    },
-    {
-        "strategy_id": "taker_taker_aggressive",
-        "name": "吃单+吃单 激进策略",
-        "entry_max_price": 0.55,
-        "entry_min_price": 0.20,
-        "reentry_trigger": 0.45,
-        "amount": 15.0,
-        "is_live": false,
-        "leg1_order_type": "FOK",
-        "leg2_order_type": "FOK",
-        "leg2_price_mode": "ask",
-        "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
-    },
-    {
         "strategy_id": "taker_maker_conservative",
         "name": "吃单+挂单 保守策略",
         "entry_max_price": 0.45,

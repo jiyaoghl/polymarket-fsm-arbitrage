@@ -49,6 +49,7 @@ class TradeModel(BaseModel):
     profit_usdc: float
     time_to_expiry: float
     strategy_id: str
+    filter_reason: str | None = None
     events: List[Dict[str, Any]] = []
 
 
@@ -286,6 +287,7 @@ def index() -> str:
           <span class="value" id="m-ttl">--</span>
         </div>
       </div>
+      <div id="filter-reason-ui" style="margin-top: 16px; padding: 12px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fbbf24; font-size: 12px; font-weight: 500; display: none;"></div>
     </section>
     
     <section class="section-defense">
@@ -585,6 +587,7 @@ def index() -> str:
         
         // 统计信息
         let totalTrades = 0, lockedTrades = 0, totalEV = 0;
+        let latestFilterReason = null;
         
         // 5. 更新 BTC 风控状态
         const btcStatusEl = document.getElementById('btc-status-ui');
@@ -603,8 +606,19 @@ def index() -> str:
           s.active_trades.forEach(t => {
             if (t.status === 'locked') lockedTrades++;
             totalEV += t.profit_usdc || 0;
+            if (t.filter_reason) {
+                latestFilterReason = `[${s.name}] ${t.filter_reason}`;
+            }
           });
         });
+        
+        const filterUi = document.getElementById('filter-reason-ui');
+        if (latestFilterReason) {
+            filterUi.style.display = 'block';
+            filterUi.innerHTML = `🚦 <strong>监控受阻:</strong> ${latestFilterReason}`;
+        } else {
+            filterUi.style.display = 'none';
+        }
         
         document.getElementById('stat-strategies').textContent = data.strategies.length;
         document.getElementById('stat-trades').textContent = totalTrades;
@@ -795,6 +809,7 @@ def api_status() -> DashboardStatusModel:
                     profit_usdc=float(trade.get("profit_usdc", 0.0)),
                     time_to_expiry=float(ttl),
                     strategy_id=bot.strategy_id,
+                    filter_reason=trade.get("filter_reason"),
                     events=trade.get("events", [])
                 )
             )

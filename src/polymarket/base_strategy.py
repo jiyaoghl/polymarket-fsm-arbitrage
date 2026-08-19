@@ -274,6 +274,55 @@ class BaseStrategy:
         return asks_list, bids_list
 
     @staticmethod
+    def _calculate_micro_structure(bids: List[Dict[str, Any]], asks: List[Dict[str, Any]], depth_levels: int = 3) -> Tuple[float, float]:
+        """
+        计算订单薄微观结构特征。
+        Returns:
+            (obi, micro_price)
+            obi (Orderbook Imbalance): [-1.0, 1.0]。正数代表买盘强，负数代表卖盘强(抛压)。
+            micro_price (Micro-Price): 深度加权价格。
+        """
+        valid_bids = []
+        for b in bids:
+            try:
+                p = float(b["price"])
+                s = float(b["size"])
+                if p > 0 and s > 0:
+                    valid_bids.append((p, s))
+            except (KeyError, ValueError, TypeError):
+                continue
+        valid_bids.sort(key=lambda x: x[0], reverse=True)
+        
+        valid_asks = []
+        for a in asks:
+            try:
+                p = float(a["price"])
+                s = float(a["size"])
+                if p > 0 and s > 0:
+                    valid_asks.append((p, s))
+            except (KeyError, ValueError, TypeError):
+                continue
+        valid_asks.sort(key=lambda x: x[0])
+        
+        if not valid_bids or not valid_asks:
+            return 0.0, 0.0
+            
+        best_bid = valid_bids[0][0]
+        best_ask = valid_asks[0][0]
+        
+        bid_vol = sum(s for p, s in valid_bids[:depth_levels])
+        ask_vol = sum(s for p, s in valid_asks[:depth_levels])
+        
+        total_vol = bid_vol + ask_vol
+        if total_vol == 0:
+            return 0.0, (best_bid + best_ask) / 2.0
+            
+        obi = (bid_vol - ask_vol) / total_vol
+        micro_price = (best_bid * ask_vol + best_ask * bid_vol) / total_vol
+        
+        return obi, micro_price
+
+    @staticmethod
     def _verify_hedged_profitability(
         leg1_cost: float,
         leg1_size: float,

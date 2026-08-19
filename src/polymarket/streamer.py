@@ -46,11 +46,14 @@ class MarketDataStreamer:
         self.loop.run_until_complete(self._ws_loop())
 
     async def _ws_loop(self):
+        retry_delay = 1.0
+        max_delay = 60.0
         while True:
             try:
                 logger.info("[Streamer] 统一数据总线正在连接 WS...")
                 async with websockets.connect(self.ws_uri) as ws:
                     self.ws = ws
+                    retry_delay = 1.0  # 连接成功，重置退避时间
                     
                     # 重新发送所有活跃的订阅
                     with self._lock:
@@ -116,7 +119,9 @@ class MarketDataStreamer:
                 logger.error(f"[Streamer] 异常崩溃: {e}")
                 
             self.ws = None
-            await asyncio.sleep(1)  # 退避重连
+            logger.info(f"[Streamer] 将在 {retry_delay} 秒后尝试重连...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_delay)  # 指数退避
 
     async def _send_subscription(self, ws: websockets.WebSocketClientProtocol, assets: List[str]):
         """发送订阅/重置命令，Polymarket 会全量覆盖"""

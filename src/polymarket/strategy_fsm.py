@@ -327,16 +327,20 @@ class ArbitrageBotFSM(BaseStrategy):
                         
                     now_ts = time.time()
                     
+                    def record_silent_filter(reason: str):
+                        if trade:
+                            trade["filter_reason"] = reason
+                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                            logger.info(f"[{self.strategy_id}] [静默拦截] {market_id} {reason}")
+                            self._add_trade_event(market_id, TradeState.IDLE.value, f"静默拦截: {reason}")
+                            self._last_silent_filter_log[market_id] = now_ts
+
                     # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
-                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
-                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
-                            self._last_silent_filter_log[market_id] = now_ts
+                        record_silent_filter(f"YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
                         continue
                     if best_bid_no is not None and (best_ask_no - best_bid_no) > 0.05:
-                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
-                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
-                            self._last_silent_filter_log[market_id] = now_ts
+                        record_silent_filter(f"NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
                         continue
                         
                     if best_ask_yes <= best_ask_no:
@@ -349,26 +353,29 @@ class ArbitrageBotFSM(BaseStrategy):
                         token_id = no_token
                         
                     if entry_price > self.entry_max_price:
-                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
-                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：最优价 {choice} = {entry_price:.4f} > {self.entry_max_price}")
-                            self._last_silent_filter_log[market_id] = now_ts
+                        record_silent_filter(f"最优价 {choice} = {entry_price:.4f} > {self.entry_max_price}")
                         continue
                         
                     if entry_price < self.entry_min_price:
-                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
-                            logger.info(f"[{self.strategy_id}] [静默过滤] {market_id} 拒绝入场：极度偏斜盘口 {choice} = {entry_price:.4f} < {self.entry_min_price}")
-                            self._last_silent_filter_log[market_id] = now_ts
+                        record_silent_filter(f"极度偏斜盘口 {choice} = {entry_price:.4f} < {self.entry_min_price}")
                         continue
                         
                     if entry_price <= self.entry_max_price:
                         # 1. 检查全账户当前未对冲单腿数量上限
                         unhedged_count = self._get_unhedged_trade_count()
                         if unhedged_count >= self.max_concurrent_unhedged_trades:
+                            record_silent_filter(f"达到最大并发敞口数 ({unhedged_count})")
                             continue
                             
-                        # 2. 从原始 WS 深度中提取 Ask 深度并精确校验全量 VWAP 与滑点
-                        asks_list, _ = self._extract_token_depth(data, str(token_id))
+                        # 2. 从原始 WS 深度中提取深度并计算微观结构与 VWAP
+                        asks_list, bids_list = self._extract_token_depth(data, str(token_id))
+                        obi, micro_price = self._calculate_micro_structure(bids_list, asks_list)
                         
+                        # 【OBI 极端防守】：如果我们准备做 Taker 买入 (Buy Ask)，但 OBI 极度不利 (比如 < -0.8) 说明有巨大抛压诱多
+                        if obi < -0.8:
+                            record_silent_filter(f"极端盘口抛压 (OBI: {obi:.2f})，防诱多拦截")
+                            continue
+
                         is_valid, vwap_price, filled_usdc, reason_msg = self._check_orderbook_depth_and_vwap(
                             asks=asks_list,
                             target_usdc_amount=self.order_amount,
@@ -376,7 +383,7 @@ class ArbitrageBotFSM(BaseStrategy):
                             max_slippage_tolerance=self.max_slippage_tolerance,
                         )
                         if not is_valid:
-                            logger.debug(f"[首腿深度拦截] {market_id} {choice}: {reason_msg}")
+                            record_silent_filter(f"首腿深度不足: {reason_msg}")
                             continue
                         
                         # 使用实际加权均价 VWAP 作为成交/出价基准
@@ -387,6 +394,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         
                         # 【风控拦截】申请预扣可用敞口！
                         if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, amount):
+                            record_silent_filter(f"风控敞口超限 (要求 {amount} USDC)")
                             continue
                             
                         logger.info(f"[FSM 引擎] {market_id} 触发首腿: {choice} @ VWAP={entry_price:.4f}")
@@ -517,12 +525,31 @@ class ArbitrageBotFSM(BaseStrategy):
                         other_info = prices.get(str(other_token_id), {})
                         current_best_bid = other_info.get("bid", 0.0)
 
-                        # 如果当前买一价高于我方挂单价，且新价格依然满足利润上限，自动发起撤改单
-                        if current_best_bid > pegged_price and (current_best_bid - pegged_price) >= 0.002:
-                            new_pegged = min(current_best_bid + 0.001, dynamic_reentry_max)
+                        # 防一分钱互卷 (Anti-Pennying) 与阶梯跃迁机制
+                        if current_best_bid <= pegged_price:
+                            # 已经夺回买一或价格回落，清除装死计时
+                            if "peg_wait_until" in trade:
+                                del trade["peg_wait_until"]
+                        else:
+                            # 发现落后，启动装死随机延迟
+                            if "peg_wait_until" not in trade:
+                                import random
+                                delay = random.uniform(1.5, 3.5)
+                                trade["peg_wait_until"] = now_ts + delay
+                                logger.debug(f"[Maker 防护] {market_id} 挂单被超，启动随机迟滞 {delay:.1f}s")
+                                
+                            if now_ts < trade["peg_wait_until"]:
+                                continue
+                                
+                            # 迟滞期满，对手还在，我们发起阶梯跃迁 (越过 0.002~0.004)
+                            del trade["peg_wait_until"]
+                            import random
+                            step = round(random.uniform(0.002, 0.004), 4)
+                            
+                            new_pegged = min(current_best_bid + step, dynamic_reentry_max)
                             new_pegged = round(new_pegged, 4)
 
-                            if new_pegged <= dynamic_reentry_max:
+                            if new_pegged > pegged_price and (new_pegged - pegged_price) >= 0.002 and new_pegged <= dynamic_reentry_max:
                                 logger.info(
                                     f"[Maker 动态钉盘] {market_id} 盘口上移 ({pegged_price} -> {new_pegged})，撤销旧单并追挂买一！"
                                 )
