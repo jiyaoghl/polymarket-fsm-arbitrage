@@ -293,6 +293,10 @@ class ArbitrageBotFSM(BaseStrategy):
         # 注册订阅
         streamer.subscribe(market_id, [yes_token, no_token], queue, loop)
         
+        # 【BugFix】由于 Polymarket WS 推送的数据可能是单边或增量更新的
+        # 必须在本地缓存该市场内各个 token 的最新盘口数据，否则会导致凑不齐双边价格而无限跳过拦截
+        market_prices_cache: Dict[str, Dict[str, float]] = {}
+        
         try:
             while fsm.current_state not in (TradeState.SETTLED, TradeState.FAILED, TradeState.LOCKED):
                 try:
@@ -311,12 +315,18 @@ class ArbitrageBotFSM(BaseStrategy):
                 data = bundle["data"]
                 prices = bundle["prices"]
                 
+                # 累加合并接收到的各个 token 的价格信息
+                for asset_id, info in prices.items():
+                    if asset_id not in market_prices_cache:
+                        market_prices_cache[asset_id] = {}
+                    market_prices_cache[asset_id].update(info)
+                
                 # 模拟核心的事件逻辑
                 trade = self.active_trades.get(market_id)
 
                 if fsm.current_state == TradeState.IDLE:
-                    yes_info = prices.get(str(yes_token), {})
-                    no_info = prices.get(str(no_token), {})
+                    yes_info = market_prices_cache.get(str(yes_token), {})
+                    no_info = market_prices_cache.get(str(no_token), {})
                     
                     best_ask_yes = yes_info.get("ask")
                     best_ask_no = no_info.get("ask")
@@ -432,7 +442,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         leg1_cost = self.entry_max_price
 
                     other_token_id = no_token if str(leg1_info.get("token") or leg1_info.get("token_id")) == str(yes_token) else yes_token
-                    other_info = prices.get(str(other_token_id), {})
+                    other_info = market_prices_cache.get(str(other_token_id), {})
                     other_ask = other_info.get("ask")
                     other_bid = other_info.get("bid", 0.0)
                     
@@ -532,7 +542,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         dynamic_reentry_max = 1.0 - leg1_cost - 0.01
 
                         other_token_id = trade.get("leg2", {}).get("token") or trade.get("no_token")
-                        other_info = prices.get(str(other_token_id), {})
+                        other_info = market_prices_cache.get(str(other_token_id), {})
                         current_best_bid = other_info.get("bid", 0.0)
 
                         # 防一分钱互卷 (Anti-Pennying) 与阶梯跃迁机制
