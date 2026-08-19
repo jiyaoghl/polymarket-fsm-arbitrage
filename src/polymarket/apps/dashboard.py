@@ -778,7 +778,7 @@ def api_status() -> DashboardStatusModel:
             has_no_leg1 = not trade.get("leg1")
             is_expired = ttl < -60
             
-            if (has_no_leg1 and is_inactive) or is_expired:
+            if (has_no_leg1 and is_inactive and not trade.get("filter_reason")) or is_expired:
                 continue
                 
             profit_usdc = float(trade.get("profit_usdc", 0.0))

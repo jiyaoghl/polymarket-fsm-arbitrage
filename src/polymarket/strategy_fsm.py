@@ -328,8 +328,17 @@ class ArbitrageBotFSM(BaseStrategy):
                     now_ts = time.time()
                     
                     def record_silent_filter(reason: str):
-                        if trade:
-                            trade["filter_reason"] = reason
+                        t = self.active_trades.get(market_id)
+                        if not t:
+                            t = {
+                                "status": TradeState.IDLE.value,
+                                "start_time": now_ts,
+                                "end_time": now_ts + 60,
+                                "events": []
+                            }
+                            self._set_trade(market_id, t)
+                        t["filter_reason"] = reason
+
                         if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
                             logger.info(f"[{self.strategy_id}] [静默拦截] {market_id} {reason}")
                             self._add_trade_event(market_id, TradeState.IDLE.value, f"静默拦截: {reason}")
