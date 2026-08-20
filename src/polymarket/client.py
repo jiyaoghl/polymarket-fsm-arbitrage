@@ -322,12 +322,19 @@ class PolyClient:
         zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
         if not self.is_live:
+            # [改进] 模拟模式：引入真实的网络延迟和价格滑点
+            import random
+            from polymarket.config import SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS, SIM_SLIPPAGE_MAX
+            latency_ms = random.randint(SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS)
+            time.sleep(latency_ms / 1000.0)
+            slippage = round(random.uniform(0, SIM_SLIPPAGE_MAX), 4)
+            sim_price = round(price + slippage, 4) if side.upper() == "BUY" else round(price - slippage, 4)
             return {
                 "order_id": f"sim_{now_ms}",
                 "status": "LIVE",
                 "token_id": token_id,
                 "side": side,
-                "price": price,
+                "price": sim_price,
                 "amount": amount,
                 "timestamp": now_ms,
                 "metadata": zero_bytes32,
@@ -684,8 +691,15 @@ class PolyClient:
         zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
         
         if not self.is_live:
-            await asyncio.sleep(0.05)
-            return {"order_id": f"sim_{now_ms}", "status": "LIVE", "token_id": token_id, "side": side, "price": price, "amount": amount, "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32}
+            # [改进] 模拟模式：引入真实的网络延迟和价格滑点
+            import random
+            from polymarket.config import SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS, SIM_SLIPPAGE_MAX
+            latency_ms = random.randint(SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS)
+            await asyncio.sleep(latency_ms / 1000.0)
+            # 买单滑点向上（更贵），卖单滑点向下（更便宜）
+            slippage = round(random.uniform(0, SIM_SLIPPAGE_MAX), 4)
+            sim_price = round(price + slippage, 4) if side.upper() == "BUY" else round(price - slippage, 4)
+            return {"order_id": f"sim_{now_ms}", "status": "LIVE", "token_id": token_id, "side": side, "price": sim_price, "amount": amount, "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32}
             
         try:
             order_data = {"token_id": token_id, "price": str(price), "size": str(amount), "side": side.upper(), "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32, "orderType": order_type.upper()}

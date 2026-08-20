@@ -102,7 +102,13 @@ class ArbitrageBotFSM(BaseStrategy):
                                 c2 = float(leg2.get("cost", 0.0))
                                 s2 = float(leg2.get("size", 0.0))
                                 if s1 > 0 and s2 > 0:
-                                    ev = min(s1, s2) - (c1 * s1 + c2 * s2)
+                                    # [改进] 扣除手续费后的真实 EV
+                                    from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
+                                    fee1_rate = TAKER_FEE_RATE if self.leg1_order_type == "FOK" else MAKER_FEE_RATE
+                                    fee2_rate = TAKER_FEE_RATE if self.leg2_order_type == "FOK" else MAKER_FEE_RATE
+                                    fee1 = c1 * s1 * fee1_rate
+                                    fee2 = c2 * s2 * fee2_rate
+                                    ev = min(s1, s2) - (c1 * s1 + c2 * s2) - fee1 - fee2
                                     trade["profit_usdc"] = ev
                             except Exception:
                                 pass

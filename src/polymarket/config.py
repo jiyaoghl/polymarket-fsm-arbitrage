@@ -40,6 +40,16 @@ MAX_SLIPPAGE_TOLERANCE = float(os.getenv("MAX_SLIPPAGE_TOLERANCE", "0.015"))  # 
 LEG1_MAX_UNHEDGED_SECONDS = int(os.getenv("LEG1_MAX_UNHEDGED_SECONDS", "90"))  # 首腿单腿最大未对冲保持时间（秒）
 MAX_CONCURRENT_UNHEDGED_TRADES = int(os.getenv("MAX_CONCURRENT_UNHEDGED_TRADES", "3"))  # 全账户最大允许未对冲单腿数
 
+# 手续费配置（用于 EV 计算与模拟盘仿真）
+TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.01"))   # Taker 手续费率 1%
+MAKER_FEE_RATE = float(os.getenv("MAKER_FEE_RATE", "0.00"))   # Maker 手续费率 0%
+
+# 模拟盘仿真参数（仅 PAPER 模式生效）
+SIM_BASE_FILL_RATE = float(os.getenv("SIM_BASE_FILL_RATE", "0.65"))       # 模拟 FOK 基础成交率 65%
+SIM_LATENCY_MIN_MS = int(os.getenv("SIM_LATENCY_MIN_MS", "100"))          # 模拟最小网络延迟 ms
+SIM_LATENCY_MAX_MS = int(os.getenv("SIM_LATENCY_MAX_MS", "300"))          # 模拟最大网络延迟 ms
+SIM_SLIPPAGE_MAX = float(os.getenv("SIM_SLIPPAGE_MAX", "0.003"))          # 模拟最大滑点 0.3%
+
 # 震荡过滤配置 (Choppy Market Filter)
 SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH").split(",") if x.strip()]
 CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.15"))

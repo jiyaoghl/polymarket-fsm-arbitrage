@@ -542,8 +542,13 @@ class BaseStrategy:
             True 如果订单已成交，False 否则
         """
         if not self.is_live:
-            # 模拟模式直接返回成功
-            return True
+            # [改进] 模拟模式：基于配置的基础成交率随机判定，不再 100% 成功
+            import random
+            from polymarket.config import SIM_BASE_FILL_RATE
+            filled = random.random() < SIM_BASE_FILL_RATE
+            if not filled:
+                logger.info(f"[策略：{self.strategy_id}] [模拟] 订单 {order_id} 模拟未成交 (成交率={SIM_BASE_FILL_RATE:.0%})")
+            return filled
             
         start_time = time.time()
         while time.time() - start_time < self.order_confirm_timeout:
