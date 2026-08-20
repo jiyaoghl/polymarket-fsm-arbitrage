@@ -2,11 +2,15 @@ import json
 import time
 import threading
 import asyncio
+import logging
 from typing import Dict, Any, Optional
 
 import websockets
 
 from polymarket.base_strategy import BaseStrategy
+from polymarket.utils import record_latency
+from polymarket.risk import RiskManager
+from polymarket import risk_logger
 from polymarket.fsm import TradeFSM, TradeState
 from polymarket.logger import logger
 from polymarket.kline_analyzer import is_asset_choppy
@@ -137,8 +141,29 @@ class ArbitrageBotFSM(BaseStrategy):
         asset = market.get("__asset_type")
         from polymarket.config import SUPPORTED_ASSETS
         if asset and asset in SUPPORTED_ASSETS:
-            if not is_asset_choppy(asset):
-                logger.info(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
+            from polymarket.kline_analyzer import is_asset_choppy, get_asset_status
+            if not is_asset_choppy(asset, limit=10):
+                now_ts = time.time()
+                if now_ts - self._last_silent_filter_log.get(f"{market_id}_choppy", 0) > 30:
+                    logger.info(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
+                    self._last_silent_filter_log[f"{market_id}_choppy"] = now_ts
+                else:
+                    logger.debug(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
+                
+                # 透传到 Dashboard
+                status = get_asset_status(asset)
+                err_msg = status.get("error", "单边行情或防瀑布过滤")
+                
+                risk_logger.push_risk_event(
+                    market_id=market_id,
+                    asset=asset,
+                    strategy=self.strategy_name,
+                    reason=f"币安 K 线拦截: {err_msg}",
+                    level="error"
+                )
+                
+                self.processed_markets.add(market_id)
+                db.mark_market_processed(market_id, self.strategy_id)
                 return
 
         logger.info(f"[策略FSM：{self.strategy_id}] 开始基于 FSM 监控市场：{market_id}")
@@ -355,6 +380,15 @@ class ArbitrageBotFSM(BaseStrategy):
                             logger.info(f"[{self.strategy_id}] [静默拦截] {market_id} {reason}")
                             self._add_trade_event(market_id, TradeState.IDLE.value, f"静默拦截: {reason}")
                             self._last_silent_filter_log[market_id] = now_ts
+                            
+                        # 同步压入前端展示面板队列
+                        risk_logger.push_risk_event(
+                            market_id=market_id,
+                            asset=self.market.get("__asset_type", "UNKNOWN"),
+                            strategy=self.strategy_name,
+                            reason=reason,
+                            level="warning"
+                        )
 
                     # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:

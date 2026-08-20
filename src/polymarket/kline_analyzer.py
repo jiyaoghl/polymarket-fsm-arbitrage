@@ -62,14 +62,23 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
         
         is_choppy = (amplitude < CRYPTO_CHOP_MAX_AMPLITUDE) and (net_change < CRYPTO_CHOP_MAX_NET_CHANGE)
         
+        last_status = _asset_status.get(asset_upper, {}).get("is_choppy", None)
+        status_changed = (last_status is None) or (last_status != is_choppy)
+        
         if not is_choppy:
-            logger.warning(
-                f"[风控] {asset_upper} 当前存在单边波动风险！\n"
-                f"  振幅: {amplitude:.3f}% (阈值 {CRYPTO_CHOP_MAX_AMPLITUDE}%)\n"
-                f"  净变动: {net_change:.3f}% (阈值 {CRYPTO_CHOP_MAX_NET_CHANGE}%)"
-            )
+            msg = (f"[风控] {asset_upper} 当前存在单边波动风险！\n"
+                   f"  振幅: {amplitude:.3f}% (阈值 {CRYPTO_CHOP_MAX_AMPLITUDE}%)\n"
+                   f"  净变动: {net_change:.3f}% (阈值 {CRYPTO_CHOP_MAX_NET_CHANGE}%)")
+            if status_changed:
+                logger.warning(msg)
+            else:
+                logger.debug(msg)
         else:
-            logger.info(f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}%)，允许入场。")
+            msg = f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}%)，允许入场。"
+            if status_changed:
+                logger.info(msg)
+            else:
+                logger.debug(msg)
             
         _asset_status[asset_upper] = {
             "is_choppy": is_choppy,

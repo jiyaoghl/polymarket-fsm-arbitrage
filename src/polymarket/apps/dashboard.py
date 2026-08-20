@@ -71,6 +71,7 @@ class DashboardStatusModel(BaseModel):
     strategies: List[StrategyStatusModel]
     risk_metrics: Dict[str, Any] = {}
     asset_status: Dict[str, dict] = {}
+    risk_events: List[Dict[str, Any]] = []
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
@@ -133,11 +134,12 @@ def index() -> str:
     /* Grid 占位 */
     .section-market { grid-column: span 5; }
     .section-defense { grid-column: span 7; }
-    .section-strategy { grid-column: span 7; }
-    .section-terminal { grid-column: span 5; display: flex; flex-direction: column; }
+    .section-strategy { grid-column: span 12; }
+    .section-terminal { grid-column: span 6; display: flex; flex-direction: column; }
+    .section-risk { grid-column: span 6; display: flex; flex-direction: column; }
     
     @media (max-width: 1200px) {
-        .section-market, .section-defense, .section-strategy, .section-terminal { grid-column: span 12; }
+        .section-market, .section-defense, .section-strategy, .section-terminal, .section-risk { grid-column: span 12; }
     }
     
     h2 { font-size: 16px; font-weight: 600; margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px; letter-spacing: 0.5px; }
@@ -314,6 +316,13 @@ def index() -> str:
       <h2>📜 FSM 实况追踪流 (Live Trace)</h2>
       <div class="terminal" id="terminal">
         <div class="line" style="color: #64748b; font-style: italic;">等待 FSM 状态流转...</div>
+      </div>
+    </section>
+    
+    <section class="section-risk">
+      <h2>🛡️ 风控拦截与诊断日志</h2>
+      <div class="terminal" id="risk-terminal" style="background: rgba(15, 23, 42, 0.7); max-height: 400px;">
+        <div class="line" style="color: #64748b; font-style: italic;">等待风控数据...</div>
       </div>
     </section>
   </main>
@@ -709,6 +718,26 @@ def index() -> str:
           container.appendChild(div);
         });
         
+        // 渲染风控拦截日志
+        const riskEvents = data.risk_events || [];
+        const riskTerm = document.getElementById('risk-terminal');
+        if (riskTerm) {
+            if (riskEvents.length === 0) {
+                riskTerm.innerHTML = '<div class="line" style="color: #64748b; font-style: italic;">目前暂无风控拦截日志</div>';
+            } else {
+                let riskHtml = '';
+                riskEvents.forEach(e => {
+                    const ts = new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN');
+                    let color = '#94a3b8';
+                    if (e.level === 'error') color = '#ef4444';
+                    else if (e.level === 'warning') color = '#f59e0b';
+                    riskHtml += `<div class="line" style="color: ${color}">[${ts}] [${e.asset}] [${e.strategy}] ${e.reason}</div>`;
+                });
+                riskTerm.innerHTML = riskHtml;
+                riskTerm.scrollTop = riskTerm.scrollHeight;
+            }
+        }
+        
       } catch (e) {
         console.error('Refresh error:', e);
       }
@@ -875,12 +904,14 @@ def api_status() -> DashboardStatusModel:
     from polymarket.risk_manager import RiskManager
     from polymarket.kline_analyzer import get_asset_status
     from polymarket.config import SUPPORTED_ASSETS
+    from polymarket.risk_logger import get_recent_risk_events
     return DashboardStatusModel(
         server_time=now,
         current_markets=current_markets,
         strategies=strategies,
         risk_metrics=RiskManager().get_status(),
         asset_status={a: get_asset_status(a) for a in SUPPORTED_ASSETS},
+        risk_events=get_recent_risk_events(),
     )
 
 
