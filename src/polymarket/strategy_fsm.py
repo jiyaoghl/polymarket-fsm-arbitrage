@@ -188,7 +188,7 @@ class ArbitrageBotFSM(BaseStrategy):
             "leg1": None,
             "leg2": None,
             "tokens": market.get("tokens", {}),
-            "end_time": float(market.get("endDate", time.time() + 300)), 
+            "end_time": float(market.get("expiry") or market.get("endDate") or (time.time() + 300)), 
             "start_time": time.time(),
         })
         self._add_trade_event(market_id, TradeState.IDLE.value, "开始监听此市场的盘口流动性。")
@@ -533,9 +533,34 @@ class ArbitrageBotFSM(BaseStrategy):
                             )
                             if order and not order.get("error"):
                                 fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+                                if self._confirm_order_filled(order.get("order_id", "")):
+                                    fsm.transition_to(TradeState.LOCKED)
+                                else:
+                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 FOK 未全量成交")
+                                    if self.leg2_fallback_to_maker:
+                                        logger.warning(f"[FSM 引擎] {market_id} 智能降级为 Maker (GTC) 挂单")
+                                        pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
+                                        fallback_price = round(pegged_bid, 4)
+                                        fallback_order = await self.client.post_order_async(
+                                            other_token_id, fallback_price, amount, side="BUY", order_type="GTC"
+                                        )
+                                        if fallback_order and not fallback_order.get("error"):
+                                            logger.info(f"[FSM 引擎] 降级 Maker 挂单成功: {fallback_order.get('order_id')} @ {fallback_price}")
+                                            trade["pegged_price"] = fallback_price
+                                            trade["last_peg_time"] = time.time()
+                                            trade["leg2_order_id"] = fallback_order.get("order_id")
+                                            trade["leg2"] = {
+                                                "order_id": fallback_order.get("order_id"),
+                                                "token": other_token_id,
+                                                "side": "BUY",
+                                                "cost": fallback_price,
+                                                "size": amount
+                                            }
+                                    else:
+                                        fsm.transition_to(TradeState.LEG1_ONLY)
                             else:
                                 if self.leg2_fallback_to_maker:
-                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker 未完全成交，智能降级为 Maker (GTC) 挂单")
+                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker API 失败，智能降级为 Maker (GTC) 挂单")
                                     # 挂在买一前沿
                                     pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
                                     fallback_price = round(pegged_bid, 4)
@@ -546,6 +571,14 @@ class ArbitrageBotFSM(BaseStrategy):
                                         logger.info(f"[FSM 引擎] 降级 Maker 挂单成功: {fallback_order.get('order_id')} @ {fallback_price}")
                                         trade["pegged_price"] = fallback_price
                                         trade["last_peg_time"] = time.time()
+                                        trade["leg2_order_id"] = fallback_order.get("order_id")
+                                        trade["leg2"] = {
+                                            "order_id": fallback_order.get("order_id"),
+                                            "token": other_token_id,
+                                            "side": "BUY",
+                                            "cost": fallback_price,
+                                            "size": amount
+                                        }
                                         fsm.transition_to(TradeState.PENDING_LEG2, order_info=fallback_order)
 
                     # ──────────────────────────────────────────────────────────

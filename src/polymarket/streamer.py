@@ -128,11 +128,17 @@ class MarketDataStreamer:
         if not assets:
             logger.info("[Streamer] 活跃资产列表为空，跳过向远端发送空订阅。")
             return
+        if not ws or getattr(ws, "closed", False):
+            logger.warning("[Streamer] WebSocket 已断开，跳过发送订阅消息。")
+            return
         msg = {
             "type": "market",
             "assets_ids": assets
         }
-        await ws.send(json.dumps(msg))
+        try:
+            await ws.send(json.dumps(msg))
+        except Exception as e:
+            logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
     def subscribe(self, market_id: str, assets: List[str], caller_queue: asyncio.Queue, caller_loop: asyncio.AbstractEventLoop):
         """策略端调用，注册一个队列"""

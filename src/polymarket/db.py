@@ -217,7 +217,7 @@ def upsert_position(pos: dict, path: str = _DB_PATH) -> None:
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(token_id) DO UPDATE SET
                 amount=excluded.amount, cost_basis=excluded.cost_basis, status=excluded.status
-        """, (pos.get("market_id"), pos.get("market_id"), pos.get("side"),
+        """, (pos.get("token_id") or pos.get("market_id"), pos.get("market_id"), pos.get("side"),
               pos.get("size_usdc", 0.0), pos.get("entry_price", 0.0), pos.get("status", "leg1_only")))
         conn.commit()
 
