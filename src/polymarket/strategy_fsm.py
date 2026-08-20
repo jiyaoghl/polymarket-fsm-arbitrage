@@ -150,18 +150,20 @@ class ArbitrageBotFSM(BaseStrategy):
                 
                 # 透传到 Dashboard
                 status = get_asset_status(asset)
-                err_msg = status.get("error", "单边行情或防瀑布过滤")
+                amp = status.get("amplitude", 0.0)
+                net = status.get("net_change", 0.0)
+                err_msg = status.get("error") if status.get("error") else f"单边波幅过大 (振幅 {amp:.2f}%, 净变 {net:.2f}%)"
                 
                 risk_logger.push_risk_event(
                     market_id=market_id,
                     asset=asset,
                     strategy=self.strategy_name,
-                    reason=f"币安 K 线拦截: {err_msg}",
+                    reason=f"币安 K 线防爆盾: {err_msg}",
                     level="error"
                 )
                 
-                self.processed_markets.add(market_id)
-                db.mark_market_processed(market_id, self.strategy_id)
+                # 警告：不要将此市场加入 processed_markets，也不要写入 db！
+                # 单边行情是动态的，必须允许系统在行情恢复震荡后重新尝试入场。
                 return
 
         logger.info(f"[策略FSM：{self.strategy_id}] 开始基于 FSM 监控市场：{market_id}")
