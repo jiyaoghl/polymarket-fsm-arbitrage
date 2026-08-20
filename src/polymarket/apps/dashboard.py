@@ -867,6 +867,12 @@ def api_status() -> DashboardStatusModel:
             try:
                 trade = json.loads(row["trade_json"])
                 profit_usdc = row["ev"] or 0.0
+                status_str = trade.get("status") or ""
+                
+                # [优化] 如果历史订单状态是 failed，直接跳过，不在前端长久展示，保持界面整洁
+                if status_str == "failed":
+                    continue
+                    
                 active_trades.append(
                     TradeModel(
                         market_id=hist_market_id,
