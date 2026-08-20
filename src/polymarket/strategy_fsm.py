@@ -1,4 +1,4 @@
-import json
+﻿import json
 import time
 import threading
 import asyncio
@@ -157,7 +157,7 @@ class ArbitrageBotFSM(BaseStrategy):
                 risk_logger.push_risk_event(
                     market_id=market_id,
                     asset=asset,
-                    strategy=self.strategy_name,
+                    strategy=self.strategy_id,
                     reason=f"币安 K 线防爆盾: {err_msg}",
                     level="error"
                 )
@@ -385,7 +385,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         risk_logger.push_risk_event(
                             market_id=market_id,
                             asset=self.market.get("__asset_type", "UNKNOWN"),
-                            strategy=self.strategy_name,
+                            strategy=self.strategy_id,
                             reason=reason,
                             level="warning"
                         )
