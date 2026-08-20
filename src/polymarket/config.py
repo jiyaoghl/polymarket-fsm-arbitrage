@@ -52,8 +52,20 @@ SIM_SLIPPAGE_MAX = float(os.getenv("SIM_SLIPPAGE_MAX", "0.003"))          # 模�
 
 # 震荡过滤配置 (Choppy Market Filter)
 SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH").split(",") if x.strip()]
-CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.15"))
-CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.10"))
+CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.30"))  # 通用默认振幅阈值 0.30%
+CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.20")) # 通用默认净变动阈值 0.20%
+
+# 分资产独立阈值配置（百分比 %）
+ASSET_CHOP_THRESHOLDS = {
+    "BTC": {
+        "max_amplitude": float(os.getenv("BTC_CHOP_MAX_AMPLITUDE", "0.30")),
+        "max_net_change": float(os.getenv("BTC_CHOP_MAX_NET_CHANGE", "0.20")),
+    },
+    "ETH": {
+        "max_amplitude": float(os.getenv("ETH_CHOP_MAX_AMPLITUDE", "0.45")),
+        "max_net_change": float(os.getenv("ETH_CHOP_MAX_NET_CHANGE", "0.30")),
+    },
+}
 # 风控配置（旧版，保留兼容）
 DAILY_MAX_DRAWDOWN = float(os.getenv("DAILY_MAX_DRAWDOWN", "0.05"))  # 5% 最大回撤
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100.0"))       # 小资金默认 100 USDC

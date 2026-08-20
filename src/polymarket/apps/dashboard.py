@@ -48,6 +48,9 @@ class TradeModel(BaseModel):
     leg1_dir: str = ""
     leg2_dir: str = ""
     profit_usdc: float
+    gross_profit_usdc: float = 0.0
+    fee_usdc: float = 0.0
+    dynamic_ttl: float | None = None
     time_to_expiry: float
     strategy_id: str
     filter_reason: str | None = None
@@ -201,8 +204,9 @@ def index() -> str:
     .no-trades { color: #64748b; font-size: 12px; font-style: italic; padding: 12px; text-align: center; background: rgba(0,0,0,0.2); border-radius: 8px; }
     
     /* 统计卡片 */
-    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-    .stat-card .value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+    .stats-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px; }
+    @media (max-width: 900px) { .stats-row { grid-template-columns: repeat(3, 1fr); } }
+    .stat-card .value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
     .stat-card .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 500; }
     
     /* 进度条 */
@@ -297,15 +301,23 @@ def index() -> str:
         </div>
         <div class="glass-card stat-card">
           <div class="value" id="stat-trades">0</div>
-          <div class="label">活跃仓位</div>
+          <div class="label">活跃/历史单</div>
         </div>
         <div class="glass-card stat-card">
           <div class="value" id="stat-locked">0</div>
-          <div class="label">已锁仓</div>
+          <div class="label">成功锁仓</div>
         </div>
         <div class="glass-card stat-card">
-          <div class="value" id="stat-ev" style="color: #a78bfa;">$0</div>
-          <div class="label">总EV</div>
+          <div class="value" id="stat-ev" style="color: #34d399;">$0</div>
+          <div class="label">净净收益 (Net EV)</div>
+        </div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-fee" style="color: #f87171;">$0</div>
+          <div class="label">手续费磨损</div>
+        </div>
+        <div class="glass-card stat-card">
+          <div class="value" id="stat-winrate" style="color: #60a5fa;">0%</div>
+          <div class="label">费后胜率</div>
         </div>
       </div>
       
@@ -606,7 +618,7 @@ def index() -> str:
         allEvents.sort((a, b) => a.time - b.time).forEach(appendTerminal);
         
         // 统计信息
-        let totalTrades = 0, lockedTrades = 0, totalEV = 0;
+        let totalTrades = 0, lockedTrades = 0, totalNetEV = 0, totalFee = 0, winCount = 0, closedCount = 0;
         let latestFilterReason = null;
         
         // 5. 更新多品种风控状态
@@ -625,7 +637,12 @@ def index() -> str:
           totalTrades += s.active_trades.length;
           s.active_trades.forEach(t => {
             if (t.status === 'locked') lockedTrades++;
-            totalEV += t.profit_usdc || 0;
+            if (t.status === 'locked' || t.status === 'settled') {
+                closedCount++;
+                if ((t.profit_usdc || 0) > 0) winCount++;
+            }
+            totalNetEV += (t.profit_usdc || 0);
+            totalFee += (t.fee_usdc || 0);
             if (t.filter_reason) {
                 latestFilterReason = `[${s.name}] ${t.filter_reason}`;
             }
@@ -640,10 +657,13 @@ def index() -> str:
             filterUi.style.display = 'none';
         }
         
+        const winRate = closedCount > 0 ? ((winCount / closedCount) * 100).toFixed(1) + '%' : '--';
         document.getElementById('stat-strategies').textContent = data.strategies.length;
         document.getElementById('stat-trades').textContent = totalTrades;
         document.getElementById('stat-locked').textContent = lockedTrades;
-        document.getElementById('stat-ev').textContent = `$${totalEV.toFixed(4)}`;
+        document.getElementById('stat-ev').textContent = `$${totalNetEV.toFixed(4)}`;
+        document.getElementById('stat-fee').textContent = `-$${totalFee.toFixed(4)}`;
+        document.getElementById('stat-winrate').textContent = winRate;
         
         // 更新系统指标卡片
         if (data.risk_metrics) {
@@ -684,7 +704,7 @@ def index() -> str:
           } else {
             html += `<table><thead><tr>
               <th>Market</th><th>状态</th><th>首腿</th><th>二腿</th><th>TTL</th>
-              <th style="text-align: right;">EV (USDC)</th>
+              <th style="text-align: right;">净EV (扣费后)</th>
             </tr></thead><tbody>`;
             
             s.active_trades.forEach((t) => {
@@ -701,13 +721,25 @@ def index() -> str:
               const timeStr = new Date(t.end_time * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
               const assetTag = t.asset ? `<span style="background: rgba(167,139,250,0.2); color:#a78bfa; padding:2px 4px; border-radius:4px; margin-right:4px;">${t.asset}</span>` : '';
               
+              let ttlDisplay = formatCountdown(t.time_to_expiry);
+              if (t.status === 'leg1_only' && t.dynamic_ttl) {
+                  ttlDisplay = `<span style="color:#fbbf24; font-weight:600;" title="动态自适应强平倒计时 (基准 ${t.dynamic_ttl.toFixed(0)}s)">⚡ ${formatCountdown(t.dynamic_ttl)}</span>`;
+              }
+              
+              const grossEV = t.gross_profit_usdc !== undefined ? t.gross_profit_usdc : t.profit_usdc;
+              const feeVal = t.fee_usdc || 0;
+              const feeBadge = feeVal > 0 ? `<div style="font-size:9px; color:#64748b; font-weight:normal;" title="毛利 +$${grossEV.toFixed(4)} / 费 -$${feeVal.toFixed(4)}">费 -$${feeVal.toFixed(4)}</div>` : '';
+
               html += `<tr>
                 <td style="font-size:10px; color:#94a3b8;" title="${t.market_id}">${assetTag}${timeStr}</td>
                 <td>${statusPill(t.status)}</td>
                 <td>${leg1}</td>
                 <td>${leg2}</td>
-                <td style="font-variant-numeric: tabular-nums;">${formatCountdown(t.time_to_expiry)}</td>
-                <td style="color:${t.profit_usdc > 0 ? '#34d399' : '#f87171'}; font-weight: 500;">${t.profit_usdc.toFixed(4)}</td>
+                <td style="font-variant-numeric: tabular-nums;">${ttlDisplay}</td>
+                <td style="text-align: right;">
+                  <span style="color:${t.profit_usdc > 0 ? '#34d399' : (t.profit_usdc < 0 ? '#f87171' : '#94a3b8')}; font-weight: 600;">${t.profit_usdc >= 0 ? '+' : ''}${t.profit_usdc.toFixed(4)}</span>
+                  ${feeBadge}
+                </td>
               </tr>`;
             });
             
@@ -822,24 +854,29 @@ def api_status() -> DashboardStatusModel:
                 continue
                 
             profit_usdc = float(trade.get("profit_usdc", 0.0))
+            gross_usdc = float(trade.get("gross_profit_usdc", 0.0))
+            fee_usdc = float(trade.get("fee_usdc", 0.0))
+            dynamic_ttl = trade.get("dynamic_ttl")
             leg1 = trade.get("leg1")
             leg2 = trade.get("leg2")
-            if profit_usdc == 0.0 and isinstance(leg1, dict) and isinstance(leg2, dict):
+            if (gross_usdc == 0.0 or fee_usdc == 0.0 or profit_usdc == 0.0) and isinstance(leg1, dict) and isinstance(leg2, dict):
                 try:
                     c1 = float(leg1.get("cost", 0.0))
                     s1 = float(leg1.get("size", 0.0))
                     c2 = float(leg2.get("cost", 0.0))
                     s2 = float(leg2.get("size", 0.0))
                     if s1 > 0 and s2 > 0:
-                        # [改进] 扣除手续费后的真实 EV
                         from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-                        # 根据策略配置判断 Taker/Maker
                         leg1_type = getattr(bot, "leg1_order_type", "FOK")
                         leg2_type = getattr(bot, "leg2_order_type", "GTC")
                         fee1 = c1 * s1 * (TAKER_FEE_RATE if leg1_type == "FOK" else MAKER_FEE_RATE)
                         fee2 = c2 * s2 * (TAKER_FEE_RATE if leg2_type == "FOK" else MAKER_FEE_RATE)
-                        profit_usdc = s1 - (c1 * s1 + c2 * s2) - fee1 - fee2
-                        trade["profit_usdc"] = profit_usdc
+                        gross_usdc = s1 - (c1 * s1 + c2 * s2)
+                        fee_usdc = fee1 + fee2
+                        profit_usdc = gross_usdc - fee_usdc
+                        trade["gross_profit_usdc"] = round(gross_usdc, 4)
+                        trade["fee_usdc"] = round(fee_usdc, 4)
+                        trade["profit_usdc"] = round(profit_usdc, 4)
                 except Exception as e:
                     import logging
                     logging.warning(f"Failed to calc EV: {e}")
@@ -854,7 +891,10 @@ def api_status() -> DashboardStatusModel:
                     leg2=LegModel(**trade["leg2"]) if trade.get("leg2") else None,
                     leg1_dir="UP" if (trade.get("leg1") or {}).get("token") == trade.get("yes_token") else ("DOWN" if (trade.get("leg1") or {}).get("token") == trade.get("no_token") else ""),
                     leg2_dir="UP" if (trade.get("leg2") or {}).get("token") == trade.get("yes_token") else ("DOWN" if (trade.get("leg2") or {}).get("token") == trade.get("no_token") else ""),
-                    profit_usdc=float(trade.get("profit_usdc", 0.0)),
+                    profit_usdc=profit_usdc,
+                    gross_profit_usdc=gross_usdc,
+                    fee_usdc=fee_usdc,
+                    dynamic_ttl=dynamic_ttl,
                     time_to_expiry=float(ttl),
                     strategy_id=bot.strategy_id,
                     filter_reason=trade.get("filter_reason"),
@@ -881,6 +921,28 @@ def api_status() -> DashboardStatusModel:
                 if status_str == "failed":
                     continue
                     
+                h_leg1 = trade.get("leg1")
+                h_leg2 = trade.get("leg2")
+                h_gross = float(trade.get("gross_profit_usdc", 0.0))
+                h_fee = float(trade.get("fee_usdc", 0.0))
+                if (h_gross == 0.0 or h_fee == 0.0) and isinstance(h_leg1, dict) and isinstance(h_leg2, dict):
+                    try:
+                        c1 = float(h_leg1.get("cost", 0.0))
+                        s1 = float(h_leg1.get("size", 0.0))
+                        c2 = float(h_leg2.get("cost", 0.0))
+                        s2 = float(h_leg2.get("size", 0.0))
+                        if s1 > 0 and s2 > 0:
+                            from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
+                            leg1_type = getattr(bot, "leg1_order_type", "FOK")
+                            leg2_type = getattr(bot, "leg2_order_type", "GTC")
+                            fee1 = c1 * s1 * (TAKER_FEE_RATE if leg1_type == "FOK" else MAKER_FEE_RATE)
+                            fee2 = c2 * s2 * (TAKER_FEE_RATE if leg2_type == "FOK" else MAKER_FEE_RATE)
+                            h_gross = s1 - (c1 * s1 + c2 * s2)
+                            h_fee = fee1 + fee2
+                            profit_usdc = h_gross - h_fee
+                    except Exception:
+                        pass
+                        
                 active_trades.append(
                     TradeModel(
                         market_id=hist_market_id,
@@ -892,6 +954,9 @@ def api_status() -> DashboardStatusModel:
                         leg1_dir="UP" if (trade.get("leg1") or {}).get("token") == trade.get("yes_token") else ("DOWN" if (trade.get("leg1") or {}).get("token") == trade.get("no_token") else ""),
                         leg2_dir="UP" if (trade.get("leg2") or {}).get("token") == trade.get("yes_token") else ("DOWN" if (trade.get("leg2") or {}).get("token") == trade.get("no_token") else ""),
                         profit_usdc=profit_usdc,
+                        gross_profit_usdc=h_gross,
+                        fee_usdc=h_fee,
+                        dynamic_ttl=None,
                         time_to_expiry=-1.0,
                         strategy_id=bot.strategy_id,
                         events=trade.get("events", [])

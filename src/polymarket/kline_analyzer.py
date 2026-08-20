@@ -1,5 +1,5 @@
 import requests
-from polymarket.config import HTTP_PROXY, HTTPS_PROXY, CRYPTO_CHOP_MAX_AMPLITUDE, CRYPTO_CHOP_MAX_NET_CHANGE
+from polymarket.config import HTTP_PROXY, HTTPS_PROXY, CRYPTO_CHOP_MAX_AMPLITUDE, CRYPTO_CHOP_MAX_NET_CHANGE, ASSET_CHOP_THRESHOLDS
 from polymarket.logger import logger
 import time
 
@@ -22,8 +22,8 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
     
     规则：
     1. 获取近 limit 分钟的 1m K 线。
-    2. 计算最高价和最低价的振幅，如果超过 CRYPTO_CHOP_MAX_AMPLITUDE，认定为单边行情。
-    3. 计算收盘价和开盘价的净位移，如果超过 CRYPTO_CHOP_MAX_NET_CHANGE，认定为单边行情。
+    2. 计算最高价和最低价的振幅，如果超过对应资产的 max_amplitude，认定为单边行情。
+    3. 计算收盘价和开盘价的净位移，如果超过对应资产的 max_net_change，认定为单边行情。
     
     返回：
     True: 处于震荡横盘期，可以安全执行双开双平套利。
@@ -60,21 +60,26 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
         amplitude = (max_high - min_low) / min_low * 100
         net_change = abs(closes[-1] - opens[0]) / opens[0] * 100
         
-        is_choppy = (amplitude < CRYPTO_CHOP_MAX_AMPLITUDE) and (net_change < CRYPTO_CHOP_MAX_NET_CHANGE)
+        # [动态阈值匹配] 优先使用该品种专属阈值，回退到通用阈值
+        asset_cfg = ASSET_CHOP_THRESHOLDS.get(asset_upper, {})
+        max_amp_thresh = asset_cfg.get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE)
+        max_net_thresh = asset_cfg.get("max_net_change", CRYPTO_CHOP_MAX_NET_CHANGE)
+        
+        is_choppy = (amplitude < max_amp_thresh) and (net_change < max_net_thresh)
         
         last_status = _asset_status.get(asset_upper, {}).get("is_choppy", None)
         status_changed = (last_status is None) or (last_status != is_choppy)
         
         if not is_choppy:
             msg = (f"[风控] {asset_upper} 当前存在单边波动风险！\n"
-                   f"  振幅: {amplitude:.3f}% (阈值 {CRYPTO_CHOP_MAX_AMPLITUDE}%)\n"
-                   f"  净变动: {net_change:.3f}% (阈值 {CRYPTO_CHOP_MAX_NET_CHANGE}%)")
+                   f"  振幅: {amplitude:.3f}% (阈值 {max_amp_thresh}%)\n"
+                   f"  净变动: {net_change:.3f}% (阈值 {max_net_thresh}%)")
             if status_changed:
                 logger.warning(msg)
             else:
                 logger.debug(msg)
         else:
-            msg = f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}%)，允许入场。"
+            msg = f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}% ≤ {max_amp_thresh}%)，允许入场。"
             if status_changed:
                 logger.info(msg)
             else:

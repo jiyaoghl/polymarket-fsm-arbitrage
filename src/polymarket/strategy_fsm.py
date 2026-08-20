@@ -108,8 +108,13 @@ class ArbitrageBotFSM(BaseStrategy):
                                     fee2_rate = TAKER_FEE_RATE if self.leg2_order_type == "FOK" else MAKER_FEE_RATE
                                     fee1 = c1 * s1 * fee1_rate
                                     fee2 = c2 * s2 * fee2_rate
-                                    ev = min(s1, s2) - (c1 * s1 + c2 * s2) - fee1 - fee2
-                                    trade["profit_usdc"] = ev
+                                    gross_ev = min(s1, s2) - (c1 * s1 + c2 * s2)
+                                    total_fee = fee1 + fee2
+                                    net_ev = gross_ev - total_fee
+                                    trade["gross_profit_usdc"] = round(gross_ev, 4)
+                                    trade["fee_usdc"] = round(total_fee, 4)
+                                    trade["profit_usdc"] = round(net_ev, 4)
+                                    ev = net_ev
                             except Exception:
                                 pass
                     _db.archive_trade(market_id, self.strategy_id, json.dumps(trade), ev, DB_PATH)
@@ -645,6 +650,55 @@ class ArbitrageBotFSM(BaseStrategy):
             if fsm.current_state == TradeState.IDLE:
                 logger.info(f"[FSM WS] 市场 {market_id} 取消订阅，正常结束。")
                 
+    def _calculate_dynamic_ttl(self, market_id: str, trade: Dict[str, Any]) -> float:
+        """
+        计算单边持仓 (LEG1_ONLY) 的动态自适应强平超时时间 (TTL)。
+        
+        风控规则与单调递减保护：
+        1. 基础 TTL: self.leg1_max_unhedged_seconds (默认 90s)
+        2. K 线波动率收紧: 若当前振幅高于警戒线 (>= 阈值的 70%)，线性收紧至 35s~60s
+        3. 到期时间截断: 若市场距到期交割不足 60s，强制截断至 max(15, time_to_expiry - 10)
+        4. 单调递减原则: 动态 TTL 只允许变短，绝不允许随着震荡稍缓而反向延长，避免振荡误强平
+        """
+        base_ttl = float(self.leg1_max_unhedged_seconds)
+        now = time.time()
+        
+        # 1. 临期交割时间截断
+        end_time = float(trade.get("end_time", 0.0))
+        if end_time > now:
+            time_to_expiry = end_time - now
+            if time_to_expiry < 60:
+                expiry_ttl = max(15.0, time_to_expiry - 10.0)
+                base_ttl = min(base_ttl, expiry_ttl)
+                
+        # 2. K 线波动率自适应调整
+        asset = trade.get("asset") or trade.get("__asset_type")
+        if asset:
+            try:
+                from polymarket.kline_analyzer import get_asset_status
+                from polymarket.config import ASSET_CHOP_THRESHOLDS, CRYPTO_CHOP_MAX_AMPLITUDE
+                status = get_asset_status(asset)
+                amp = status.get("amplitude", 0.0)
+                asset_thresh = ASSET_CHOP_THRESHOLDS.get(asset.upper(), {}).get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE)
+                if asset_thresh > 0:
+                    amp_ratio = amp / asset_thresh
+                    if amp_ratio >= 0.7:  # 振幅达到安全阈值的 70% 以上，波动加剧
+                        # 将 TTL 从 90s 线性压缩到 35s
+                        tightened_ttl = max(35.0, base_ttl * (1.0 - (amp_ratio - 0.7) * 1.5))
+                        base_ttl = min(base_ttl, tightened_ttl)
+            except Exception:
+                pass
+                    
+        # 3. 单调递减原则 (Monotonic Decreasing)
+        prev_ttl = trade.get("effective_ttl")
+        if prev_ttl is not None:
+            effective_ttl = min(float(prev_ttl), base_ttl)
+        else:
+            effective_ttl = base_ttl
+            
+        trade["effective_ttl"] = effective_ttl
+        return effective_ttl
+
     def _fsm_timeout_daemon(self):
         """全局守护线程，专门处理所有处于耗时的轮询和超时事件"""
         while True:
@@ -671,10 +725,25 @@ class ArbitrageBotFSM(BaseStrategy):
                 if fsm.current_state == TradeState.LEG1_ONLY:
                     filled_time = trade.get("leg1_filled_time", time.time())
                     elapsed = time.time() - filled_time
+                    dynamic_ttl = self._calculate_dynamic_ttl(market_id, trade)
+                    trade["unhedged_elapsed"] = elapsed
+                    trade["dynamic_ttl"] = dynamic_ttl
                     
-                    if elapsed > self.leg1_max_unhedged_seconds:
+                    if elapsed > dynamic_ttl:
                         leg1 = trade.get("leg1", {})
-                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 触发超时止损: {market_id} 已持仓 {elapsed:.1f}s, 当前持有 token={leg1.get('token')} size={leg1.get('size')}")
+                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 触发动态超时止损: {market_id} 已持仓 {elapsed:.1f}s > 动态TTL {dynamic_ttl:.1f}s, 当前持有 token={leg1.get('token')} size={leg1.get('size')}")
+                        
+                        # [安全撤单] 若二腿已有挂单，强平前先撤单，防止挂单与市价单同时成交导致超额单边暴露
+                        leg2_order_id = trade.get("leg2_order_id")
+                        if leg2_order_id:
+                            logger.info(f"[策略FSM：{self.strategy_id}] [安全撤单] 强平前先撤销二腿挂单: {leg2_order_id}")
+                            if self.is_live:
+                                try:
+                                    self.client.cancel_order(leg2_order_id)
+                                except Exception as ce:
+                                    logger.warning(f"[策略FSM：{self.strategy_id}] 强平前撤销二腿挂单失败: {ce}")
+                            trade.pop("leg2_order_id", None)
+                            trade.pop("leg2", None)
                         
                         leg1_token = leg1.get("token")
                         if not leg1_token:
