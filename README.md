@@ -1,6 +1,6 @@
 # Polymarket FSM Arbitrage Bot 🚀
 
-基于 **Finite State Machine (有限状态机)** 驱动的 Polymarket BTC 5 分钟 Up/Down 预测市场高频对称套利量化系统。全异步并发多路复用总线、毫秒级 OrderBook VWAP 深度预估、双腿套利锁利数学拦截器与智能 Maker 动态盯盘追单（Order Pegging），在极短时间窗口内无损榨取预测市场的确定性对冲差价 (EV)。
+基于 **Finite State Machine (有限状态机)** 驱动的 Polymarket 5 分钟 Up/Down 预测市场高频对称套利与做市量化系统。全异步并发多路复用总线、毫秒级 OrderBook VWAP 深度预估、双腿套利锁利数学拦截器、动态自适应 TTL 强平引擎（Adaptive TTL）与智能 Maker 动态盯盘追单（Order Pegging），在极短时间窗口内无损榨取预测市场的确定性对冲差价 (EV)。
 
 ---
 
@@ -17,16 +17,16 @@ flowchart TD
     subgraph Data_Bus [统一数据总线与调度]
         STREAMER[MarketDataStreamer 单例多路复用总线]
         DISCOVER[5min 滚动市场定位器]
-        CHOP_FILTER[BTC 单边/震荡波动率过滤器]
+        CHOP_FILTER[BTC / ETH 分品种波动率过滤器]
     end
 
     WS --> STREAMER
     GAMMA --> DISCOVER
     BINANCE --> CHOP_FILTER
 
-    subgraph Strategy_Matrix [多策略状态机矩阵 (5 组 FSM)]
-        S1[Taker + Maker 保守/标准/激进]
-        S2[Maker + Maker 保守/标准]
+    subgraph Strategy_Matrix [多策略状态机矩阵 (异构 FSM)]
+        S1[Taker + Maker 保守 / 标准 / 激进]
+        S2[Maker + Maker 保守 / 标准]
     end
 
     STREAMER -->|无拷贝分发价格/深度 Bundle| Strategy_Matrix
@@ -35,7 +35,7 @@ flowchart TD
 
     subgraph Execution_Engine [执行层与深度撮合引擎]
         VWAP_EST[全量订单簿 VWAP 深度加权预估]
-        EV_CHECK[双腿净 EV 数学拦截器 Net Margin >= 1%]
+        EV_CHECK[双腿净 EV 扣费数学拦截器]
         MAKER_PEG[智能 Maker 动态钉盘追单 Order Pegging]
         ADAPTIVE_FOK[自适应滑点微重试 FOK]
     end
@@ -44,15 +44,15 @@ flowchart TD
 
     subgraph Risk_Defense [中央风控与防御系统]
         RISK_GUARD[RiskGuard 独立风控守卫]
-        CIRCUIT[三级熔断机制: 黄牌 / 橙牌 / 红牌]
-        TTL_SL[单腿敞口超时强平 TTL StopLoss]
+        CIRCUIT[三级资金熔断机制: 黄牌 / 橙牌 / 红牌]
+        ADAPTIVE_TTL[动态自适应 TTL 强平 + 安全撤单]
         AUTO_REDEEM[到期市场自动结算 Redeem]
     end
 
     Execution_Engine --> Risk_Defense
 
     subgraph Storage_UI [持久化与可视化看板]
-        DB[(SQLite trading.db)]
+        DB[(SQLite WAL 高并发模式 trading.db)]
         DASHBOARD[FastAPI 实时 WebSocket 仪表盘 :8888]
         VPS_CLI[vps.sh 一键运维管理系统]
     end
@@ -75,45 +75,52 @@ flowchart TD
    ├─► 深度校验通过 ─► [PENDING_LEG1] ─► 成交 ─► [LEG1_ONLY 单腿敞口]
    │                                                    │
    │   ┌────────────────────────────────────────────────┘
-   │   ├─► 满足对冲阈值 (EV >= 1%) ─► [PENDING_LEG2] ─► 成交 ─► [LOCKED 锁仓套利]
+   │   ├─► 满足对冲阈值 (Net EV > 0) ─► [PENDING_LEG2] ─► 成交 ─► [LOCKED 锁仓套利]
    │   │                                  │
    │   │                                  ├─► 盘口上移 ─► [Maker 动态钉盘撤改单]
    │   │                                  └─► 超时/未成交 ─► 智能降级/吃单强平
    │   │
-   │   └─► 超过 TTL 时间 (默认 90s) ─► 动态滑点市价平仓 ─► [FAILED 止损退出]
+   │   └─► 超过动态自适应 TTL ─► 先撤二腿挂单 ─► 市价穿透平仓 ─► [FAILED 止损退出]
    │
    └─► 盘口到期 ─► [SETTLED 自动结算 Redeem]
 ```
 
-### 2. 全量订单簿 VWAP 深度撮合（防滑点击穿）
-* **现状痛点**：Polymarket 5min 盘口深度较薄，只看 Best Ask 极易吃穿深度导致买入均价飙升，产生“锁亏”。
-* **升级解法**：在发单前扫描全量 Ask 深度，计算投入 `ORDER_AMOUNT` 的**实际成交均价 (VWAP)**。
-* **数学拦截器**：执行 `Total_Cost / Hedged_Shares < 0.99` 检验，确保双腿对冲后至少拥有 1% 的确定性净收益，从数学层面 100% 杜绝负 EV 交易。
+### 2. 动态自适应强平引擎 (Adaptive TTL)
+针对单边库存敞口风险（`LEG1_ONLY`），系统引入多维动态 TTL 调节机制：
+* **行情平稳期**：维持基础 `90s`，给二腿挂单留出充足的对手盘撮合与吃单回落时间。
+* **高波动联动收紧**：当 K 线振幅接近阈值警戒线（≥70%）时，动态将 TTL 压缩至 `35s ~ 60s` 提前强平逃命。
+* **临期截断**：距离到期交割不足 `60s` 时，强制截断至 `max(15s, time_to_expiry - 10s)`，确保在交割前完成离场。
+* **单调递减防抖动 (Monotonic TTL)**：持仓期间 TTL 只允许变短，绝不反向延长，彻底消除临界振荡导致的误强平。
+* **原子先撤后市价**：强平前先撤销可能残留的二腿 GTC 挂单，防止挂单与市价单双重成交造成反向超额敞口。
 
-### 3. 微观定价引擎与 OBI 防爆盾 (Micro-Price & OBI Defense)
-* 系统在首腿吃单 (Taker) 入场前，提取多层深度数据计算微观加权价格与**订单簿不平衡度 (OBI)**。
-* 面对盘口虚假繁荣或大户撤单诱多陷阱（如检测到 OBI 处于极度劣势），系统将主动拦截入场，并在前端界面透传静默告警原因（防假死），从微观层面死守资金底线。
+### 3. 多品种分资产 K 线波动率过滤 (Choppy Market Filter)
+* **分品种专属阈值**：
+  * **BTC**：10m 振幅上限 `0.30%`，净位移上限 `0.20%`；
+  * **ETH**：10m 振幅上限 `0.45%`，净位移上限 `0.30%`（自适应更大波动）。
+* 精确识别大单边趋势并主动拦截入场，在震荡回归后自动恢复监控（不永久拉黑）。
 
-### 4. 智能 Maker 动态防卷机制 (Anti-Pennying War)
-* 坚决摒弃行业内低级的 `Best_Bid + 0.001` 无脑互卷策略。
-* 处于二腿挂单等待期间，系统在被压价后自动触发 **1.5s~3.5s 随机装死迟滞**，有效过滤对手高频假动作。
-* 装死期满若确需追击，系统采用 **0.002~0.004 阶梯式跳跃反卷**，在大幅节省 API 限流配额的同时，形成极强的排位威慑力。
+### 4. 真实手续费扣除与高保真模拟盘 (Paper Trading Fidelity)
+* **精确扣费公式**：`Net EV = Min(Shares) - Total_Cost - Fee_Leg1 - Fee_Leg2`，根据 Taker (FOK: 1.0%) 与 Maker (GTC: 0.0%) 动态扣除手续费。
+* **高保真仿真环境**：模拟盘告别 100% 完美成交与零滑点假象，内置基础成交率判定 (65%)、随机网络延迟 (100~300ms) 与动态滑点 (0~0.3%)，让回测与模拟表现高度契合实盘。
 
-### 5. 统一异步多路复用数据总线 (MarketDataStreamer)
-* 全局单条 WebSocket 接入 Polymarket CLOB，一次解析、零拷贝分发给全部策略的 `asyncio.Queue`，大幅消除 Python GIL 锁争抢与网络重连开销。
-* 内置自动故障恢复与指数退避 (Exponential Backoff) 重连机制，完美适应长时离线或国内网络波动。
+### 5. 全量订单簿 VWAP 深度撮合与 OBI 防爆盾
+* **VWAP 穿透保护**：在发单前扫描全量 Orderbook，计算投入 `ORDER_AMOUNT` 的实际成交均价 (VWAP)，从数学层面 100% 杜绝负 EV 交易。
+* **微观定价与 OBI 防诱多**：在吃单前提取 Orderbook 计算微观加权价格与**订单簿不平衡度 (OBI)**，当检测到极端抛压诱多（OBI < -0.8）时主动拦截，并在前端透传告警。
 
-### 6. 三级资金熔断与多层风控 (Risk Defense)
-* **外部行情护盾**：Binance 1m K 线振幅 `> 0.15%` 判定为单边大行情，主动拒绝首腿开仓。
-* **黄牌 (亏损≥10%)**：暂停新市场发现。
-* **橙牌 (亏损≥20%)**：停止所有新开仓，平掉未对冲单腿。
-* **红牌 (亏损≥30%)**：市价全仓清仓并触发 HALT 安全制动。
+### 6. 智能 Maker 动态防卷机制 (Anti-Pennying War)
+* 处于二腿挂单等待期间，系统在被压价后自动触发 **1.5s~3.5s 随机装死迟滞**，过滤对手高频假动作。
+* 装死期满若确需追击，采用 **0.002~0.004 阶梯式跳跃反卷**，节省 API 限流配额并增强排位稳定性。
+
+### 7. 并发安全与高可用架构
+* **SQLite WAL 模式**：读写高并发不互斥，彻底根除 `database is locked` 报错。
+* **守护线程顶层容错**：`_fsm_timeout_daemon` 具备全局异常捕获与告警推送，确保守护线程永不静默死亡。
+* **安全快照读取**：Dashboard 统一通过 `_trades_lock` 保护的安全副本读取，杜绝字典跨线程并发竞态。
 
 ---
 
 ## 📊 策略矩阵说明 (`configs/strategies.json`)
 
-系统内置 8 组异构策略并行运行，覆盖不同行情风格：
+系统内置多组异构策略并行运行，覆盖不同行情风格：
 
 | 策略 ID | 策略模式 | 首腿入场 | 二腿补仓 | 核心特性 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -123,13 +130,13 @@ flowchart TD
 | `maker_maker_conservative` | 挂单 + 挂单 | ≤ 0.45 | 智能反卷 | 双边挂单，彻底规避滑点且无惧吃单磨损 |
 | `maker_maker_standard` | 挂单 + 挂单 | ≤ 0.50 | 智能反卷 | 标准双边量化套利，长尾低流动性克星 |
 
-> **提示**: 架构组已于 V3 版本彻底废弃了高磨损且天然易滑点的纯双边 Taker (吃单+吃单) 模式。目前系统全面转向 Taker-Maker 或 Maker-Maker，专注赚取流动性溢价。
+> **提示**: 架构已彻底废弃高磨损且天然易滑点的纯双边 Taker 模式，全面拥抱 Taker-Maker 与 Maker-Maker。
 
 ---
 
 ## 🛠️ 安装与快速上手
 
-### 1. 本地/开发环境启动
+### 1. 本地 / 开发环境启动
 ```bash
 # 1. 安装依赖
 pip install -r requirements.txt
@@ -138,7 +145,7 @@ pip install -r requirements.txt
 cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
-# 3. 启动 Dashboard
+# 3. 启动 Dashboard 仪表盘
 PYTHONPATH=src python3 -m apps.dashboard
 ```
 
@@ -167,8 +174,15 @@ bash vps.sh logs       # 查看实时运行日志 (等同于 tail -f logs/nohup.
 | :--- | :--- | :--- | :--- |
 | `ORDER_AMOUNT` | float | `10.0` | 单笔交易头寸基础金额 (USDC) |
 | `MAX_SLIPPAGE_TOLERANCE` | float | `0.015` | 最大允许 VWAP 滑点比例 (1.5%) |
-| `BTC_CHOP_MAX_AMPLITUDE` | float | `0.15` | Binance 10m K线振幅熔断阈值 (0.15%) |
-| `LEG1_MAX_UNHEDGED_SECONDS`| int | `90` | 首腿最大未对冲单腿持有时间 (秒)，超时触发止损 |
+| `BTC_CHOP_MAX_AMPLITUDE` | float | `0.30` | Binance BTC 10m K线振幅熔断阈值 (0.30%) |
+| `ETH_CHOP_MAX_AMPLITUDE` | float | `0.45` | Binance ETH 10m K线振幅熔断阈值 (0.45%) |
+| `LEG1_MAX_UNHEDGED_SECONDS`| int | `90` | 首腿最大未对冲基础持有时间 (秒)，结合波动率自适应收紧 |
+| `TAKER_FEE_RATE` | float | `0.01` | Taker 吃单手续费率 (1.0%) |
+| `MAKER_FEE_RATE` | float | `0.00` | Maker 挂单手续费率 (0.0%) |
+| `SIM_BASE_FILL_RATE` | float | `0.65` | 模拟盘 FOK 基础成交率 (65%) |
+| `SIM_LATENCY_MIN_MS` | int | `100` | 模拟盘最小网络延迟 (ms) |
+| `SIM_LATENCY_MAX_MS` | int | `300` | 模拟盘最大网络延迟 (ms) |
+| `SIM_SLIPPAGE_MAX` | float | `0.003` | 模拟盘最大随机价格滑点 (0.3%) |
 | `MAX_CONCURRENT_UNHEDGED_TRADES`| int | `3` | 全账户最大允许同时存在的单腿敞口数 |
 | `INITIAL_CAPITAL` | float | `100.0` | 初始资金底数 (用于回撤与熔断计算) |
 | `MIN_CASH_RESERVE_PCT` | float | `0.20` | 最低现金保留比例 (20%) |
