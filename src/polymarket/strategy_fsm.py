@@ -384,7 +384,7 @@ class ArbitrageBotFSM(BaseStrategy):
                         # 同步压入前端展示面板队列
                         risk_logger.push_risk_event(
                             market_id=market_id,
-                            asset=self.market.get("__asset_type", "UNKNOWN"),
+                            asset=market.get("__asset_type", "UNKNOWN"),
                             strategy=self.strategy_id,
                             reason=reason,
                             level="warning"
