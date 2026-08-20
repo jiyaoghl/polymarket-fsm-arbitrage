@@ -808,7 +808,8 @@ def api_status() -> DashboardStatusModel:
 
     for bot in manager.bots:
         active_trades: List[TradeModel] = []
-        for market_id, trade in bot.active_trades.items():
+        # [P1 修复] 使用安全快照方法读取，避免跨线程遍历字典时被后台 FSM 修改导致 RuntimeError
+        for market_id, trade in bot._get_all_active_trades().items():
             ttl = trade.get("end_time", 0) - now
             status = trade.get("status") or ""
             

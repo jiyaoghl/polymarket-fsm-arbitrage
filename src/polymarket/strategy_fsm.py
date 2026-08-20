@@ -1,4 +1,4 @@
-﻿import json
+import json
 import time
 import threading
 import asyncio
@@ -644,6 +644,7 @@ class ArbitrageBotFSM(BaseStrategy):
         while True:
             time.sleep(1)
             for market_id, fsm in list(self.fsms.items()):
+              try:
                 trade = self.active_trades.get(market_id)
                 if not trade:
                     continue
@@ -746,3 +747,14 @@ class ArbitrageBotFSM(BaseStrategy):
                             fsm.transition_to(TradeState.LEG1_ONLY)
                         else:
                             fsm.transition_to(TradeState.FAILED, reason=f"二腿挂单过期且未配置回退, 锁定敞口 market_id={market_id}")
+              except Exception as e:
+                # [P0 修复] 顶层异常守护：无论单个市场出什么错，守护线程必须存活
+                # 否则所有 TTL 强平机制全部失效，资金将被无限期锁定在单边敞口中
+                logger.critical(f"[策略FSM：{self.strategy_id}] [CRITICAL] 守护线程处理 {market_id} 时异常: {e}", exc_info=True)
+                risk_logger.push_risk_event(
+                    market_id=market_id,
+                    asset="SYSTEM",
+                    strategy=self.strategy_id,
+                    reason=f"守护线程异常: {e}",
+                    level="critical"
+                )

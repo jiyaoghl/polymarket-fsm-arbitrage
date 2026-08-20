@@ -8,7 +8,9 @@ from polymarket.config import DB_PATH as _DB_PATH
 # ================= DB 基础操作 =================
 @contextmanager
 def get_conn(path: str = _DB_PATH):
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=10)
+    # [P1 修复] 开启 WAL 模式，允许并发读写，避免多线程争锁导致 database is locked
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         yield conn
     finally:
