@@ -8,7 +8,6 @@ from typing import Dict, Any, Optional
 import websockets
 
 from polymarket.base_strategy import BaseStrategy
-from polymarket.utils import record_latency
 from polymarket.risk import RiskManager
 from polymarket import risk_logger
 from polymarket.fsm import TradeFSM, TradeState
