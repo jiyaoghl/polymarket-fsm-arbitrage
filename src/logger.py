@@ -1,14 +1,26 @@
 import logging
 import sys
+import re
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from datetime import datetime
 
 import paths
 
+# 正则：匹配并剥离所有 ANSI 颜色/控制字符
+ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+
+class PlainTextFormatter(logging.Formatter):
+    """
+    纯文本格式化器：自动剥离所有可能混入的 ANSI 颜色控制字符，确保日志文件干净无杂质。
+    """
+    def format(self, record):
+        text = super().format(record)
+        return ANSI_ESCAPE.sub('', text)
+
 
 class ColoredFormatter(logging.Formatter):
     """
-    彩色日志格式化器，便于在控制台区分不同级别的日志。
+    彩色日志格式化器，仅在控制台输出时添加颜色，且绝不破坏性修改共享的 LogRecord 对象。
     """
 
     # ANSI 颜色代码
@@ -26,9 +38,14 @@ class ColoredFormatter(logging.Formatter):
         self.use_color = use_color
 
     def format(self, record):
-        log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
-        record.levelname = f"{log_color}{record.levelname:<8}{self.COLORS['RESET']}"
-        return super().format(record)
+        orig_levelname = record.levelname
+        try:
+            if self.use_color:
+                log_color = self.COLORS.get(orig_levelname, self.COLORS['RESET'])
+                record.levelname = f"{log_color}{orig_levelname:<8}{self.COLORS['RESET']}"
+            return super().format(record)
+        finally:
+            record.levelname = orig_levelname
 
 
 def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INFO):
@@ -50,14 +67,14 @@ def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INF
     if logger.handlers:
         return logger
 
-    # 日志格式
-    detailed_formatter = logging.Formatter(
+    # 日志格式（纯文本，自动剥离 ANSI）
+    detailed_formatter = PlainTextFormatter(
         '%(asctime)s | %(name)s | %(levelname)s | '
         '%(filename)s:%(lineno)d | %(funcName)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    simple_formatter = logging.Formatter(
+    simple_formatter = PlainTextFormatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
@@ -76,7 +93,7 @@ def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INF
         paths.logs_dir().mkdir(parents=True, exist_ok=True)
         log_file = str(paths.logs_dir() / "trade.log")
 
-    # 详细日志文件（带轮转）
+    # 详细日志文件（带轮转，纯文本）
     detailed_log_path = log_file.replace('.log', '_detailed.log')
     dh = RotatingFileHandler(
         detailed_log_path,
@@ -88,7 +105,7 @@ def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INF
     dh.setFormatter(detailed_formatter)
     logger.addHandler(dh)
 
-    # 主日志文件（按时间轮转）
+    # 主日志文件（按时间轮转，纯文本）
     th = TimedRotatingFileHandler(
         log_file,
         when='D',
@@ -100,7 +117,7 @@ def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INF
     th.setFormatter(simple_formatter)
     logger.addHandler(th)
 
-    # 错误日志单独文件
+    # 错误日志单独文件（纯文本）
     error_handler = RotatingFileHandler(
         log_file.replace('.log', '_error.log'),
         maxBytes=10*1024*1024,
