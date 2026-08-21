@@ -512,7 +512,7 @@ class PolyClient:
             }
 
         try:
-            # 调用 CLOB redeem API
+            # 尝试调用 CLOB redeem API
             result = self._post_signed("/redeem", {"condition_id": market_id})
             logger.info(f"Redeem 成功：market={market_id}, payout={result.get('payout', 0)}")
             return {
@@ -520,8 +520,14 @@ class PolyClient:
                 "status": "SUCCESS",
                 "payout": float(result.get("payout", 0)),
             }
+        except requests.exceptions.HTTPError as he:
+            if hasattr(he, "response") and he.response is not None and he.response.status_code == 404:
+                logger.info(f"市场 {market_id} 结算完成（CLOB REST 无需额外提取，可在网页端一键 Claim）")
+                return {"market_id": market_id, "status": "SETTLED", "payout": 0.0}
+            logger.warning(f"Redeem 请求异常：{he}")
+            return {"market_id": market_id, "status": "ERROR", "error": str(he), "payout": 0.0}
         except Exception as e:
-            logger.exception(f"Redeem 失败：{e}")
+            logger.warning(f"Redeem 失败：{e}")
             return {
                 "market_id": market_id,
                 "status": "ERROR",
@@ -625,117 +631,31 @@ class PolyClient:
         return False
 
     # ========= 异步方法扩展 =========
-    async def get_aio_session(self):
-        import aiohttp
-        if not hasattr(self, 'aio_session') or self.aio_session is None or self.aio_session.closed:
-            proxy_url = None
-            if hasattr(self, 'HTTP_PROXY') and self.HTTP_PROXY: proxy_url = self.HTTP_PROXY
-            
-            from polymarket.config import HTTP_PROXY, HTTPS_PROXY
-            if HTTPS_PROXY: proxy_url = HTTPS_PROXY
-            elif HTTP_PROXY: proxy_url = HTTP_PROXY
-                
-            connector = aiohttp.TCPConnector(ssl=False) if proxy_url else None
-            self.aio_session = aiohttp.ClientSession(
-                headers={'User-Agent': 'curl/8.13.0', 'Accept': 'application/json'},
-                connector=connector,
-                trust_env=False
-            )
-            self._aio_proxy = proxy_url
-        return self.aio_session
-
-    async def _post_signed_async(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        session = await self.get_aio_session()
-        url = f"{self.host}{endpoint}"
-        body = json.dumps(data, separators=(',', ':'))
-        headers = self._get_auth_headers('POST', endpoint, body)
-        
-        async with session.post(url, data=body, headers=headers, proxy=self._aio_proxy, timeout=10) as response:
-            resp_text = await response.text()
-            response.raise_for_status()
-            return json.loads(resp_text)
-
     async def get_market_price_async(self, token_id: str) -> Optional[Dict[str, float]]:
+        """
+        异步获取市场价格（通过线程池调度同步方法，规避跨事件循环 Session 崩溃并复用 HTTP 连接池）。
+        """
         import asyncio
-        import json
-        session = await self.get_aio_session()
-        for attempt in range(3):
-            try:
-                url = f"{self.host}/book?token_id={token_id}"
-                async with session.get(url, proxy=self._aio_proxy, timeout=10, auto_decompress=False) as response:
-                    response.raise_for_status()
-                    data_bytes = await response.read()
-                    encoding = response.headers.get("Content-Encoding", "").lower()
-                    
-                    if "br" in encoding:
-                        try:
-                            import brotli
-                            data_bytes = brotli.decompress(data_bytes)
-                        except ImportError:
-                            pass # 未安装 brotli 时直接降级尝试解析明文
-                        except Exception:
-                            # 典型的中间人代理 Bug：代理已在底层透明解压，但忘了抹除 Header，这里直接吞异常容错
-                            pass
-                    elif "gzip" in encoding:
-                        import gzip
-                        try:
-                            data_bytes = gzip.decompress(data_bytes)
-                        except Exception:
-                            pass
-                            
-                    data = json.loads(data_bytes)
-                    asks = data.get('asks', []) or []
-                    bids = data.get('bids', []) or []
-                    best_ask = min((float(a['price']) for a in asks), default=1.0)
-                    best_bid = max((float(b['price']) for b in bids), default=0.0)
-                    return {'ask': best_ask, 'bid': best_bid}
-            except Exception as e:
-                logger.warning(f"[异步] 获取价格失败 token={token_id}: {e}")
-                if attempt < 2: await asyncio.sleep(1.0 * (2 ** attempt))
-        return None
+        return await asyncio.to_thread(self.get_market_price, token_id)
 
     async def post_order_async(self, token_id: str, price: float, amount: float, side: str = 'BUY', order_type: str = 'GTC') -> Optional[Dict[str, Any]]:
+        """
+        异步下单（通过线程池调度同步方法，享受连接池复用与绝对线程安全）。
+        """
         import asyncio
-        mode_str = "实盘" if self.is_live else "模拟"
-        logger.info(f"[{mode_str}] (异步) 下单：{side} {token_id} @ {price} x {amount} ({order_type})")
-        now_ms = int(time.time() * 1000)
-        zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
-        
         if not self.is_live:
-            # [改进] 模拟模式：引入真实的网络延迟和价格滑点
+            # 模拟模式：引入真实的网络延迟和价格滑点
             import random
             from polymarket.config import SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS, SIM_SLIPPAGE_MAX
             latency_ms = random.randint(SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS)
             await asyncio.sleep(latency_ms / 1000.0)
-            # 买单滑点向上（更贵），卖单滑点向下（更便宜）
+            now_ms = int(time.time() * 1000)
+            zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
             slippage = round(random.uniform(0, SIM_SLIPPAGE_MAX), 4)
             sim_price = round(price + slippage, 4) if side.upper() == "BUY" else round(price - slippage, 4)
             return {"order_id": f"sim_{now_ms}", "status": "LIVE", "token_id": token_id, "side": side, "price": sim_price, "amount": amount, "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32}
-            
-        try:
-            if amount <= 0:
-                logger.error(f"[异步实盘] 下单金额/数量非法: amount={amount}")
-                return None
 
-            safe_price = round(min(max(float(price), 0.001), 0.999), 4)
-            safe_size = round(float(amount), 2)
-
-            order_data = {
-                "token_id": str(token_id),
-                "price": str(safe_price),
-                "size": str(safe_size),
-                "side": side.upper(),
-                "timestamp": now_ms,
-                "metadata": zero_bytes32,
-                "builder": zero_bytes32,
-                "orderType": order_type.upper()
-            }
-            result = await self._post_signed_async('/order', order_data)
-            logger.info(f"[异步] V2 下单成功：order_id={result.get('order_id')}")
-            return result
-        except Exception as e:
-            logger.exception(f"[异步] V2 下单失败：{e}")
-            return None
+        return await asyncio.to_thread(self.post_order, token_id, price, amount, side, order_type)
 
 # ================= 全局单例池 =================
 _CLIENT_POOL: Dict[bool, PolyClient] = {}
