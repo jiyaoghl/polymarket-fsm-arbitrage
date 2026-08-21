@@ -48,17 +48,21 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
             _asset_status[asset_upper] = {"is_choppy": True, "error": "数据不足", "timestamp": time.time()}
             return True
             
-        highs = [float(k[2]) for k in data]
-        lows = [float(k[3]) for k in data]
-        opens = [float(k[1]) for k in data]
         closes = [float(k[4]) for k in data]
         
-        max_high = max(highs)
-        min_low = min(lows)
+        import statistics
+        mean_close = statistics.mean(closes)
+        stdev_close = statistics.stdev(closes) if len(closes) > 1 else 0.0
         
-        # 计算百分比振幅和净变化
-        amplitude = (max_high - min_low) / min_low * 100
-        net_change = abs(closes[-1] - opens[0]) / opens[0] * 100
+        # 1. 基于标准差的统计分布振幅
+        # 极差 (Max-Min) 通常约为 4 个标准差 (95% 置信区间)
+        # 这里乘以 4 是为了让新算法算出的数值与原本用户配置的 max_amplitude 阈值量级保持一致
+        stdev_pct = (stdev_close / mean_close) * 100
+        amplitude = stdev_pct * 4
+        
+        # 2. 均值回归偏离度 (代替原来单纯的首尾相减)
+        # 考察最新价偏离 10 分钟均线的程度，这比看第一根和最后一根更加鲁棒
+        net_change = abs(closes[-1] - mean_close) / mean_close * 100
         
         # [动态阈值匹配] 优先使用该品种专属阈值，回退到通用阈值
         asset_cfg = ASSET_CHOP_THRESHOLDS.get(asset_upper, {})
