@@ -32,6 +32,7 @@
 ## 5. 类型与中文规范
 - **Python 类型提示**：新加入或修改的函数必须附带标准的 `typing` 类型提示 (Type Hints)。
 - **中文原生意图**：在输出思考、注释或提交记录时，应坚守“中文主谓宾结构 + 英文术语”的 Native Architect 规则，维持可读性。
+- **Git 提交记录 (Commit Message)**：在执行 `git commit` 时，**必须使用中文**填写 commit message，严禁使用纯英文。
 
 ## 6. Dev-Prod 分离与云端流水线规范 (Cloud-Native Workflow)
 - **本地断网开发假设**：AI Agent 应当知晓用户的本地 Windows 环境连接 Polymarket 主网极度不稳定。因此，**严禁**在本地开发时要求用户“直接跑一下连网脚本看看效果”。
@@ -78,4 +79,13 @@
   PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
   sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
   ```
+## 13. API 鉴权与请求头规范 (API Auth & Headers)
+- **V2 鉴权必带地址**：调用 Polymarket V2 API 进行下单或资产查询等操作时，必须在 Headers 中带上 `POLY_ADDRESS` 字段（以及传统的签名三件套 `POLY_SIGNATURE`, `POLY_TIMESTAMP`, `POLY_NONCE`），否则会触发 `401 Client Error: missing address header`。
 
+## 14. WebSocket 并发订阅与限流防反弹 (WS Debounce & Rate Limiting)
+- **防抖合并 (Debounce)**：由于单例 WebSocket 负责多个并发策略线程的数据分发，当多个策略实例同时发现新市场并并发调用 `subscribe()` 时，**绝对禁止**立刻向 WebSocket 写入订阅帧 `{"type": "market", "assets_ids": [...]}`。必须引入例如 `0.5` 秒的防抖机制（如 `threading.Timer`）将短时间内的并发请求合并为一个完整的 Payload。
+- **全量被拒风险 (INVALID OPERATION)**：Polymarket WS 对短时间内连续密集的订阅包，或者包含无效/过期资产 ID 的订阅，会进行风控拦截并直接返回 `"INVALID OPERATION"`。这会导致整条底层数据管道永久断流。
+
+## 15. 异步队列“假死”防护与防刷屏日志 (Queue Silence & Anti-Spam)
+- **超时探测与静默防范**：通过 `await asyncio.wait_for(queue.get(), timeout=5)` 等待 WS 推送时，必须妥善处理 `TimeoutError`。在冷门长尾市场，几秒钟无数据是常态。
+- **防刷屏断流告警**：为了防止因为真正的 WS 断流而导致“前端面板在动（因为 REST 定时刷新）但底层交易引擎死锁不报警”的诡异现象，必须在 `TimeoutError` 的处理分支中加入带防刷屏限制的告警日志（例如：`now_ts - last_ws_msg_time > 60` 且 `now_ts - last_ws_timeout_log > 60` 时，才打印一条断流警告）。兼顾错误发现的敏锐度与控制台的整洁度。

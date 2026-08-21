@@ -760,6 +760,10 @@ class ArbitrageBotFSM(BaseStrategy):
                 
                 if is_expired and (has_no_leg1 or is_terminal):
                     logger.info(f"[策略FSM：{self.strategy_id}] 清理历史过期/无效订单内存: {market_id}")
+                    if not is_terminal:
+                        # 【BugFix】必须显式修改状态，否则后台 _fsm_ws_listener 监听线程会变成死循环孤儿，且永远不会触发 unsubscribe()！
+                        fsm.transition_to(TradeState.FAILED, reason="超时强平: 清理历史过期订单内存")
+                        
                     with self._trades_lock:
                         self.active_trades.pop(market_id, None)
                     self.fsms.pop(market_id, None)
