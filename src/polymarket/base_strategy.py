@@ -92,6 +92,8 @@ class BaseStrategy:
         self.leg2_price_mode = strategy_config.get("leg2_price_mode", "bid")   # 二腿价格模式：ask(吃单价) / bid(挂单价)
         self.leg2_cancel_before_expiry = strategy_config.get("leg2_cancel_before_expiry", 30)  # 二腿挂单到期前取消时间
         self.leg2_fallback_to_maker = strategy_config.get("leg2_fallback_to_maker", True)  # 挂单取消后是否改为吃单
+        from polymarket import config
+        self.min_time_to_expiry_entry = strategy_config.get("min_time_to_expiry_entry", getattr(config, "MIN_TIME_TO_EXPIRY_ENTRY", 45)) # 临近交割禁止入场时间（秒）
         
         # 挂单状态跟踪
         self.pending_orders: Dict[str, Dict[str, Any]] = {}  # market_id -> order_info

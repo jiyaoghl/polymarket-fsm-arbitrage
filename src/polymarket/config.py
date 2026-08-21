@@ -39,6 +39,7 @@ ORDER_AMOUNT = float(os.getenv("ORDER_AMOUNT", "10.0"))
 MAX_SLIPPAGE_TOLERANCE = float(os.getenv("MAX_SLIPPAGE_TOLERANCE", "0.015"))  # 最大 VWAP 滑点容忍度 1.5%
 LEG1_MAX_UNHEDGED_SECONDS = int(os.getenv("LEG1_MAX_UNHEDGED_SECONDS", "90"))  # 首腿单腿最大未对冲保持时间（秒）
 MAX_CONCURRENT_UNHEDGED_TRADES = int(os.getenv("MAX_CONCURRENT_UNHEDGED_TRADES", "3"))  # 全账户最大允许未对冲单腿数
+MIN_TIME_TO_EXPIRY_ENTRY = int(os.getenv("MIN_TIME_TO_EXPIRY_ENTRY", "45"))  # 临近交割禁止开仓阈值（秒）
 
 # 手续费配置（用于 EV 计算与模拟盘仿真）
 TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.01"))   # Taker 手续费率 1%

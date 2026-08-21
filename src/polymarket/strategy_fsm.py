@@ -409,6 +409,13 @@ class ArbitrageBotFSM(BaseStrategy):
                             level="warning"
                         )
 
+                    # 【临期交割拦截】：防止距离结束过近导致刚买入首腿就被强制平仓
+                    end_time = float(trade.get("end_time", 0.0))
+                    time_to_expiry = end_time - now_ts
+                    if end_time > 0 and time_to_expiry < self.min_time_to_expiry_entry:
+                        record_silent_filter(f"临近交割 (剩余 {time_to_expiry:.1f}s < {self.min_time_to_expiry_entry}s)，禁止开仓")
+                        continue
+
                     # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
                         record_silent_filter(f"YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
