@@ -1,11 +1,11 @@
 [
     {
         "strategy_id": "taker_maker_conservative",
-        "name": "吃单+挂单 保守实盘策略",
+        "name": "吃单+挂单 保守实盘策略 (3U极小额)",
         "entry_max_price": 0.45,
         "entry_min_price": 0.30,
         "reentry_trigger": 0.35,
-        "amount": 5.0,
+        "amount": 3.0,
         "is_live": true,
         "leg1_order_type": "FOK",
         "leg2_order_type": "GTC",
