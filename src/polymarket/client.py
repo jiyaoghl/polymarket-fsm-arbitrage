@@ -88,24 +88,34 @@ def retry_on_failure(
     return decorator
 
 
-def get_poly_signature(timestamp: int, method: str, request_path: str, body: str = "") -> str:
+def get_poly_signature(timestamp: int, method: str, request_path: str, body: str = "", secret: str = None) -> str:
     """
-    生成 Polymarket CLOB API 签名。
+    生成 Polymarket CLOB API 标准 L2 HMAC-SHA256 签名。
     
     签名格式：timestamp + method + requestPath + body
-    使用 API_SECRET 进行 HMAC-SHA256 签名，然后 Base64 编码
+    使用 base64 解码后的 API_SECRET 进行 HMAC-SHA256 计算，最后进行 base64 编码
     """
-    if not API_SECRET:
+    import base64
+    from polymarket import config
+    api_sec = secret or config.API_SECRET or os.getenv("POLX_API_SECRET", "")
+    if not api_sec:
         return ""
     
-    message = str(timestamp) + method + request_path + body
+    message = f"{timestamp}{method.upper()}{request_path}"
+    if body:
+        message += body
+        
+    try:
+        secret_bytes = base64.b64decode(api_sec)
+    except Exception:
+        secret_bytes = api_sec.encode('utf-8')
+
     signature = hmac.new(
-        API_SECRET.encode('utf-8'),
+        secret_bytes,
         message.encode('utf-8'),
         hashlib.sha256
     ).digest()
     
-    import base64
     return base64.b64encode(signature).decode('utf-8')
 
 
@@ -178,13 +188,17 @@ class PolyClient:
         
     def _get_auth_headers(self, method: str = "GET", request_path: str = "/", body: str = "") -> Dict[str, str]:
         """生成认证请求头。"""
+        from polymarket import config
+        api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
+        passphrase = config.API_PASSPHRASE or os.getenv("POLX_API_PASSPHRASE", "")
+        
         timestamp = int(time.time())
         signature = get_poly_signature(timestamp, method, request_path, body)
         
         headers = {
             "Content-Type": "application/json",
-            "POLY_API_KEY": API_KEY or "",
-            "POLY_PASSPHRASE": API_PASSPHRASE or "",
+            "POLY_API_KEY": api_key,
+            "POLY_PASSPHRASE": passphrase,
             "POLY_TIMESTAMP": str(timestamp),
             "POLY_SIGNATURE": signature,
         }
@@ -456,16 +470,38 @@ class PolyClient:
             return False
 
     def get_balance(self) -> Dict[str, float]:
-        """获取账户 USDC 余额。"""
+        """获取账户 USDC / pUSD 抵押品可用余额。"""
         if not self.is_live:
             return {"usdc": 10000.0, "pending": 0.0}
         
+        # 优先使用官方 py_clob_client
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, ApiCreds
+            from polymarket import config
+            api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
+            api_sec = config.API_SECRET or os.getenv("POLX_API_SECRET", "")
+            api_pass = config.API_PASSPHRASE or os.getenv("POLX_API_PASSPHRASE", "")
+            if config.PK:
+                clean_pk = config.PK if config.PK.startswith("0x") else f"0x{config.PK}"
+                c = ClobClient(host=self.host, key=clean_pk, chain_id=137)
+                if api_key and api_sec and api_pass:
+                    c.set_api_creds(ApiCreds(api_key=api_key, api_secret=api_sec, api_passphrase=api_pass))
+                else:
+                    c.set_api_creds(c.derive_api_key())
+                
+                res = c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+                raw_bal = float(res.get("balance", 0.0))
+                balance = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
+                return {"usdc": balance, "pending": 0.0}
+        except Exception:
+            pass
+
         for attempt in range(3):
             try:
-                # CLOB API 余额端点：GET /balance-allowance?asset_type=USDC&signature_type=0
-                result = self._get_signed("/balance-allowance?asset_type=USDC&signature_type=0")
-                # 响应格式: {"balance": "123.45", "allowance": "123.45"}
-                balance = float(result.get("balance", 0))
+                result = self._get_signed("/balance-allowance?asset_type=COLLATERAL")
+                raw_bal = float(result.get("balance", 0))
+                balance = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
                 return {
                     "usdc": balance,
                     "pending": 0.0,

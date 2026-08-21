@@ -9,15 +9,23 @@ Polymarket CLOB 实盘鉴权与链上环境全项诊断工具
 5. VPS 服务器时钟同步偏差 (NTP Clock Drift Check)
 """
 
-import os
 import sys
+import os
 import time
 import json
 import base64
 import hmac
 import hashlib
+import io
 import requests
 from typing import Dict, Any, Optional
+
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 # 跨平台添加 src 目录到 Python 路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,9 +38,14 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=True)
 load_dotenv(os.path.join(PROJECT_ROOT, "configs", ".env"), override=True)
 
 from polymarket.config import (
-    PK, CLOB_API_KEY, CLOB_API_SECRET, CLOB_API_PASSPHRASE,
+    PK, API_KEY, API_SECRET, API_PASSPHRASE,
     CLOB_HOST, HTTP_PROXY, HTTPS_PROXY, RPC_URL, CHAIN_ID
 )
+
+# 兼容别名
+CLOB_API_KEY = API_KEY or os.getenv("POLX_API_KEY", "")
+CLOB_API_SECRET = API_SECRET or os.getenv("POLX_API_SECRET", "")
+CLOB_API_PASSPHRASE = API_PASSPHRASE or os.getenv("POLX_API_PASSPHRASE", "")
 
 # 颜色输出
 GREEN = "\033[92m"
@@ -90,10 +103,29 @@ def test_clob_auth(wallet_address: str) -> bool:
     print(f"   API Key: {CLOB_API_KEY[:8]}...{CLOB_API_KEY[-4:]}")
     print(f"   CLOB Host: {CLOB_HOST}")
     
-    # 构造 L2 鉴权头部
+    # 优先使用官方 py_clob_client 进行鉴权验证
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, ApiCreds
+        
+        clean_pk = PK if PK.startswith("0x") else f"0x{PK}"
+        c = ClobClient(host=CLOB_HOST, key=clean_pk, chain_id=137)
+        c.set_api_creds(ApiCreds(api_key=CLOB_API_KEY, api_secret=CLOB_API_SECRET, api_passphrase=CLOB_API_PASSPHRASE))
+        
+        bal = c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+        if bal is not None:
+            raw_bal = float(bal.get("balance", 0.0))
+            usdc_val = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
+            print(f"{GREEN}✅ CLOB API 鉴权成功！(ClobClient 握手通过){RESET}")
+            print(f"   CLOB 撮合可用抵押品余额: {GREEN}{usdc_val:.4f} pUSD/USDC{RESET}")
+            return True
+    except Exception as ce:
+        pass
+
+    # 构造标准原生 L2 鉴权头部（包含完整 Query String）
     timestamp = str(int(time.time()))
     method = "GET"
-    request_path = "/data/trades"
+    request_path = "/balance-allowance?asset_type=COLLATERAL"
     body = ""
     message = f"{timestamp}{method}{request_path}{body}"
 
@@ -107,10 +139,10 @@ def test_clob_auth(wallet_address: str) -> bool:
             "POLY_SIGNATURE": sig_b64,
             "POLY_TIMESTAMP": timestamp,
             "POLY_PASSPHRASE": CLOB_API_PASSPHRASE,
-            "User-Agent": "Polymarket-Arbitrage-Bot/1.0",
+            "User-Agent": "curl/8.13.0",
         }
 
-        url = f"{CLOB_HOST}{request_path}?limit=1"
+        url = f"{CLOB_HOST}{request_path}"
         resp = requests.get(url, headers=headers, proxies=get_proxy_dict(), timeout=10)
 
         if resp.status_code == 200:
@@ -156,7 +188,14 @@ def test_onchain_balances_and_allowance(wallet_address: str):
     """步骤 4 & 5: Polygon 链上资产与 CTF Exchange 合约授权检测"""
     print_banner("[4/5] Polygon 链上资产与 Gas 费检测")
     
-    rpc = RPC_URL or "https://polygon-bor-rpc.publicnode.com"
+    rpc_candidates = [
+        r for r in [
+            RPC_URL,
+            "https://polygon-rpc.com",
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://1rpc.io/matic"
+        ] if r and "your_alchemy_key" not in r
+    ]
     proxies = get_proxy_dict()
     
     # 常用合约地址
@@ -168,31 +207,47 @@ def test_onchain_balances_and_allowance(wallet_address: str):
     addr_clean = wallet_address.lower().replace("0x", "").zfill(64)
     
     # 1. 查 POL (MATIC)
-    try:
-        payload = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [wallet_address, "latest"], "id": 1}
-        resp = requests.post(rpc, json=payload, proxies=proxies, timeout=8).json()
-        pol_wei = int(resp.get("result", "0x0"), 16)
-        pol_val = pol_wei / 1e18
+    pol_val = 0.0
+    pol_success = False
+    for rpc in rpc_candidates:
+        try:
+            payload = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [wallet_address, "latest"], "id": 1}
+            resp = requests.post(rpc, json=payload, proxies=proxies, timeout=6).json()
+            if isinstance(resp, dict) and "result" in resp:
+                pol_wei = int(resp.get("result", "0x0"), 16)
+                pol_val = pol_wei / 1e18
+                pol_success = True
+                break
+        except Exception:
+            continue
+            
+    if pol_success:
         if pol_val >= 0.05:
             print(f"   POL/MATIC (Gas): {GREEN}{pol_val:.4f} POL (充足){RESET}")
         elif pol_val > 0:
-            print(f"   POL/MATIC (Gas): {YELLOW}{pol_val:.4f} POL (偏低，建议储备 0.1 POL){RESET}")
+            print(f"   POL/MATIC (Gas): {YELLOW}{pol_val:.4f} POL (建议充值 >= 0.05 POL){RESET}")
         else:
             print(f"   POL/MATIC (Gas): {RED}0.0000 POL (需充值至少 0.05 POL 作为 Gas){RESET}")
-    except Exception as e:
-        print(f"   POL 查询失败: {e}")
+    else:
+        print(f"   POL/MATIC (Gas): {YELLOW}查询受限 (已尝试多个公共节点){RESET}")
 
     # 2. 查 USDC 余额
     for name, contract in [("USDC (Native)", USDC_NATIVE), ("USDC.e (Bridged)", USDC_BRIDGED)]:
-        try:
-            data_hex = "0x70a08231" + addr_clean
-            payload = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": contract, "data": data_hex}, "latest"], "id": 1}
-            resp = requests.post(rpc, json=payload, proxies=proxies, timeout=8).json()
-            usdc_val = int(resp.get("result", "0x0"), 16) / 1e6
-            color = GREEN if usdc_val > 0 else YELLOW
-            print(f"   {name:<16}: {color}${usdc_val:.2f} USDC{RESET}")
-        except Exception as e:
-            print(f"   {name} 查询失败: {e}")
+        usdc_val = 0.0
+        usdc_success = False
+        data_hex = "0x70a08231" + addr_clean
+        for rpc in rpc_candidates:
+            try:
+                payload = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": contract, "data": data_hex}, "latest"], "id": 1}
+                resp = requests.post(rpc, json=payload, proxies=proxies, timeout=6).json()
+                if isinstance(resp, dict) and "result" in resp:
+                    usdc_val = int(resp.get("result", "0x0"), 16) / 1e6
+                    usdc_success = True
+                    break
+            except Exception:
+                continue
+        color = GREEN if usdc_val > 0 else YELLOW
+        print(f"   {name:<16}: {color}${usdc_val:.2f} USDC{RESET}")
 
     # 3. 查 Allowance 授权
     print_banner("[5/5] Polymarket 智能合约 USDC 授权 (Allowance)")

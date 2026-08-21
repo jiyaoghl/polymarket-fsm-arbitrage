@@ -8,7 +8,16 @@ import os
 import sys
 import json
 import time
+import io
 import requests
+
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
@@ -61,13 +70,19 @@ def derive_or_create_api_credentials():
         )
         creds = client.create_or_derive_api_creds()
         if creds:
+            api_key = creds.api_key
+            api_secret = creds.api_secret
+            api_passphrase = creds.api_passphrase
+
             print(f"\n{GREEN}{BOLD}🎉 成功获取/派生 API 凭证！{RESET}")
             print("=" * 60)
-            print(f"{BOLD}请将以下内容复制并填入你的 .env 文件中：{RESET}\n")
-            print(f"POLX_API_KEY={creds.api_key}")
-            print(f"POLX_API_SECRET={creds.api_secret}")
-            print(f"POLX_API_PASSPHRASE={creds.api_passphrase}")
+            print(f"POLX_API_KEY={api_key}")
+            print(f"POLX_API_SECRET={api_secret}")
+            print(f"POLX_API_PASSPHRASE={api_passphrase}")
             print("=" * 60)
+
+            # 自动更新本地 .env 与 configs/.env 文件
+            save_to_env_files(api_key, api_secret, api_passphrase)
             return
     except ImportError:
         pass
@@ -157,13 +172,53 @@ def derive_or_create_api_credentials():
             print(f"{BOLD}请将以下内容复制并填入你的 .env 文件中：{RESET}\n")
             print(f"POLX_API_KEY={data.get('apiKey')}")
             print(f"POLX_API_SECRET={data.get('secret')}")
-            print(f"POLX_API_PASSPHRASE={data.get('passphrase')}")
-            print("=" * 60)
+            save_to_env_files(data.get('apiKey'), data.get('secret'), data.get('passphrase'))
             return
         else:
             print(f"{RED}❌ 创建/派生 API Key 失败 (HTTP {resp.status_code}): {resp.text}{RESET}")
     except Exception as e:
         print(f"{RED}❌ 网络请求失败: {e}{RESET}")
+
+def save_to_env_files(api_key: str, api_secret: str, passphrase: str):
+    """自动将派生的 API 凭据写回本地 .env 文件"""
+    env_paths = [
+        os.path.join(PROJECT_ROOT, ".env"),
+        os.path.join(PROJECT_ROOT, "configs", ".env")
+    ]
+    
+    for p in env_paths:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            
+            new_lines = []
+            keys_written = {"POLX_API_KEY": False, "POLX_API_SECRET": False, "POLX_API_PASSPHRASE": False}
+            
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("POLX_API_KEY="):
+                    new_lines.append(f"POLX_API_KEY={api_key}\n")
+                    keys_written["POLX_API_KEY"] = True
+                elif stripped.startswith("POLX_API_SECRET="):
+                    new_lines.append(f"POLX_API_SECRET={api_secret}\n")
+                    keys_written["POLX_API_SECRET"] = True
+                elif stripped.startswith("POLX_API_PASSPHRASE="):
+                    new_lines.append(f"POLX_API_PASSPHRASE={passphrase}\n")
+                    keys_written["POLX_API_PASSPHRASE"] = True
+                else:
+                    new_lines.append(line)
+            
+            for k, val in [("POLX_API_KEY", api_key), ("POLX_API_SECRET", api_secret), ("POLX_API_PASSPHRASE", passphrase)]:
+                if not keys_written[k]:
+                    new_lines.append(f"{k}={val}\n")
+            
+            with open(p, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            print(f"{GREEN}✓ 已自动同步更新至配置文件: {os.path.relpath(p, PROJECT_ROOT)}{RESET}")
+        except Exception as e:
+            print(f"{YELLOW}写入 {p} 失败: {e}{RESET}")
 
 if __name__ == "__main__":
     derive_or_create_api_credentials()
