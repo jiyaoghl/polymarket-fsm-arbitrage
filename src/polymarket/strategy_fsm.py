@@ -334,6 +334,9 @@ class ArbitrageBotFSM(BaseStrategy):
         # 必须在本地缓存该市场内各个 token 的最新盘口数据，否则会导致凑不齐双边价格而无限跳过拦截
         market_prices_cache: Dict[str, Dict[str, float]] = {}
         
+        last_ws_msg_time = time.time()
+        last_ws_timeout_log = 0
+        
         try:
             while fsm.current_state not in (TradeState.SETTLED, TradeState.FAILED, TradeState.LOCKED):
                 try:
@@ -347,8 +350,13 @@ class ArbitrageBotFSM(BaseStrategy):
                         bundle = queue.get_nowait()
                         
                 except asyncio.TimeoutError:
+                    now_ts = time.time()
+                    if now_ts - last_ws_msg_time > 60 and now_ts - last_ws_timeout_log > 60:
+                        logger.warning(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 超过 60 秒未收到 WebSocket 行情推送 (订阅异常或行情停滞)。")
+                        last_ws_timeout_log = now_ts
                     continue
                     
+                last_ws_msg_time = time.time()
                 data = bundle["data"]
                 prices = bundle["prices"]
                 

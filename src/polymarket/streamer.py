@@ -27,18 +27,21 @@ class MarketDataStreamer:
             if self._initialized:
                 return
             self.ws_uri = ws_uri
+            self.ws: Optional[websockets.WebSocketClientProtocol] = None
             self.active_assets: Set[str] = set()
             # 记录资产与所属市场: asset_id -> set(market_id)
             self.asset_to_markets: Dict[str, Set[str]] = {}
             # subscribers: market_id -> list of (queue, loop)
             self.subscribers: Dict[str, List[Dict[str, Any]]] = {}
             
+            # 防抖定时器
+            self._resubscribe_timer = None
+            
             # 后台守护事件循环
             self.loop = asyncio.new_event_loop()
             self.thread = threading.Thread(target=self._run_loop, daemon=True, name="MarketDataStreamer")
             self.thread.start()
             
-            self.ws = None
             self._initialized = True
 
     def _run_loop(self):
@@ -153,6 +156,22 @@ class MarketDataStreamer:
         except Exception as e:
             logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
+    def _schedule_resubscribe(self):
+        """防抖定时器：延迟 0.5s 发送聚合订阅，防止瞬间爆发导致 INVALID OPERATION 拒接"""
+        if self._resubscribe_timer is not None:
+            self._resubscribe_timer.cancel()
+            
+        def _do_send():
+            if self.ws:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_subscription(self.ws, list(self.active_assets)), 
+                    self.loop
+                )
+        
+        # 使用 threading.Timer 在 0.5s 后执行
+        self._resubscribe_timer = threading.Timer(0.5, _do_send)
+        self._resubscribe_timer.start()
+
     def subscribe(self, market_id: str, assets: List[str], caller_queue: asyncio.Queue, caller_loop: asyncio.AbstractEventLoop):
         """策略端调用，注册一个队列"""
         with self._lock:
@@ -169,8 +188,9 @@ class MarketDataStreamer:
             self.subscribers[market_id].append({"queue": caller_queue, "loop": caller_loop})
             
             # 无论远端是 append 还是 overwrite 模式，直接全量发送 active_assets 最为稳妥
+            # 【BugFix】引入防抖，防止极短时间内多次触发导致 API 被 rate limit (INVALID OPERATION)
             if self.ws:
-                asyncio.run_coroutine_threadsafe(self._send_subscription(self.ws, list(self.active_assets)), self.loop)
+                self._schedule_resubscribe()
                 
     def unsubscribe(self, market_id: str, caller_queue: asyncio.Queue):
         """策略端注销"""
@@ -194,7 +214,4 @@ class MarketDataStreamer:
                     self.active_assets.difference_update(assets_to_remove)
                     # 重新发送最新的活跃资产列表给远端（Polymarket 重新订阅会全量覆盖）
                     if self.ws:
-                        asyncio.run_coroutine_threadsafe(
-                            self._send_subscription(self.ws, list(self.active_assets)), 
-                            self.loop
-                        )
+                        self._schedule_resubscribe()
