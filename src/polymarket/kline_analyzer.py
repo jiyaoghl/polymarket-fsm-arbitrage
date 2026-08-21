@@ -55,10 +55,10 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
         stdev_close = statistics.stdev(closes) if len(closes) > 1 else 0.0
         
         # 1. 基于标准差的统计分布振幅
-        # 极差 (Max-Min) 通常约为 4 个标准差 (95% 置信区间)
-        # 这里乘以 4 是为了让新算法算出的数值与原本用户配置的 max_amplitude 阈值量级保持一致
+        # 极差 (Max-Min) 在 N=10 的样本下通常约为 3 个标准差
+        # 这里乘以 3 是为了让新算法算出的数值完美适配原本用户配置的 max_amplitude 阈值
         stdev_pct = (stdev_close / mean_close) * 100
-        amplitude = stdev_pct * 4
+        amplitude = stdev_pct * 3
         
         # 2. 均值回归偏离度 (代替原来单纯的首尾相减)
         # 考察最新价偏离 10 分钟均线的程度，这比看第一根和最后一根更加鲁棒
