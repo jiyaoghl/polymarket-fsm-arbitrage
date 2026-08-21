@@ -23,7 +23,6 @@ def push_risk_event(market_id: str, asset: str, strategy: str, reason: str, leve
         })
 
 def get_recent_risk_events() -> List[Dict[str, Any]]:
-    """获取前端展示用的近期风控事件日志。"""
+    """获取前端展示用的近期风控事件日志（按时间正序，最旧的在前面，最新的在末尾）。"""
     with _risk_events_lock:
-        # 将 deque 转换成 list，并从新到旧排列
-        return list(_risk_events)[::-1]
+        return list(_risk_events)

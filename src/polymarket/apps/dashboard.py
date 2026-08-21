@@ -757,16 +757,22 @@ def index() -> str:
             if (riskEvents.length === 0) {
                 riskTerm.innerHTML = '<div class="line" style="color: #64748b; font-style: italic;">目前暂无风控拦截日志</div>';
             } else {
+                const isScrolledToBottom = riskTerm.scrollHeight - riskTerm.clientHeight <= riskTerm.scrollTop + 30;
                 let riskHtml = '';
                 riskEvents.forEach(e => {
-                    const ts = new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN');
+                    const d = new Date(e.timestamp * 1000);
+                    const ts = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
                     let color = '#94a3b8';
-                    if (e.level === 'error') color = '#ef4444';
+                    if (e.level === 'error' || e.level === 'critical') color = '#ef4444';
                     else if (e.level === 'warning') color = '#f59e0b';
+                    else if (e.level === 'info') color = '#38bdf8';
                     riskHtml += `<div class="line" style="color: ${color}">[${ts}] [${e.asset}] [${e.strategy}] ${e.reason}</div>`;
                 });
                 riskTerm.innerHTML = riskHtml;
-                riskTerm.scrollTop = riskTerm.scrollHeight;
+                if (isScrolledToBottom || !riskTerm.dataset.hasUserScrolled) {
+                    riskTerm.scrollTop = riskTerm.scrollHeight;
+                    riskTerm.dataset.hasUserScrolled = "1";
+                }
             }
         }
         
