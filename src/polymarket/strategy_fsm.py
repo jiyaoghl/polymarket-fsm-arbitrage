@@ -793,8 +793,9 @@ class ArbitrageBotFSM(BaseStrategy):
                             
                         # 【强制逃命止损】为了确保 FOK 能够填满规模并绝对离场，直接设置允许的最大滑点为 0.99（平台撮合会自动用最优价）。
                         stop_price = 0.99
-                        amount = round(self.order_amount, 2)
-                        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Timer] 执行强制穿透止损二腿: @ {stop_price:.4f} FOK")
+                        leg1_size = float(leg1.get("size") or self.order_amount)
+                        amount = round(leg1_size, 2)
+                        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Timer] 执行强制穿透止损二腿: size={amount} @ {stop_price:.4f} FOK")
                         
                         order = self.client.post_order(
                             other_token_id, stop_price, amount, side="BUY", order_type="FOK"

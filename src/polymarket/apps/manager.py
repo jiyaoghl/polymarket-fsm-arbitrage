@@ -71,13 +71,20 @@ class StrategyManager:
                 configs = json.load(f)
 
             self.bots = []
+            is_any_live = False
             for cfg in configs:
                 bot = ArbitrageBot(cfg)
                 self.bots.append(bot)
+                if cfg.get("is_live"):
+                    is_any_live = True
                 logger.info(
                     f"成功加载策略：{cfg.get('name')} "
                     f"(ID: {cfg.get('strategy_id')}, 实盘：{cfg.get('is_live')})"
                 )
+
+            # 根据策略是否包含实盘实例，动态绑定 redeem 客户端
+            self.redeem_client = get_client(is_live=is_any_live)
+            logger.info(f"结算客户端初始化完成：{'[实盘模式]' if is_any_live else '[模拟模式]'}")
         except Exception as e:
             logger.error(f"加载策略配置失败：{e}")
 

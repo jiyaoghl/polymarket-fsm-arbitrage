@@ -171,6 +171,22 @@ case "$1" in
     logs)
         view_logs
         ;;
+    auth|test)
+        setup_environment
+        "$VENV_DIR/bin/python3" scripts/test_auth.py
+        ;;
+    check)
+        setup_environment
+        "$VENV_DIR/bin/python3" scripts/check.py
+        ;;
+    gen-keys|gen-key)
+        setup_environment
+        "$VENV_DIR/bin/python3" scripts/generate_api_keys.py
+        ;;
+    redeem)
+        setup_environment
+        "$VENV_DIR/bin/python3" scripts/check.py redeem
+        ;;
     setup)
         setup_environment
         ;;

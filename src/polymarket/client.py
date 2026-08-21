@@ -343,11 +343,18 @@ class PolyClient:
 
         # 实盘模式：调用 CLOB V2 API
         try:
+            if amount <= 0:
+                logger.error(f"[实盘] 下单金额/数量非法: amount={amount}")
+                return None
+
+            safe_price = round(min(max(float(price), 0.001), 0.999), 4)
+            safe_size = round(float(amount), 2)
+
             # 构建 V2 订单数据
             order_data = {
-                "token_id": token_id,
-                "price": str(price),
-                "size": str(amount),
+                "token_id": str(token_id),
+                "price": str(safe_price),
+                "size": str(safe_size),
                 "side": side.upper(),
                 "timestamp": now_ms,
                 "metadata": zero_bytes32,
@@ -359,6 +366,10 @@ class PolyClient:
             logger.info(f"实盘 V2 下单成功：order_id={result.get('order_id', 'N/A')}")
             return result
             
+        except requests.exceptions.HTTPError as he:
+            err_body = he.response.text if hasattr(he, "response") and he.response is not None else ""
+            logger.error(f"实盘 V2 下单 HTTP 异常 ({he}): {err_body}")
+            return None
         except Exception as e:
             logger.exception(f"实盘 V2 下单失败：{e}")
             return None
@@ -702,7 +713,23 @@ class PolyClient:
             return {"order_id": f"sim_{now_ms}", "status": "LIVE", "token_id": token_id, "side": side, "price": sim_price, "amount": amount, "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32}
             
         try:
-            order_data = {"token_id": token_id, "price": str(price), "size": str(amount), "side": side.upper(), "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32, "orderType": order_type.upper()}
+            if amount <= 0:
+                logger.error(f"[异步实盘] 下单金额/数量非法: amount={amount}")
+                return None
+
+            safe_price = round(min(max(float(price), 0.001), 0.999), 4)
+            safe_size = round(float(amount), 2)
+
+            order_data = {
+                "token_id": str(token_id),
+                "price": str(safe_price),
+                "size": str(safe_size),
+                "side": side.upper(),
+                "timestamp": now_ms,
+                "metadata": zero_bytes32,
+                "builder": zero_bytes32,
+                "orderType": order_type.upper()
+            }
             result = await self._post_signed_async('/order', order_data)
             logger.info(f"[异步] V2 下单成功：order_id={result.get('order_id')}")
             return result
