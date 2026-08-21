@@ -7,7 +7,7 @@ aiohttp
 pycryptodome
 eth-account
 eip712
-py-clob-client-v2>=0.1.0
+py-clob-client>=0.19.0
 setuptools>=68
 wheel
 

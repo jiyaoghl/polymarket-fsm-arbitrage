@@ -68,7 +68,15 @@ def derive_or_create_api_credentials():
             key=clean_pk,
             chain_id=137
         )
-        creds = client.create_or_derive_api_creds()
+        creds = None
+        try:
+            creds = client.derive_api_key()
+        except Exception:
+            try:
+                creds = client.create_or_derive_api_creds()
+            except Exception:
+                pass
+
         if creds:
             api_key = creds.api_key
             api_secret = creds.api_secret
@@ -112,7 +120,7 @@ def derive_or_create_api_credentials():
         "address": wallet_address,
         "timestamp": str(timestamp),
         "nonce": nonce,
-        "message": "This message attests that I control the given address and enables Polymarket API authentication."
+        "message": "This message attests that I control the given wallet"
     }
 
     structured_data = {
