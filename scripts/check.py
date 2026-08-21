@@ -17,6 +17,7 @@ import time
 import json
 import sqlite3
 import argparse
+import requests
 from typing import Dict, Any, List, Tuple
 
 # 跨平台正确将项目根目录下的 src 添加到 Python 路径
@@ -206,12 +207,20 @@ def check_balance():
         print(f"{YELLOW}未检测到有效私钥 POLX_PK，跳过链上资产查询。{RESET}\n")
         return
 
-    import requests
-    rpc_url = RPC_URL or "https://polygon-bor-rpc.publicnode.com"
+    # 候选 RPC 节点列表（优先使用配置的 RPC，自动降级至公共高可用节点）
+    rpc_candidates = [
+        r for r in [
+            RPC_URL,
+            "https://polygon-rpc.com",
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://1rpc.io/matic"
+        ] if r and "your_alchemy_key" not in r
+    ]
     proxies = get_proxies_dict()
 
     tokens = {
         "POL/MATIC (Gas 费)": ("NATIVE", 18),
+        "pUSD (Polymarket USD 抵押品)": ("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", 6),
         "USDC.e (Bridged USDC)": ("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", 6),
         "USDC (Native USDC)": ("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6),
     }
@@ -221,28 +230,48 @@ def check_balance():
     data_hex = "0x70a08231" + addr_clean
 
     for name, (contract, decimals) in tokens.items():
-        try:
-            if contract == "NATIVE":
-                payload = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [wallet_addr, "latest"], "id": 1}
-            else:
-                payload = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": contract, "data": data_hex}, "latest"], "id": 1}
+        success = False
+        val = 0.0
+        last_err = ""
 
-            resp = requests.post(rpc_url, json=payload, proxies=proxies, timeout=8)
-            resp_json = resp.json()
-            if not isinstance(resp_json, dict):
-                raise Exception(f"RPC 返回非 JSON 格式: {resp.text[:50]}")
-            if "error" in resp_json:
-                err_msg = resp_json["error"].get("message", "RPC Error") if isinstance(resp_json["error"], dict) else str(resp_json["error"])
-                raise Exception(err_msg)
+        for rpc_url in rpc_candidates:
+            try:
+                if contract == "NATIVE":
+                    payload = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [wallet_addr, "latest"], "id": 1}
+                else:
+                    payload = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": contract, "data": data_hex}, "latest"], "id": 1}
 
-            hex_val = resp_json.get("result", "0x0")
-            if hex_val == "0x" or not hex_val:
-                hex_val = "0x0"
-            val = int(hex_val, 16) / (10**decimals)
-            unit = name.split(" ")[0]
-            print(f"  * {name:<26}: {GREEN if val > 0 else YELLOW}{val:>10.4f} {unit}{RESET}")
-        except Exception as e:
-            print(f"  * {name:<26}: {YELLOW}查询受限 ({e}){RESET}")
+                resp = requests.post(rpc_url, json=payload, proxies=proxies, timeout=6)
+                if resp.status_code != 200:
+                    continue
+                resp_json = resp.json()
+                if not isinstance(resp_json, dict) or "error" in resp_json:
+                    continue
+
+                hex_val = resp_json.get("result", "0x0")
+                if hex_val == "0x" or not hex_val:
+                    hex_val = "0x0"
+                val = int(hex_val, 16) / (10**decimals)
+                success = True
+                break
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+        unit = name.split(" ")[0]
+        if success:
+            color = GREEN if val > 0 else YELLOW
+            print(f"  * {name:<28}: {color}{val:>10.4f} {unit}{RESET}")
+        else:
+            print(f"  * {name:<28}: {YELLOW}查询受限 (已尝试多个公共节点){RESET}")
+
+    # CLOB 实盘可用抵押金查询
+    try:
+        live_bal = client.get_balance()
+        if live_bal and float(live_bal.get("usdc", 0.0)) > 0:
+            print(f"  * {'CLOB 撮合可用抵押品余额':<28}: {GREEN}{float(live_bal.get('usdc', 0.0)):>10.4f} pUSD/USDC{RESET}")
+    except Exception:
+        pass
 
     # 模拟盘余额
     sim_client = PolyClient(is_live=False)
