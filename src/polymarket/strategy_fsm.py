@@ -256,7 +256,7 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 SETTLED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.SETTLED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.SETTLED.value)
-        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, self.order_amount)
+        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, 999999.0)
 
     def on_failed(self, fsm: TradeFSM, **kwargs):
         reason = kwargs.get('reason', '未知')
@@ -264,7 +264,7 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 FAILED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.FAILED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.FAILED.value)
-        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, self.order_amount)
+        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, 999999.0)
 
     # =========================================================
     # 事件触发源
@@ -359,7 +359,7 @@ class ArbitrageBotFSM(BaseStrategy):
                     market_prices_cache[asset_id].update(info)
                 
                 # 模拟核心的事件逻辑
-                trade = self.active_trades.get(market_id)
+                trade = self._get_trade(market_id)
 
                 if fsm.current_state == TradeState.IDLE:
                     yes_info = market_prices_cache.get(str(yes_token), {})
@@ -376,7 +376,7 @@ class ArbitrageBotFSM(BaseStrategy):
                     now_ts = time.time()
                     
                     def record_silent_filter(reason: str):
-                        t = self.active_trades.get(market_id)
+                        t = self._get_trade(market_id)
                         if not t:
                             t = {
                                 "status": TradeState.IDLE.value,
@@ -494,7 +494,8 @@ class ArbitrageBotFSM(BaseStrategy):
                     
                     # 理论最高允许对冲上限（扣除 1% 最低保底利润空间）
                     dynamic_reentry_max = 1.0 - leg1_cost - 0.01
-                    amount = round(self.order_amount, 2)
+                    leg1_size = float(leg1_info.get("size") or self.order_amount)
+                    amount = round(leg1_size, 2)
                     other_asks, other_bids = self._extract_token_depth(data, str(other_token_id))
 
                     # ──────────────────────────────────────────────────────────
@@ -658,7 +659,8 @@ class ArbitrageBotFSM(BaseStrategy):
                                     except Exception as e:
                                         logger.warning(f"[Maker 钉盘] 撤销旧挂单异常: {e}")
 
-                                amount = round(self.order_amount, 2)
+                                leg1_size = float(leg1_info.get("size") or self.order_amount)
+                                amount = round(leg1_size, 2)
                                 new_order = await self.client.post_order_async(
                                     other_token_id, new_pegged, amount, side="BUY", order_type="GTC"
                                 )
@@ -738,7 +740,7 @@ class ArbitrageBotFSM(BaseStrategy):
             time.sleep(1)
             for market_id, fsm in list(self.fsms.items()):
               try:
-                trade = self.active_trades.get(market_id)
+                trade = self._get_trade(market_id)
                 if not trade:
                     continue
                     
@@ -837,8 +839,8 @@ class ArbitrageBotFSM(BaseStrategy):
                         # 撤单后清除记录，重置为 LEG1_ONLY 以便基于最新盘口动态重新计算对冲价
                         trade.pop("leg2_order_id", None)
                         trade.pop("leg2", None)
-                        # 更新一下时间，防止刚刚回退到 LEG1_ONLY 且还未发单就触发首腿 TTL
-                        trade["leg1_filled_time"] = now
+                        # 更新独立重试时间节流，严禁重置 leg1_filled_time，确保 TTL 强平倒计时不被续命
+                        trade["last_leg2_retry_time"] = now
                         fsm.transition_to(TradeState.LEG1_ONLY)
                         continue
                         

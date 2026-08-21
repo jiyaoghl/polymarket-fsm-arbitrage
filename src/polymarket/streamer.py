@@ -50,21 +50,29 @@ class MarketDataStreamer:
         max_delay = 60.0
         while True:
             try:
+                from polymarket.config import HTTPS_PROXY
+                from polymarket.base_strategy import BaseStrategy
                 logger.info("[Streamer] 统一数据总线正在连接 WS...")
-                async with websockets.connect(self.ws_uri) as ws:
-                    self.ws = ws
+                
+                if HTTPS_PROXY:
+                    ws_conn = await BaseStrategy._ws_connect_via_proxy(self.ws_uri)
+                else:
+                    ws_conn = await websockets.connect(self.ws_uri)
+                    
+                self.ws = ws_conn
+                if True:
                     retry_delay = 1.0  # 连接成功，重置退避时间
                     
                     # 重新发送所有活跃的订阅
                     with self._lock:
                         assets = list(self.active_assets)
                     if assets:
-                        await self._send_subscription(ws, assets)
+                        await self._send_subscription(self.ws, assets)
                         logger.info(f"[Streamer] 已恢复 {len(assets)} 个资产的订阅")
 
                     while True:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                            msg = await asyncio.wait_for(self.ws.recv(), timeout=5)
                         except asyncio.TimeoutError:
                             if self.ws:
                                 try:
@@ -117,8 +125,13 @@ class MarketDataStreamer:
 
             except Exception as e:
                 logger.error(f"[Streamer] 异常崩溃: {e}")
-                
-            self.ws = None
+            finally:
+                if self.ws:
+                    try:
+                        await self.ws.close()
+                    except Exception:
+                        pass
+                self.ws = None
             logger.info(f"[Streamer] 将在 {retry_delay} 秒后尝试重连...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)  # 指数退避

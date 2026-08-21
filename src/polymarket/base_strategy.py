@@ -346,10 +346,13 @@ class BaseStrategy:
         total_spent = leg1_cost * leg1_size + leg2_cost * leg2_size
         hedged_shares = min(leg1_size, leg2_size)
         guaranteed_payout = hedged_shares * 1.0
-        net_ev = guaranteed_payout - total_spent
+        
+        from polymarket.config import TAKER_FEE_RATE
+        total_fee = total_spent * TAKER_FEE_RATE
+        net_ev = guaranteed_payout - total_spent - total_fee
 
-        # 综合平均单位成本 (每 1 份对冲份额的组合买入成本)
-        unit_combined_cost = total_spent / hedged_shares if hedged_shares > 0 else 2.0
+        # 综合平均单位成本 (每 1 份对冲份额的组合买入成本 + 手续费摊销)
+        unit_combined_cost = (total_spent + total_fee) / hedged_shares if hedged_shares > 0 else 2.0
 
         if unit_combined_cost >= (1.0 - min_profit_margin):
             return False, net_ev, (
@@ -575,7 +578,11 @@ class BaseStrategy:
         返回 "FILLED", "FAILED", "PENDING" 之一。
         """
         if not self.is_live:
-            return "FILLED"
+            import random
+            from polymarket.config import SIM_BASE_FILL_RATE
+            if random.random() < SIM_BASE_FILL_RATE:
+                return "FILLED"
+            return "PENDING"
         try:
             order_status = self.client.get_order_status(order_id)
             if order_status == "FILLED":

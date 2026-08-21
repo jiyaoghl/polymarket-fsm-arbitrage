@@ -1,3 +1,4 @@
+import os
 import requests
 import time
 import json
@@ -202,6 +203,9 @@ class PolyClient:
             "POLY_TIMESTAMP": str(timestamp),
             "POLY_SIGNATURE": signature,
         }
+        if hasattr(self, "wallet") and self.wallet:
+            headers["POLY_ADDRESS"] = self.wallet.address
+            
         return headers
 
     def _post_signed(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:

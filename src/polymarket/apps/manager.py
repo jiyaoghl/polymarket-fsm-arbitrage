@@ -85,6 +85,11 @@ class StrategyManager:
             # 根据策略是否包含实盘实例，动态绑定 redeem 客户端
             self.redeem_client = get_client(is_live=is_any_live)
             logger.info(f"结算客户端初始化完成：{'[实盘模式]' if is_any_live else '[模拟模式]'}")
+            
+            # [P1 修复] RiskManager 启动时刷新真实链上余额
+            from polymarket.risk_manager import RiskManager
+            rm = RiskManager()
+            rm.refresh_balance_from_chain(self.redeem_client)
         except Exception as e:
             logger.error(f"加载策略配置失败：{e}")
 
