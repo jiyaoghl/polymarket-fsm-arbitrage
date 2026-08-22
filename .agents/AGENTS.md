@@ -89,3 +89,25 @@
 ## 15. 异步队列“假死”防护与防刷屏日志 (Queue Silence & Anti-Spam)
 - **超时探测与静默防范**：通过 `await asyncio.wait_for(queue.get(), timeout=5)` 等待 WS 推送时，必须妥善处理 `TimeoutError`。在冷门长尾市场，几秒钟无数据是常态。
 - **防刷屏断流告警**：为了防止因为真正的 WS 断流而导致“前端面板在动（因为 REST 定时刷新）但底层交易引擎死锁不报警”的诡异现象，必须在 `TimeoutError` 的处理分支中加入带防刷屏限制的告警日志（例如：`now_ts - last_ws_msg_time > 60` 且 `now_ts - last_ws_timeout_log > 60` 时，才打印一条断流警告）。兼顾错误发现的敏锐度与控制台的整洁度。
+
+## 16. CLOB V2 纯原生 EIP-712 签名与 Wire Payload 规范 (V2 Native Signing)
+- **EIP-712 签名体严格隔离 V1 废弃字段**：
+  - V2 签名体类型必须严格定义为 `Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)`。
+  - **严禁**在 EIP-712 计算中包含 `nonce`, `feeRateBps`, `taker`，否则撮合引擎会返回 `400 invalid order version, please use the latest clob-client`。
+- **Wire JSON 载荷字段与类型严格对齐**：
+  - `order.salt` 与 `order.signatureType` 必须转换为 `int` 传入 JSON（严禁传字符串）。
+  - `order.expiration` 必须保留 `"0"` 字符串（虽然不参与 EIP-712 计算，但 REST API 校验层必填）。
+  - 顶层 Payload 必须包含 `"deferExec": False` 与 `"postOnly": False`，否则会触发 `400 Invalid order payload`。
+  > **教训来源**：2026-08-22 实盘上线调试遭遇 `maker is required` -> `invalid order version` -> `Invalid order payload` 三连报错，根因是混用旧版 SDK 导致字段污染、缺少 expiration 字段及数据类型不匹配。
+
+## 17. 交易份数换算与最小下单门槛 (Share Sizing & Minimum Notional)
+- **金额与份数严格区分**：
+  - 底层 Polymarket CLOB 撮合引擎的计量单位是 **Shares（Token 份数）**，且硬性要求 `size >= 5.0 Shares`。
+  - 当上层策略以 USDC 金额（如 `ORDER_AMOUNT=3.0`）下单时，**严禁**直接将 3.0 当作 3.0 Shares 传入底层，必须通过 `calc_shares = amount / safe_price` 折算为对应份数，并执行 `safe_size = round(max(calc_shares, 5.0), 2)` 兜底保护。
+  > **教训来源**：2026-08-22 小额保守策略传入 `amount=3.0` 被直接作为 3.0 份处理，导致由于低于 5.0 门槛被 CLOB 引擎拒绝。
+
+## 18. 风控额度锁定的完整生命周期闭环 (Trade Lock Lifecycle)
+- **全生命周期释放保证**：
+  - 策略开仓调用 `risk_manager.acquire_trade_lock()` 成功占用额度后，必须保证在 `on_failed`、`on_settled` 以及链上/REST 自动结算（Redeem）后**无条件释放额度**。
+  - 避免“套利成功进入 LOCKED 状态，但因结算逻辑未通知策略导致风控额度长期锁定”，进而导致小本金账户在后续行情中因可用额度不足而产生大面积“总敞口超限”拦截。
+  > **教训来源**：2026-08-22 发现 `maker_maker_conservative` 在 13:59 锁定 $5.00 额度后，在市场结算后未同步释放，导致 $9.06 账户剩余 $4.06 无法满足后续 $10/$15 策略，风控中心频繁拦截新开仓。
