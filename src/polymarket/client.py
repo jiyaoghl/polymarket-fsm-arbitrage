@@ -18,11 +18,6 @@ from polymarket.config import (
 )
 from polymarket.logger import logger
 
-from py_clob_client.client import ClobClient as PyClobSigner
-from py_clob_client.clob_types import OrderArgs, CreateOrderOptions
-from py_clob_client.order_builder.constants import BUY, SELL
-from py_clob_client.utilities import order_to_json
-
 
 # ========= API 请求限流器 =========
 class RateLimiter:
@@ -184,24 +179,14 @@ class PolyClient:
 
 
         self._rate_limiter = RateLimiter(rate=rate_limit, period=1.0)
-        self._clob_signer: Optional[PyClobSigner] = None
         
-        # 如果有私钥，初始化钱包与纯离线 EIP-712 签名器
+        # 如果有私钥，初始化钱包用于签名
         if PK and not PK.startswith("your_"):
             try:
                 self.wallet = Account.from_key(PK)
-                logger.info(f"钱包已加载：{self.wallet.address[:8]}...{self.wallet.address[-6:]}")
-                # 初始化纯离线签名构建器（不发起任何外部网络请求）
-                self._clob_signer = PyClobSigner(
-                    host=self.host,
-                    key=PK,
-                    chain_id=137,
-                    signature_type=SIGNATURE_TYPE,
-                    funder=FUNDER_ADDRESS if FUNDER_ADDRESS else None,
-                )
-                logger.info(f"CLOB V2 离线签名器就绪 (signature_type={SIGNATURE_TYPE})")
+                logger.info(f"钱包已加载：{self.wallet.address[:8]}...{self.wallet.address[-6:]} (signature_type={SIGNATURE_TYPE})")
             except Exception as e:
-                logger.warning(f"配置的钱包私钥格式有误，加载签名器失败 (如仅运行模拟模式可忽略): {e}")
+                logger.warning(f"配置的钱包私钥格式有误，加载失败 (如仅运行模拟模式可忽略): {e}")
         
     def _get_auth_headers(self, method: str = "GET", request_path: str = "/", body: str = "") -> Dict[str, str]:
         """生成认证请求头。"""
@@ -334,6 +319,108 @@ class PolyClient:
         logger.error(f"获取价格最终失败 token={token_id}")
         return None
 
+    def _create_v2_signed_order(
+        self,
+        token_id: str,
+        price: float,
+        amount: float,
+        side: str,
+    ) -> Dict[str, Any]:
+        """
+        纯原生离线构建 Polymarket CLOB V2 EIP-712 签名订单结构体。
+        严格符合 CLOB V2 (Domain Version 2) 规范，彻底消除 V1 旧字段 (nonce/feeRateBps/taker/expiration)。
+        """
+        import random
+        from decimal import Decimal, ROUND_DOWN
+        from eth_account.messages import encode_typed_data
+        from polymarket.config import SIGNATURE_TYPE, FUNDER_ADDRESS, EXCHANGE_CONTRACT_V2
+
+        maker = FUNDER_ADDRESS if FUNDER_ADDRESS else self.wallet.address
+        signer = self.wallet.address
+        now_ms = int(time.time() * 1000)
+        salt = random.randint(100000000, 999999999)
+        zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+        d_price = Decimal(str(price))
+        d_size = Decimal(str(amount))
+
+        if side.upper() == "BUY":
+            # 买入：花 pUSD 买 shares
+            raw_maker = int((d_size * d_price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            raw_taker = int(d_size.quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            side_int = 0
+        else:
+            # 卖出：卖 shares 换 pUSD
+            raw_maker = int(d_size.quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            raw_taker = int((d_size * d_price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            side_int = 1
+
+        eip712_data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Order": [
+                    {"name": "salt", "type": "uint256"},
+                    {"name": "maker", "type": "address"},
+                    {"name": "signer", "type": "address"},
+                    {"name": "tokenId", "type": "uint256"},
+                    {"name": "makerAmount", "type": "uint256"},
+                    {"name": "takerAmount", "type": "uint256"},
+                    {"name": "side", "type": "uint8"},
+                    {"name": "signatureType", "type": "uint8"},
+                    {"name": "timestamp", "type": "uint256"},
+                    {"name": "metadata", "type": "bytes32"},
+                    {"name": "builder", "type": "bytes32"},
+                ],
+            },
+            "domain": {
+                "name": "Polymarket CTF Exchange",
+                "version": "2",
+                "chainId": 137,
+                "verifyingContract": EXCHANGE_CONTRACT_V2,
+            },
+            "primaryType": "Order",
+            "message": {
+                "salt": salt,
+                "maker": maker,
+                "signer": signer,
+                "tokenId": int(token_id),
+                "makerAmount": raw_maker,
+                "takerAmount": raw_taker,
+                "side": side_int,
+                "signatureType": SIGNATURE_TYPE,
+                "timestamp": now_ms,
+                "metadata": bytes.fromhex(zero_bytes32[2:]),
+                "builder": bytes.fromhex(zero_bytes32[2:]),
+            },
+        }
+
+        signable_message = encode_typed_data(full_message=eip712_data)
+        signed = self.wallet.sign_message(signable_message)
+        signature_hex = signed.signature.hex()
+        if not signature_hex.startswith("0x"):
+            signature_hex = "0x" + signature_hex
+
+        order_dict = {
+            "salt": str(salt),
+            "maker": maker,
+            "signer": signer,
+            "tokenId": str(token_id),
+            "makerAmount": str(raw_maker),
+            "takerAmount": str(raw_taker),
+            "side": side.upper(),
+            "signatureType": SIGNATURE_TYPE,
+            "timestamp": str(now_ms),
+            "metadata": zero_bytes32,
+            "builder": zero_bytes32,
+            "signature": signature_hex,
+        }
+        return order_dict
+
     # ========= 下单接口 =========
     def post_order(
         self,
@@ -381,28 +468,30 @@ class PolyClient:
                 logger.error(f"[实盘] 下单金额/数量非法: amount={amount}")
                 return None
 
-            if not self._clob_signer:
-                logger.error("[实盘] 离线签名器未就绪，请检查是否配置了有效私钥 POLX_PK")
+            if not self.wallet:
+                logger.error("[实盘] 钱包未就绪，请检查是否配置了有效私钥 POLX_PK")
                 return None
 
             safe_price = round(min(max(float(price), 0.001), 0.999), 4)
             safe_size = round(float(amount), 2)
-            side_val = BUY if side.upper() == "BUY" else SELL
 
-            # 纯离线构建 EIP-712 签名的订单结构体（0 额外网络开销，强制指定 tick_size="0.01", neg_risk=False）
-            order_args = OrderArgs(
-                price=safe_price,
-                size=safe_size,
-                side=side_val,
+            # 纯原生构建 V2 EIP-712 签名订单（0 外部网络延迟）
+            signed_order = self._create_v2_signed_order(
                 token_id=str(token_id),
+                price=safe_price,
+                amount=safe_size,
+                side=side.upper(),
             )
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-            signed_order = self._clob_signer.builder.create_order(order_args, options=options)
 
             # 转换为 CLOB V2 标准 Payload
             from polymarket import config
             api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
-            payload = order_to_json(signed_order, api_key, order_type.upper())
+            payload = {
+                "order": signed_order,
+                "owner": api_key,
+                "orderType": order_type.upper(),
+                "postOnly": False,
+            }
 
             result = self._post_signed("/order", payload)
             order_id = result.get("order_id") or result.get("orderID") or result.get("id") or "N/A"
@@ -445,9 +534,9 @@ class PolyClient:
 
         # 实盘模式：调用 CLOB V2 批量下单 API
         try:
-            if not self._clob_signer:
-                logger.error("[实盘] 离线签名器未就绪，请检查是否配置了有效私钥 POLX_PK")
-                return {"status": "ERROR", "error": "Signer not ready"}
+            if not self.wallet:
+                logger.error("[实盘] 钱包未就绪，请检查是否配置了有效私钥 POLX_PK")
+                return {"status": "ERROR", "error": "Wallet not ready"}
 
             from polymarket import config
             api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
@@ -456,18 +545,20 @@ class PolyClient:
             for o in orders:
                 safe_price = round(min(max(float(o["price"]), 0.001), 0.999), 4)
                 safe_size = round(float(o["amount"]), 2)
-                side_val = BUY if str(o["side"]).upper() == "BUY" else SELL
                 order_type_val = str(o.get("order_type", "GTC")).upper()
 
-                order_args = OrderArgs(
-                    price=safe_price,
-                    size=safe_size,
-                    side=side_val,
+                signed_order = self._create_v2_signed_order(
                     token_id=str(o["token_id"]),
+                    price=safe_price,
+                    amount=safe_size,
+                    side=str(o["side"]).upper(),
                 )
-                options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-                signed_order = self._clob_signer.builder.create_order(order_args, options=options)
-                batch_orders.append(order_to_json(signed_order, api_key, order_type_val))
+                batch_orders.append({
+                    "order": signed_order,
+                    "owner": api_key,
+                    "orderType": order_type_val,
+                    "postOnly": False,
+                })
 
             payload = {"orders": batch_orders}
             result = self._post_signed("/batch-orders", payload)
