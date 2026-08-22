@@ -74,3 +74,37 @@
 ### 5.2 自动结算赎回
 - 实盘模式下，全局 `StrategyManager` 中的守护线程 `_loop_redeem_closed_markets` 会自动轮询已结束（Settled）的市场。
 - 调用官方 `post_redeem()` 接口，将对冲好的 1:1 `YES + NO` 凭证强制合并，向 Polygon 链请求结算 `1 USDC` 到钱包，实现盈利闭环。
+
+---
+
+## 6. 实盘底层与 CLOB V2 签名架构 (Live Execution & Signing)
+
+Polymarket CLOB V2 (升级后) 对实盘下单采用**双层认证协议 (Dual-Layer Auth)**：
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   PolyClient 混合架构                     │
+├──────────────────────────┬───────────────────────────────┤
+│    离线密码学签名引擎     │        高可靠网络传输层       │
+│  (PyClobSigner - Local)  │     (requests.Session + Pool) │
+├──────────────────────────┼───────────────────────────────┤
+│ • EIP-712 Order Hashing  │ • truststore 系统证书注入     │
+│ • salt 生成与精度转换    │ • HTTP/HTTPS 代理智能路由     │
+│ • 0 额外网络往返 (0ms)   │ • 指数退避重试 (Retry策略)    │
+│ • 支持 EOA/Proxy 多类型  │ • L2 HMAC-SHA256 请求头计算   │
+└──────────────────────────┴───────────────────────────────┘
+```
+
+### 6.1 双层认证分工
+1. **L1 订单签名 (EIP-712)**：
+   - 智能合约层面的合法性验证。每个订单必须由下单私钥在本地进行 EIP-712 签名，生成包含 `salt`, `maker`, `signer`, `makerAmount`, `takerAmount`, `signature` 的完整数据结构。
+   - **支持多种钱包签名类型 (`SIGNATURE_TYPE`)**：
+     - `0`: 标准 EOA 钱包（MetaMask 私钥等）。
+     - `1`: Polymarket Proxy 代理合约。
+     - `2`: Gnosis Safe 多签/托管钱包。
+2. **L2 HMAC-SHA256 鉴权**：
+   - REST 网关层面的身份验证。通过 `POLY_API_KEY`, `POLY_PASSPHRASE`, `POLY_TIMESTAMP`, `POLY_SIGNATURE`, `POLY_ADDRESS` 五件套对每次 HTTP 请求进行哈希签名验证。
+
+### 6.2 离线签名与零网络开销 (Zero-Network Signing)
+- 在调用签名构建器时，显式指定 `tick_size="0.01", neg_risk=False`，彻底规避 SDK 私自调用远程 REST API 探测 Orderbook 带来的 200ms~500ms 额外延迟。
+- 签名计算完全在本地内存完成，保障了高频首腿吃单与二腿反卷的极致毫秒级响应。
