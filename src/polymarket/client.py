@@ -13,9 +13,15 @@ from eth_account.messages import encode_typed_data
 from polymarket.config import (
     PK, API_KEY, API_SECRET, API_PASSPHRASE,
     CLOB_HOST, GAMMA_HOST, HTTP_PROXY, HTTPS_PROXY,
-    EIP712_DOMAIN_VERSION, EXCHANGE_CONTRACT_V2, NEG_RISK_EXCHANGE_CONTRACT_V2, COLLATERAL_TOKEN_NAME
+    EIP712_DOMAIN_VERSION, EXCHANGE_CONTRACT_V2, NEG_RISK_EXCHANGE_CONTRACT_V2, COLLATERAL_TOKEN_NAME,
+    SIGNATURE_TYPE, FUNDER_ADDRESS
 )
 from polymarket.logger import logger
+
+from py_clob_client.client import ClobClient as PyClobSigner
+from py_clob_client.clob_types import OrderArgs, CreateOrderOptions
+from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client.utilities import order_to_json
 
 
 # ========= API 请求限流器 =========
@@ -178,14 +184,24 @@ class PolyClient:
 
 
         self._rate_limiter = RateLimiter(rate=rate_limit, period=1.0)
+        self._clob_signer: Optional[PyClobSigner] = None
         
-        # 如果有私钥，初始化钱包用于签名
+        # 如果有私钥，初始化钱包与纯离线 EIP-712 签名器
         if PK and not PK.startswith("your_"):
             try:
                 self.wallet = Account.from_key(PK)
                 logger.info(f"钱包已加载：{self.wallet.address[:8]}...{self.wallet.address[-6:]}")
+                # 初始化纯离线签名构建器（不发起任何外部网络请求）
+                self._clob_signer = PyClobSigner(
+                    host=self.host,
+                    key=PK,
+                    chain_id=137,
+                    signature_type=SIGNATURE_TYPE,
+                    funder=FUNDER_ADDRESS if FUNDER_ADDRESS else None,
+                )
+                logger.info(f"CLOB V2 离线签名器就绪 (signature_type={SIGNATURE_TYPE})")
             except Exception as e:
-                logger.warning(f"配置的钱包私钥格式有误，加载失败 (如仅运行模拟模式可忽略): {e}")
+                logger.warning(f"配置的钱包私钥格式有误，加载签名器失败 (如仅运行模拟模式可忽略): {e}")
         
     def _get_auth_headers(self, method: str = "GET", request_path: str = "/", body: str = "") -> Dict[str, str]:
         """生成认证请求头。"""
@@ -365,23 +381,32 @@ class PolyClient:
                 logger.error(f"[实盘] 下单金额/数量非法: amount={amount}")
                 return None
 
+            if not self._clob_signer:
+                logger.error("[实盘] 离线签名器未就绪，请检查是否配置了有效私钥 POLX_PK")
+                return None
+
             safe_price = round(min(max(float(price), 0.001), 0.999), 4)
             safe_size = round(float(amount), 2)
+            side_val = BUY if side.upper() == "BUY" else SELL
 
-            # 构建 V2 订单数据
-            order_data = {
-                "token_id": str(token_id),
-                "price": str(safe_price),
-                "size": str(safe_size),
-                "side": side.upper(),
-                "timestamp": now_ms,
-                "metadata": zero_bytes32,
-                "builder": zero_bytes32,
-                "orderType": order_type.upper(),
-            }
-            
-            result = self._post_signed("/order", order_data)
-            logger.info(f"实盘 V2 下单成功：order_id={result.get('order_id', 'N/A')}")
+            # 纯离线构建 EIP-712 签名的订单结构体（0 额外网络开销，强制指定 tick_size="0.01", neg_risk=False）
+            order_args = OrderArgs(
+                price=safe_price,
+                size=safe_size,
+                side=side_val,
+                token_id=str(token_id),
+            )
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+            signed_order = self._clob_signer.builder.create_order(order_args, options=options)
+
+            # 转换为 CLOB V2 标准 Payload
+            from polymarket import config
+            api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
+            payload = order_to_json(signed_order, api_key, order_type.upper())
+
+            result = self._post_signed("/order", payload)
+            order_id = result.get("order_id") or result.get("orderID") or result.get("id") or "N/A"
+            logger.info(f"实盘 V2 下单成功：order_id={order_id}")
             return result
             
         except requests.exceptions.HTTPError as he:
@@ -420,24 +445,39 @@ class PolyClient:
 
         # 实盘模式：调用 CLOB V2 批量下单 API
         try:
-            batch_orders = []
-            for i, o in enumerate(orders):
-                batch_orders.append({
-                    "token_id": o["token_id"],
-                    "price": str(o["price"]),
-                    "size": str(o["amount"]),
-                    "side": o["side"].upper(),
-                    "timestamp": now_ms + i,
-                    "metadata": zero_bytes32,
-                    "builder": zero_bytes32,
-                    "orderType": "GTC",
-                })
+            if not self._clob_signer:
+                logger.error("[实盘] 离线签名器未就绪，请检查是否配置了有效私钥 POLX_PK")
+                return {"status": "ERROR", "error": "Signer not ready"}
+
+            from polymarket import config
+            api_key = config.API_KEY or os.getenv("POLX_API_KEY", "")
             
+            batch_orders = []
+            for o in orders:
+                safe_price = round(min(max(float(o["price"]), 0.001), 0.999), 4)
+                safe_size = round(float(o["amount"]), 2)
+                side_val = BUY if str(o["side"]).upper() == "BUY" else SELL
+                order_type_val = str(o.get("order_type", "GTC")).upper()
+
+                order_args = OrderArgs(
+                    price=safe_price,
+                    size=safe_size,
+                    side=side_val,
+                    token_id=str(o["token_id"]),
+                )
+                options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+                signed_order = self._clob_signer.builder.create_order(order_args, options=options)
+                batch_orders.append(order_to_json(signed_order, api_key, order_type_val))
+
             payload = {"orders": batch_orders}
             result = self._post_signed("/batch-orders", payload)
             logger.info(f"批量 V2 下单成功：{len(result.get('orders', []))} 笔")
             return result
             
+        except requests.exceptions.HTTPError as he:
+            err_body = he.response.text if hasattr(he, "response") and he.response is not None else ""
+            logger.error(f"批量 V2 下单 HTTP 异常 ({he}): {err_body}")
+            return {"status": "ERROR", "error": err_body or str(he)}
         except Exception as e:
             logger.exception(f"批量 V2 下单失败：{e}")
             return {"status": "ERROR", "error": str(e)}
