@@ -315,10 +315,12 @@ def check_live_trades(limit: int = 20):
                 
             total_trades = len(trades)
             total_usdc_vol = 0.0
-            total_expected_ev = 0.0
+            total_realized_pnl = 0.0
             total_fee_est = 0.0
+            
+            market_cache = {}
 
-            print(f"{'成交时间 (UTC)':<19} | {'市场/标的':<22} | {'方向':<4} | {'结果':<4} | {'成交价':<7} | {'金额(USDC)':<10} | {'单笔净 EV (到期/锁利)':<18} | {'Tx Hash / ID'}")
+            print(f"{'成交时间 (UTC)':<19} | {'市场/标的':<22} | {'方向':<4} | {'结果':<4} | {'开仓价':<7} | {'本金(USDC)':<10} | {'实际盈亏 (Realized PnL)':<20} | {'Tx Hash / ID'}")
             print("-" * 105)
             
             for t in trades:
@@ -330,7 +332,8 @@ def check_live_trades(limit: int = 20):
                 else:
                     time_str = str(ts)[:19] if ts else "N/A"
                     
-                title = t.get("title") or t.get("question") or t.get("market_slug") or t.get("condition_id") or "N/A"
+                condition_id = t.get("conditionId") or t.get("condition_id")
+                title = t.get("title") or t.get("question") or t.get("market_slug") or condition_id or "N/A"
                 title_short = (title[:20] + "..") if len(title) > 22 else title
                 
                 side = str(t.get("side", "BUY")).upper()
@@ -338,44 +341,81 @@ def check_live_trades(limit: int = 20):
                 price = float(t.get("price", 0.0))
                 size = float(t.get("size", 0.0))
                 usdc_val = float(t.get("usdc_size") or t.get("cash_amount") or (price * size))
+                trade_asset = str(t.get("asset"))
                 
                 total_usdc_vol += usdc_val
                 
-                # 估算手续费与单笔 EV
                 fee_rate = 0.01 if side == "BUY" else 0.0
                 fee_val = usdc_val * fee_rate
                 total_fee_est += fee_val
                 
-                # 单笔 EV: 若为 BUY，理论到期期望毛利为 (1 - price) * size，扣除手续费即为净 EV
-                if side == "BUY":
-                    if price > 0:
-                        single_ev = ((1.0 - price) * size) - fee_val
-                    else:
-                        single_ev = 0.0
+                # 请求市场真实结算状态
+                m_data = market_cache.get(condition_id)
+                if not m_data and condition_id:
+                    try:
+                        r = requests.get(f"https://clob.polymarket.com/markets/{condition_id}", timeout=5)
+                        if r.status_code == 200:
+                            m_data = r.json()
+                            market_cache[condition_id] = m_data
+                    except:
+                        pass
+                
+                is_closed = False
+                is_winner = False
+                if m_data:
+                    is_closed = m_data.get("closed", False)
+                    for tk in m_data.get("tokens", []):
+                        if str(tk.get("token_id")) == trade_asset:
+                            is_winner = tk.get("winner", False)
+                            break
+                            
+                # 计算实际盈亏 (Realized PnL)
+                if not is_closed:
+                    actual_profit = None  # Pending
+                    result_text = "PEND"
                 else:
-                    single_ev = usdc_val - fee_val
-                    
-                total_expected_ev += single_ev
+                    if side == "BUY":
+                        if is_winner:
+                            actual_profit = ((1.0 - price) * size) - fee_val
+                            result_text = "WIN"
+                        else:
+                            actual_profit = -usdc_val  # 本金全亏
+                            result_text = "LOSS"
+                    else:
+                        # 对于 SELL 单，利润为卖出金额减去手续费
+                        actual_profit = usdc_val - fee_val
+                        result_text = "SOLD"
+                
+                if actual_profit is not None:
+                    total_realized_pnl += actual_profit
                 
                 tx_hash = t.get("transaction_hash") or t.get("id") or "N/A"
                 tx_short = (str(tx_hash)[:10] + "...") if len(str(tx_hash)) > 12 else str(tx_hash)
                 
                 side_color = GREEN if side == "BUY" else RED
                 outcome_color = GREEN if outcome in ("YES", "UP") else YELLOW
-                ev_color = GREEN if single_ev > 0 else (RED if single_ev < 0 else YELLOW)
                 
-                print(f"{time_str:<19} | {title_short:<22} | {side_color}{side:<4}{RESET} | {outcome_color}{outcome:<4}{RESET} | ${price:<6.3f} | ${usdc_val:>8.2f} | {ev_color}${single_ev:>10.4f} USDC{RESET} | {tx_short}")
+                if actual_profit is None:
+                    ev_color = YELLOW
+                    profit_str = "  PENDING (待开奖)"
+                else:
+                    ev_color = GREEN if actual_profit > 0 else (RED if actual_profit < 0 else YELLOW)
+                    profit_str = f"${actual_profit:>10.4f} USDC"
+                    
+                res_color = GREEN if result_text == "WIN" else (RED if result_text == "LOSS" else YELLOW)
+                
+                print(f"{time_str:<19} | {title_short:<22} | {side_color}{side:<4}{RESET} | {outcome_color}{outcome:<4}{RESET} | ${price:<6.3f} | ${usdc_val:>8.2f} | {res_color}{result_text:<4}{RESET} | {ev_color}{profit_str:<20}{RESET} | {tx_short}")
                 
             print("-" * 105)
             
-            ev_summary_color = GREEN if total_expected_ev > 0 else (RED if total_expected_ev < 0 else YELLOW)
-            avg_single_ev = (total_expected_ev / total_trades) if total_trades > 0 else 0.0
+            ev_summary_color = GREEN if total_realized_pnl > 0 else (RED if total_realized_pnl < 0 else YELLOW)
+            avg_single_pnl = (total_realized_pnl / total_trades) if total_trades > 0 else 0.0
 
-            print(f"{BOLD}📊 实盘交易统计看板 (共检索到 {total_trades} 笔实盘记录):{RESET}")
-            print(f"  • 累计交易总额 (Total Volume) : ${total_usdc_vol:>10.2f} USDC")
-            print(f"  • 累计理论总 EV (Total Net EV): {ev_summary_color}${total_expected_ev:>10.4f} USDC{RESET}")
-            print(f"  • 预估手续费磨损 (Est. Fees) : {YELLOW}${total_fee_est:>10.4f} USDC{RESET}")
-            print(f"  • 平均单笔 EV (Avg / Trade)   : {ev_summary_color}${avg_single_ev:>10.4f} USDC{RESET}\n")
+            print(f"{BOLD}📊 实盘交易真实盈亏看板 (共检索到 {total_trades} 笔记录):{RESET}")
+            print(f"  • 累计投入总本金 (Total Volume) : ${total_usdc_vol:>10.2f} USDC")
+            print(f"  • 累计已实现盈亏 (Realized PnL): {ev_summary_color}${total_realized_pnl:>10.4f} USDC{RESET} {YELLOW}(*不包含待开奖){RESET}")
+            print(f"  • 预估手续费磨损 (Est. Fees)   : {YELLOW}${total_fee_est:>10.4f} USDC{RESET}")
+            print(f"  • 平均单笔盈亏   (Avg/Trade)   : {ev_summary_color}${avg_single_pnl:>10.4f} USDC{RESET}\n")
             return
         else:
             print(f"{YELLOW}Polymarket Data API 响应: HTTP {resp.status_code} ({resp.text[:60]}){RESET}")
@@ -524,44 +564,33 @@ def check_and_redeem():
     wallet_addr = client.wallet.address
     print(f"操作钱包: {BOLD}{wallet_addr}{RESET}\n")
 
-    db_path = DB_PATH
-    if not os.path.exists(db_path):
-        db_path = os.path.join(PROJECT_ROOT, "tmp", "trading.db")
-
     market_ids = set()
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            for tbl in ("historical_trades", "positions", "active_trades_cache", "processed_markets"):
-                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{tbl}';")
-                if cursor.fetchone():
-                    cursor.execute(f"SELECT DISTINCT market_id FROM {tbl}")
-                    for r in cursor.fetchall():
-                        m_id = r["market_id"] if "market_id" in r.keys() else None
-                        if m_id:
-                            market_ids.add(m_id)
-            conn.close()
-        except Exception as e:
-            print(f"读取本地数据库异常: {e}")
+    print(f"{CYAN}正在通过 Polymarket Data API 实时同步钱包的真实链上历史交易记录...{RESET}")
+    try:
+        import requests
+        proxies = get_proxies_dict()
+        url = f"https://data-api.polymarket.com/trades?user={wallet_addr.lower()}&limit=500"
+        
+        resp = requests.get(url, proxies=proxies, timeout=10)
+        if resp.status_code == 200:
+            trades_list = resp.json()
+            if isinstance(trades_list, list):
+                for t in trades_list:
+                    # Data API 中市场 ID 对应的是 conditionId 字段
+                    m_id = t.get("conditionId") or t.get("condition_id") or t.get("market")
+                    if m_id:
+                        market_ids.add(m_id)
+            print(f"成功从链上同步到近期交易，提取到独立市场数量: {len(market_ids)} 个。\n")
+        else:
+            print(f"{RED}获取链上历史交易失败: HTTP {resp.status_code}{RESET}\n")
+    except Exception as e:
+        print(f"{RED}尝试查询链上历史记录受阻: {e}{RESET}\n")
 
     if not market_ids:
-        print(f"{YELLOW}本地数据库中暂无记录。尝试通过 CLOB 接口查询已结束市场...{RESET}")
-        try:
-            closed = client.get_closed_markets()
-            for m in closed:
-                m_id = m.get("condition_id") or m.get("id")
-                if m_id:
-                    market_ids.add(m_id)
-        except Exception as e:
-            print(f"查询已结束市场异常: {e}")
-
-    if not market_ids:
-        print(f"{CYAN}未检测到需要结算的市场。{RESET}\n")
+        print(f"{CYAN}未在链上检测到任何历史市场记录。{RESET}\n")
         return
 
-    print(f"共扫描到 {len(market_ids)} 个历史市场，正在逐一校验并触发结算...")
+    print(f"共扫描到 {len(market_ids)} 个历史市场，正在逐一校验并触发链上结算...")
     print(f"{'市场 ID (前缀)':<24} | {'结算状态':<14} | {'赎回回款 (USDC)'}")
     print("-" * 65)
 
@@ -634,7 +663,7 @@ def main():
         nargs="?",
         default="all",
         choices=["all", "live", "latency", "balance", "trades", "redeem", "status"],
-        help="指定查询指令: all (全景诊断), live (实盘成交), latency (网络测速), balance (资金余额), trades (本地持仓), redeem (一键结算赎回), status (服务健康度)",
+        help="指定查询指令: all (全景诊断+赎回), live (实盘成交), latency (网络测速), balance (资金余额), trades (本地持仓), redeem (一键结算赎回), status (服务健康度)",
     )
     args = parser.parse_args()
 
@@ -645,8 +674,9 @@ def main():
         check_live_trades(10)
         check_trades(10)
         check_status()
+        check_and_redeem()
         print("\n" + "=" * 65)
-        print(f" {GREEN}全景诊断完成！一键结算可执行: python scripts/check.py redeem{RESET}")
+        print(f" {GREEN}全景诊断与一键赎回 (Redeem) 均已执行完成！{RESET}")
         print("=" * 65 + "\n")
     elif cmd == "live":
         check_live_trades(20)

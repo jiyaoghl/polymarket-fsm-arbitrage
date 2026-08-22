@@ -39,20 +39,30 @@ class RiskManager:
         self.adaptive_retry_success = 0
         self.adaptive_retry_failed = 0
         
+        self.last_balance_refresh = 0.0
         self._initialized = True
         logger.info(f"[风控中心] RiskManager 初始化完毕，初始硬性敞口上限: {self.max_exposure}")
 
-    def refresh_balance_from_chain(self, client: PolyClient):
-        """调用链上或 API 获取真实 USDC 余额，重置上限。"""
+    def refresh_balance_from_chain(self, client: PolyClient, min_interval: float = 30.0) -> bool:
+        """调用链上或 API 获取真实 USDC 余额，重置上限（支持时间间隔节流）。"""
+        import time
+        now = time.time()
+        with self.lock:
+            if now - self.last_balance_refresh < min_interval:
+                return False
+            self.last_balance_refresh = now
+
         try:
             bal_info = client.get_balance()
             if bal_info and 'usdc' in bal_info:
                 with self.lock:
-                    real_usdc = bal_info['usdc']
-                    self.max_exposure = real_usdc * 0.95 # 保留 5% 缓冲
+                    real_usdc = float(bal_info['usdc'])
+                    self.max_exposure = max(real_usdc * 0.95, 0.0)  # 保留 5% 缓冲
                     logger.info(f"[风控中心] 从链上刷新 USDC 余额成功。设置安全敞口上限为: ${self.max_exposure:.2f}")
+                    return True
         except Exception as e:
             logger.error(f"[风控中心] 获取余额失败: {e}")
+        return False
 
     def acquire_trade_lock(self, strategy_id: str, market_id: str, amount: float) -> bool:
         """
@@ -80,7 +90,7 @@ class RiskManager:
     def release_trade_lock(self, strategy_id: str, market_id: str, amount: float):
         """
         释放预扣资金。
-        在订单成交、被拒、撤单、或状态机流转到 SETTLED/FAILED 时调用。
+        在订单成交、被拒、撤单时按金额释放。
         """
         with self.lock:
             lock_key = f"{strategy_id}_{market_id}"
@@ -90,11 +100,23 @@ class RiskManager:
             release_amt = min(amount, current_locked)
             
             if release_amt > 0:
-                self.used_exposure -= release_amt
+                self.used_exposure = max(0.0, self.used_exposure - release_amt)
                 self.locked_orders[lock_key] -= release_amt
                 if self.locked_orders[lock_key] <= 0:
                     del self.locked_orders[lock_key]
                 logger.info(f"[风控中心] {lock_key} 释放额度 ${release_amt:.2f}。当前总使用: ${self.used_exposure:.2f}/${self.max_exposure:.2f}")
+
+    def release_market_lock(self, strategy_id: str, market_id: str):
+        """
+        显式清空指定策略在该市场占用的全部预扣额度。
+        在状态机流转到终态 (SETTLED / FAILED / LOCKED) 或市场结算后无条件调用。
+        """
+        with self.lock:
+            lock_key = f"{strategy_id}_{market_id}"
+            current_locked = self.locked_orders.pop(lock_key, 0.0)
+            if current_locked > 0:
+                self.used_exposure = max(0.0, self.used_exposure - current_locked)
+                logger.info(f"[风控中心] [全量清锁] {lock_key} 释放全部锁定额度 ${current_locked:.2f}。当前总使用: ${self.used_exposure:.2f}/${self.max_exposure:.2f}")
 
     def record_adaptive_retry(self, success: bool):
         """记录微重试的成功或失败次数"""

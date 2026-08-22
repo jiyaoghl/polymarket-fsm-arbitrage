@@ -94,9 +94,52 @@ class StrategyManager:
             logger.error(f"加载策略配置失败：{e}")
 
     def _on_pnl_updated(self) -> None:
-        """PnL 变化后立即触发回撤检查，实现实盘秒级事件风控响应[P0修复]。"""
+        """PnL 变化后立即触发回撤检查与余额刷新，实现实盘秒级事件风控响应[P0修复]。"""
+        from polymarket.risk_manager import RiskManager
+        RiskManager().refresh_balance_from_chain(self.redeem_client, min_interval=10.0)
         if self._check_drawdown_limit():
             logger.warning("[风控] PnL 变动触发回撤阈值熔断，已暂停所有交易")
+
+    def _get_traded_market_ids(self) -> set:
+        """收集所有策略实际交易过的市场 ID。"""
+        ids = set()
+        for bot in self.bots:
+            for market_id in bot._get_all_active_trades():
+                ids.add(market_id)
+            for market_id in list(bot.processed_markets):
+                ids.add(market_id)
+        return ids
+
+    def _loop_redeem_closed_markets(self) -> None:
+        """定期对自己交易过的已结束市场执行 redeem。"""
+        logger.info("启动结算扫描循环...")
+        redeemed = set()
+
+        while True:
+            traded_ids = self._get_traded_market_ids()
+            if not traded_ids:
+                time.sleep(60)
+                continue
+
+            new_redeem_count = 0
+            for m_id in traded_ids:
+                if m_id in redeemed:
+                    continue
+                try:
+                    res = self.redeem_client.redeem(m_id)
+                    if res.get("status") != "SIMULATED":
+                        logger.info(f"市场 {m_id} redeem 结果：{res}")
+                    redeemed.add(m_id)
+                    new_redeem_count += 1
+                except Exception as e:
+                    logger.warning(f"redeem {m_id} 失败：{e}")
+
+            # 结算后刷新链上可用资金敞口
+            if new_redeem_count > 0:
+                from polymarket.risk_manager import RiskManager
+                RiskManager().refresh_balance_from_chain(self.redeem_client, min_interval=0.0)
+
+            time.sleep(120)
 
     def _check_drawdown_limit(self) -> bool:
         """检查是否触发每日最大回撤限制。"""

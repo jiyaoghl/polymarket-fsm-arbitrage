@@ -83,8 +83,8 @@ class BaseStrategy:
             logger.warning(f"[策略：{self.strategy_id}] 启动从 DB 恢复 processed_markets 失败: {e}")
         
         # 订单确认配置
-        self.order_confirm_timeout = 5.0  # 订单确认超时（秒）
-        self.order_confirm_interval = 0.2  # 订单确认轮询间隔（秒）
+        self.order_confirm_timeout = 15.0  # 订单确认超时（秒），适应 VPS 与网络抖动
+        self.order_confirm_interval = 0.5  # 订单确认轮询间隔（秒）
         
         # 下单方式配置（新增）
         self.leg1_order_type = strategy_config.get("leg1_order_type", "FOK")  # 首腿订单类型：FOK(吃单) / GTC(挂单)
@@ -331,13 +331,15 @@ class BaseStrategy:
         leg2_cost: float,
         leg2_size: float,
         min_profit_margin: float = 0.01,
+        leg1_order_type: str = "FOK",
+        leg2_order_type: str = "GTC",
     ) -> Tuple[bool, float, str]:
         """
         严密校验双腿对冲成交后的净套利收益率 (Net EV Margin)。
         
         套利确定性回报 = min(leg1_size, leg2_size) * 1.0 USDC
         双腿总支出成本 = leg1_cost * leg1_size + leg2_cost * leg2_size
-        净期望收益 (EV) = 确定性回报 - 总成本
+        净期望收益 (EV) = 确定性回报 - 总成本 - 精准双腿手续费
         
         Returns:
             (is_profitable, net_ev, reason_msg)
@@ -345,12 +347,17 @@ class BaseStrategy:
         if leg1_cost <= 0 or leg1_size <= 0 or leg2_cost <= 0 or leg2_size <= 0:
             return False, 0.0, "双腿价格或数量必须大于 0"
 
-        total_spent = leg1_cost * leg1_size + leg2_cost * leg2_size
+        spent1 = leg1_cost * leg1_size
+        spent2 = leg2_cost * leg2_size
+        total_spent = spent1 + spent2
         hedged_shares = min(leg1_size, leg2_size)
         guaranteed_payout = hedged_shares * 1.0
         
-        from polymarket.config import TAKER_FEE_RATE
-        total_fee = total_spent * TAKER_FEE_RATE
+        # [P1 优化] 根据两腿各自的订单类型精确分摊费率（FOK=1%, GTC=0%）
+        from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
+        fee1_rate = TAKER_FEE_RATE if leg1_order_type.upper() == "FOK" else MAKER_FEE_RATE
+        fee2_rate = TAKER_FEE_RATE if leg2_order_type.upper() == "FOK" else MAKER_FEE_RATE
+        total_fee = (spent1 * fee1_rate) + (spent2 * fee2_rate)
         net_ev = guaranteed_payout - total_spent - total_fee
 
         # 综合平均单位成本 (每 1 份对冲份额的组合买入成本 + 手续费摊销)
@@ -536,12 +543,13 @@ class BaseStrategy:
         with self._trades_lock:
             return {k: v.copy() for k, v in self.active_trades.items()}
 
-    def _confirm_order_filled(self, order_id: str) -> bool:
+    def _confirm_order_filled(self, order_id: str, token_id: Optional[str] = None) -> bool:
         """
         确认订单是否已成交。
         
         Args:
             order_id: 订单 ID
+            token_id: 选填，Token ID（用于在 REST 接口超时或 401 时的 Data API 终极防线对账）
             
         Returns:
             True 如果订单已成交，False 否则
@@ -565,13 +573,24 @@ class BaseStrategy:
                     return True
                 elif order_status in ("CANCELLED", "EXPIRED", "REJECTED"):
                     logger.warning(f"[策略：{self.strategy_id}] 订单 {order_id} 状态异常: {order_status}")
+                    # 在判定失败前，若有 token_id，先做一次 Data API 链上成交确认
+                    if token_id and hasattr(self.client, "check_user_trade_filled"):
+                        if self.client.check_user_trade_filled(token_id, max_age_seconds=60.0):
+                            logger.info(f"[策略：{self.strategy_id}] [终极防线挽救] 尽管状态为 {order_status}，但 Data API 证实已成交！")
+                            return True
                     return False
             except Exception as e:
                 logger.warning(f"[策略：{self.strategy_id}] 查询订单状态失败: {e}")
             
             time.sleep(self.order_confirm_interval)
         
-        logger.error(f"[策略：{self.strategy_id}] 订单 {order_id} 确认超时")
+        logger.warning(f"[策略：{self.strategy_id}] 订单 {order_id} CLOB 查询超时，启动 Data API 终极防线对账...")
+        if token_id and hasattr(self.client, "check_user_trade_filled"):
+            if self.client.check_user_trade_filled(token_id, max_age_seconds=90.0):
+                logger.info(f"[策略：{self.strategy_id}] [终极防线挽救] Data API 确认该订单已在链上成交！")
+                return True
+
+        logger.error(f"[策略：{self.strategy_id}] 订单 {order_id} 最终确认失败/未成交")
         return False
 
     def _check_order_filled_once(self, order_id: str) -> str:

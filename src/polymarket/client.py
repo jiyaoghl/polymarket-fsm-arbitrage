@@ -167,7 +167,7 @@ class PolyClient:
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "DELETE"],
+            allowed_methods=["GET", "DELETE"],
         )
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
@@ -210,12 +210,21 @@ class PolyClient:
         return headers
 
     def _post_signed(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """发送签名的 POST 请求。"""
+        """发送签名的 POST 请求，内置 401 跨秒动态重签防线。"""
         url = f"{self.host}{endpoint}"
         body = json.dumps(data, separators=(',', ':'))
-        headers = self._get_auth_headers("POST", endpoint, body)
         
+        headers = self._get_auth_headers("POST", endpoint, body)
         response = self.session.post(url, data=body, headers=headers, timeout=10)
+        
+        if response.status_code == 401:
+            logger.warning(f"请求 {endpoint} 遭遇 401 鉴权拦截，疑似处于秒级跨秒临界区。触发动态重签自愈机制...")
+            time.sleep(0.15)
+            headers = self._get_auth_headers("POST", endpoint, body)
+            response = self.session.post(url, data=body, headers=headers, timeout=10)
+            if response.status_code == 401:
+                logger.error(f"动态重签后依然 401。请检查真实的 API_KEY、API_SECRET 拼写及钱包地址。返回: {response.text}")
+                
         response.raise_for_status()
         return response.json()
 
@@ -513,10 +522,59 @@ class PolyClient:
         except requests.exceptions.HTTPError as he:
             err_body = he.response.text if hasattr(he, "response") and he.response is not None else ""
             logger.error(f"实盘 V2 下单 HTTP 异常 ({he}): {err_body}")
+            
+            # 【P0 防御】尝试从撮合层异常响应中提取 orderID，防止幻象失败造成单边敞口泄漏
+            extracted_order_id = None
+            if err_body:
+                try:
+                    err_json = json.loads(err_body)
+                    if isinstance(err_json, dict):
+                        extracted_order_id = err_json.get("orderID") or err_json.get("order_id") or err_json.get("id")
+                except Exception:
+                    pass
+            if extracted_order_id:
+                logger.warning(f"[实盘防御] 下单异常但撮合引擎已生成 orderID={extracted_order_id}，转入 UNCONFIRMED 链上核查链路！")
+                return {
+                    "order_id": extracted_order_id,
+                    "status": "UNCONFIRMED",
+                    "error": err_body or str(he),
+                    "token_id": token_id,
+                    "side": side,
+                    "price": safe_price,
+                    "amount": safe_size,
+                }
             return None
         except Exception as e:
             logger.exception(f"实盘 V2 下单失败：{e}")
             return None
+
+    def check_user_trade_filled(self, token_id: str, max_age_seconds: float = 30.0) -> bool:
+        """
+        [P0 终极防线] 通过 Polymarket Data API 直接查证当前钱包在近期是否确实成交了指定 Token。
+        用于在 CLOB REST API 查单超时或报 401 时的终极对账确认。
+        """
+        if not self.wallet:
+            return False
+        try:
+            url = f"https://data-api.polymarket.com/trades?user={self.wallet.address.lower()}&limit=10"
+            resp = self.session.get(url, timeout=5)
+            if resp.status_code == 200:
+                trades = resp.json()
+                if isinstance(trades, list):
+                    now_ts = time.time()
+                    for t in trades:
+                        t_asset = str(t.get("asset") or "")
+                        if t_asset == str(token_id):
+                            t_ts = t.get("timestamp") or t.get("created_at") or 0
+                            if isinstance(t_ts, (int, float)):
+                                if t_ts > 1e11:
+                                    t_ts = t_ts / 1000.0
+                                if (now_ts - t_ts) <= max_age_seconds:
+                                    logger.info(f"[终极防线] 成功通过 Data API 确认到 token={token_id} 链上真实成交！")
+                                    return True
+        except Exception as e:
+            logger.warning(f"[终极防线] Data API 查证成交异常: {e}")
+        return False
 
     def post_batch_orders(self, orders: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """

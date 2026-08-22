@@ -256,7 +256,9 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 SETTLED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.SETTLED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.SETTLED.value)
-        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, 999999.0)
+        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id)
+        if self.is_live:
+            self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 
     def on_failed(self, fsm: TradeFSM, **kwargs):
         reason = kwargs.get('reason', '未知')
@@ -264,7 +266,9 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 FAILED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.FAILED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.FAILED.value)
-        self.risk_manager.release_trade_lock(self.strategy_id, fsm.market_id, 999999.0)
+        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id)
+        if self.is_live:
+            self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 
     # =========================================================
     # 事件触发源
@@ -273,7 +277,7 @@ class ArbitrageBotFSM(BaseStrategy):
     async def _adaptive_post_order(self, token_id, initial_price, amount, side, initial_order_type, max_slippage=0.005, max_retries=3):
         # 第一次冲击
         order = await self.client.post_order_async(token_id, initial_price, amount, side, initial_order_type)
-        if order and not order.get("error"):
+        if order and order.get("status") not in ("ERROR", None):
             return order
             
         logger.warning(f"[策略FSM：{self.strategy_id}] 首发 FOK 失败，启动滑点微重试 (max_slippage={max_slippage})")
@@ -299,7 +303,7 @@ class ArbitrageBotFSM(BaseStrategy):
             new_price = round(new_price, 4)
             logger.info(f"[策略FSM：{self.strategy_id}] 第 {i+1} 次微重试，以新价格 {new_price} 下单")
             order = await self.client.post_order_async(token_id, new_price, amount, side, initial_order_type)
-            if order and not order.get("error"):
+            if order and order.get("status") not in ("ERROR", None):
                 self.risk_manager.record_adaptive_retry(True)
                 return order
                 
@@ -412,9 +416,14 @@ class ArbitrageBotFSM(BaseStrategy):
                     # 【临期交割拦截】：防止距离结束过近导致刚买入首腿就被强制平仓
                     end_time = float(trade.get("end_time", 0.0))
                     time_to_expiry = end_time - now_ts
-                    if end_time > 0 and time_to_expiry < self.min_time_to_expiry_entry:
-                        record_silent_filter(f"临近交割 (剩余 {time_to_expiry:.1f}s < {self.min_time_to_expiry_entry}s)，禁止开仓")
-                        continue
+                    if end_time > 0:
+                        if time_to_expiry <= 0:
+                            logger.info(f"[{self.strategy_id}] 市场 {market_id} 已过结算时间，退出监听。")
+                            fsm.fire(TradeEvent.ERROR, reason="市场已过结算时间")
+                            continue
+                        if time_to_expiry < self.min_time_to_expiry_entry:
+                            record_silent_filter(f"临近交割 (剩余 {time_to_expiry:.1f}s < {self.min_time_to_expiry_entry}s)，禁止开仓")
+                            continue
 
                     # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
                     if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
@@ -483,11 +492,12 @@ class ArbitrageBotFSM(BaseStrategy):
                             token_id, entry_price, amount, side="BUY", initial_order_type=self.leg1_order_type, max_slippage=self.max_slippage_tolerance
                         )
                         if order:
+                            order_id = order.get("order_id") or ""
                             fsm.transition_to(TradeState.PENDING_LEG1, order_info=order)
-                            if self._confirm_order_filled(order.get("order_id", "")):
+                            if self._confirm_order_filled(order_id, token_id=str(token_id)):
                                 fsm.transition_to(TradeState.LEG1_ONLY, order_info=order)
                             else:
-                                fsm.transition_to(TradeState.FAILED, reason="首腿 FOK 未成交")
+                                fsm.transition_to(TradeState.FAILED, reason="首腿 FOK 确认未成交")
                         else:
                             fsm.transition_to(TradeState.FAILED, reason="首腿 API 请求失败")
 
@@ -536,7 +546,9 @@ class ArbitrageBotFSM(BaseStrategy):
                                 leg1_size=leg1_size,
                                 leg2_cost=vwap_leg2,
                                 leg2_size=amount,
-                                min_profit_margin=0.01
+                                min_profit_margin=0.01,
+                                leg1_order_type=self.leg1_order_type,
+                                leg2_order_type="FOK",
                             )
                             if not is_profit:
                                 logger.warning(f"[二腿锁利拦截] {market_id}: {profit_msg}")
@@ -547,9 +559,9 @@ class ArbitrageBotFSM(BaseStrategy):
                             order = await self.client.post_order_async(
                                 other_token_id, final_order_price, amount, side="BUY", order_type="FOK"
                             )
-                            if order and not order.get("error"):
+                            if order and order.get("status") not in ("ERROR", None):
                                 fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
-                                if self._confirm_order_filled(order.get("order_id", "")):
+                                if self._confirm_order_filled(order.get("order_id", ""), token_id=str(other_token_id)):
                                     fsm.transition_to(TradeState.LOCKED)
                                 else:
                                     logger.warning(f"[FSM 引擎] {market_id} 二腿 FOK 未全量成交")
@@ -610,14 +622,16 @@ class ArbitrageBotFSM(BaseStrategy):
                             leg1_size=leg1_size,
                             leg2_cost=pegged_bid,
                             leg2_size=amount,
-                            min_profit_margin=0.01
+                            min_profit_margin=0.01,
+                            leg1_order_type=self.leg1_order_type,
+                            leg2_order_type="GTC",
                         )
                         if is_profit and pegged_bid <= dynamic_reentry_max:
                             logger.info(f"[FSM 引擎] {market_id} 发起智能 Maker 挂单: @ {pegged_bid:.4f}")
                             maker_order = await self.client.post_order_async(
                                 other_token_id, pegged_bid, amount, side="BUY", order_type="GTC"
                             )
-                            if maker_order and not maker_order.get("error"):
+                            if maker_order and maker_order.get("status") not in ("ERROR", None):
                                 trade["pegged_price"] = pegged_bid
                                 trade["last_peg_time"] = time.time()
                                 fsm.transition_to(TradeState.PENDING_LEG2, order_info=maker_order)
@@ -693,8 +707,12 @@ class ArbitrageBotFSM(BaseStrategy):
 
         except Exception as e:
             logger.error(f"[策略FSM：{self.strategy_id}] 数据总线分发异常 {market_id}: {e}")
-            if fsm.current_state not in (TradeState.LOCKED, TradeState.SETTLED):
-                fsm.transition_to(TradeState.FAILED, reason=str(e))
+            # 【P0 资金安全防御】若已持有单边仓位 (LEG1_ONLY / PENDING_LEG2)，严禁直接设为 FAILED！
+            # 必须保留状态，由 _fsm_timeout_daemon 守护线程继续执行 TTL 强平对冲，防止单边裸奔归零。
+            if fsm.current_state in (TradeState.IDLE, TradeState.PENDING_LEG1):
+                fsm.transition_to(TradeState.FAILED, reason=f"WS 数据总线异常: {e}")
+            else:
+                logger.warning(f"[策略FSM：{self.strategy_id}] {market_id} 处于持仓状态 {fsm.current_state.value}，WS 异常退出后交由后台守护线程兜底强平！")
         finally:
             streamer.unsubscribe(market_id, queue)
             if fsm.current_state == TradeState.IDLE:
@@ -822,10 +840,44 @@ class ArbitrageBotFSM(BaseStrategy):
                             other_token_id, stop_price, amount, side="BUY", order_type="FOK"
                         )
                         
-                        if order and not order.get("error"):
+                        if order and order.get("status") not in ("ERROR", None):
+                            order_id = order.get("order_id", "")
                             fsm.transition_to(TradeState.PENDING_LEG2, is_stop_loss=True, order_info=order)
+                            # 立即尝试确认强平成交，若 FOK 快速确认未成交，启动紧急 GTC 兜底
+                            if not self._confirm_order_filled(order_id, token_id=str(other_token_id)):
+                                logger.warning(f"[策略FSM：{self.strategy_id}] [紧急强平兜底] 强平 FOK 未确认成交，以 GTC @ {stop_price} 紧急挂单兜底！")
+                                gtc_order = self.client.post_order(
+                                    other_token_id, stop_price, amount, side="BUY", order_type="GTC"
+                                )
+                                if gtc_order and gtc_order.get("status") not in ("ERROR", None):
+                                    trade["leg2_order_id"] = gtc_order.get("order_id")
+                                    trade["leg2"] = {
+                                        "order_id": gtc_order.get("order_id"),
+                                        "token": other_token_id,
+                                        "side": "BUY",
+                                        "cost": stop_price,
+                                        "size": amount
+                                    }
+                                else:
+                                    fsm.transition_to(TradeState.FAILED, reason="紧急 GTC 强平挂单失败")
                         else:
-                            fsm.transition_to(TradeState.FAILED, reason="强制止损市价单发送失败，可能遇到系统级熔断")
+                            # 首发 FOK 异常，尝试以 GTC @ 0.99 紧急挂单兜底
+                            logger.error(f"[策略FSM：{self.strategy_id}] 强平 FOK 下单异常，尝试 GTC @ {stop_price} 备选兜底！")
+                            fallback_order = self.client.post_order(
+                                other_token_id, stop_price, amount, side="BUY", order_type="GTC"
+                            )
+                            if fallback_order and fallback_order.get("status") not in ("ERROR", None):
+                                fsm.transition_to(TradeState.PENDING_LEG2, is_stop_loss=True, order_info=fallback_order)
+                                trade["leg2_order_id"] = fallback_order.get("order_id")
+                                trade["leg2"] = {
+                                    "order_id": fallback_order.get("order_id"),
+                                    "token": other_token_id,
+                                    "side": "BUY",
+                                    "cost": stop_price,
+                                    "size": amount
+                                }
+                            else:
+                                fsm.transition_to(TradeState.FAILED, reason="强制止损市价与挂单均发送失败")
                         
                 elif fsm.current_state == TradeState.PENDING_LEG2:
                     leg2_order_id = trade.get("leg2_order_id")
