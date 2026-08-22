@@ -35,6 +35,11 @@ class ArbitrageBotFSM(BaseStrategy):
         self._timer_thread = threading.Thread(target=self._fsm_timeout_daemon, daemon=True)
         self._timer_thread.start()
         
+        # [做市双挂] 是否启用首腿与二腿并发限价挂单 (Dual-GTC Bracket)
+        self.dual_bracket_entry = strategy_config.get(
+            "dual_bracket_entry",
+            (self.leg1_order_type == "GTC" and self.leg2_order_type == "GTC")
+        )
         self._recover_active_trades()
 
     def _recover_active_trades(self):
@@ -130,6 +135,7 @@ class ArbitrageBotFSM(BaseStrategy):
         
         # 注册事件触发器
         fsm.register_transition_hook(TradeState.PENDING_LEG1, self.on_pending_leg1)
+        fsm.register_transition_hook(TradeState.PENDING_BOTH_LEGS, self.on_pending_both_legs)
         fsm.register_transition_hook(TradeState.LEG1_ONLY, self.on_leg1_only)
         fsm.register_transition_hook(TradeState.PENDING_LEG2, self.on_pending_leg2)
         fsm.register_transition_hook(TradeState.LOCKED, self.on_locked)
@@ -216,6 +222,18 @@ class ArbitrageBotFSM(BaseStrategy):
             "size": order.get("amount")
         } if order else None
         self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG1.value, leg1=leg1_data)
+
+    def on_pending_both_legs(self, fsm: TradeFSM, **kwargs):
+        orders = kwargs.get("orders", [])
+        msg = f"双腿并发挂单：YES={orders[0].get('order_id') if len(orders)>0 else 'N/A'}, NO={orders[1].get('order_id') if len(orders)>1 else 'N/A'}"
+        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_BOTH_LEGS 状态。{msg}")
+        self._add_trade_event(fsm.market_id, TradeState.PENDING_BOTH_LEGS.value, msg)
+        self._update_trade_status(
+            fsm.market_id, 
+            TradeState.PENDING_BOTH_LEGS.value,
+            dual_orders=orders,
+            dual_issued_time=time.time()
+        )
 
     def on_leg1_only(self, fsm: TradeFSM, **kwargs):
         msg = "单边敞口倒计时启动，等待另一侧回落锁单。"
@@ -433,6 +451,70 @@ class ArbitrageBotFSM(BaseStrategy):
                         record_silent_filter(f"NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
                         continue
                         
+                    # ──────────────────────────────────────────────────────────
+                    # 模式 A：双腿并发限价挂单 (Dual-GTC Bracket Maker)
+                    # ──────────────────────────────────────────────────────────
+                    if self.dual_bracket_entry and best_bid_yes is not None and best_bid_no is not None:
+                        # 1. 检查全账户当前未对冲单腿数量上限
+                        unhedged_count = self._get_unhedged_trade_count()
+                        if unhedged_count >= self.max_concurrent_unhedged_trades:
+                            record_silent_filter(f"达到最大并发敞口数 ({unhedged_count})")
+                            continue
+
+                        # 2. 定价：YES 挂买一前沿，NO 挂互补保利买价 (保底 1.5% 净利)
+                        min_profit_margin = 0.015
+                        yes_bid_price = round(min(best_bid_yes + 0.001, self.entry_max_price), 4)
+                        no_bid_price = round(1.0 - yes_bid_price - min_profit_margin, 4)
+
+                        # 3. 价格与盘口合理性校验
+                        if yes_bid_price < self.entry_min_price or no_bid_price < self.entry_min_price:
+                            record_silent_filter(f"双挂价格偏斜: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} < {self.entry_min_price}")
+                            continue
+
+                        if no_bid_price > (best_bid_no + 0.01):
+                            record_silent_filter(f"NO 侧溢价过高 ({no_bid_price:.4f} > 买一 {best_bid_no:.4f} + 0.01)")
+                            continue
+
+                        # 4. 双腿净收益严格数学校验
+                        is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
+                            leg1_cost=yes_bid_price,
+                            leg1_size=self.order_amount,
+                            leg2_cost=no_bid_price,
+                            leg2_size=self.order_amount,
+                            min_profit_margin=min_profit_margin,
+                            leg1_order_type="GTC",
+                            leg2_order_type="GTC",
+                        )
+                        if not is_profit:
+                            record_silent_filter(f"双挂锁利校验未通过: {profit_msg}")
+                            continue
+
+                        # 5. 份数对齐 (Shares >= 5.0) 与双倍风控额度申请
+                        calc_shares = self.order_amount / yes_bid_price
+                        shares = round(max(calc_shares, 5.0), 2)
+                        lock_amount = round(shares * (yes_bid_price + no_bid_price), 2)
+
+                        if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, lock_amount):
+                            record_silent_filter(f"风控敞口超限 (双挂要求 {lock_amount} USDC)")
+                            continue
+
+                        logger.info(f"[Dual-GTC 引擎] {market_id} 满足双挂条件，原子提交: YES @ {yes_bid_price:.4f} x {shares}, NO @ {no_bid_price:.4f} x {shares} (预估净EV: {est_ev:.4f})")
+                        yes_order_payload = {"token_id": yes_token, "price": yes_bid_price, "amount": shares, "side": "BUY", "order_type": "GTC"}
+                        no_order_payload = {"token_id": no_token, "price": no_bid_price, "amount": shares, "side": "BUY", "order_type": "GTC"}
+
+                        batch_res = await asyncio.to_thread(self.client.post_batch_orders, [yes_order_payload, no_order_payload])
+                        if batch_res and batch_res.get("status") != "ERROR":
+                            orders_list = batch_res.get("orders") or []
+                            if len(orders_list) >= 2:
+                                fsm.transition_to(TradeState.PENDING_BOTH_LEGS, orders=orders_list)
+                                continue
+                        
+                        fsm.transition_to(TradeState.FAILED, reason="双腿批量挂单 API 请求失败")
+                        continue
+
+                    # ──────────────────────────────────────────────────────────
+                    # 模式 B：常规单腿 Taker/Maker 入场
+                    # ──────────────────────────────────────────────────────────
                     if best_ask_yes <= best_ask_no:
                         choice = "YES"
                         entry_price = best_ask_yes
@@ -500,6 +582,86 @@ class ArbitrageBotFSM(BaseStrategy):
                                 fsm.transition_to(TradeState.FAILED, reason="首腿 FOK 确认未成交")
                         else:
                             fsm.transition_to(TradeState.FAILED, reason="首腿 API 请求失败")
+
+                elif fsm.current_state == TradeState.PENDING_BOTH_LEGS and trade:
+                    # ──────────────────────────────────────────────────────────
+                    # 双腿并发挂单状态监控 (Dual-GTC Bracket Active Monitor)
+                    # ──────────────────────────────────────────────────────────
+                    dual_orders = trade.get("dual_orders", [])
+                    if len(dual_orders) >= 2:
+                        order_yes_info = dual_orders[0]
+                        order_no_info = dual_orders[1]
+                        yes_oid = order_yes_info.get("order_id") or order_yes_info.get("orderID") or ""
+                        no_oid = order_no_info.get("order_id") or order_no_info.get("orderID") or ""
+                        
+                        status_yes = self._check_order_filled_once(yes_oid) if yes_oid else "PENDING"
+                        status_no = self._check_order_filled_once(no_oid) if no_oid else "PENDING"
+                        
+                        # 1. 双腿均全量成交 -> 直接进入 LOCKED 达成完美套利
+                        if status_yes == "FILLED" and status_no == "FILLED":
+                            logger.info(f"[Dual-GTC] 市场 {market_id} 双腿均已成交，零暴露达成完美套利！")
+                            trade["leg1"] = {
+                                "order_id": yes_oid,
+                                "token": yes_token,
+                                "side": "BUY",
+                                "cost": float(order_yes_info.get("price", 0.0)),
+                                "size": float(order_yes_info.get("amount", 0.0))
+                            }
+                            trade["leg2"] = {
+                                "order_id": no_oid,
+                                "token": no_token,
+                                "side": "BUY",
+                                "cost": float(order_no_info.get("price", 0.0)),
+                                "size": float(order_no_info.get("amount", 0.0))
+                            }
+                            fsm.transition_to(TradeState.LOCKED)
+                            continue
+                            
+                        # 2. 仅 YES 成交 -> YES 为 Leg1，NO 为 Leg2 挂单，进入 LEG1_ONLY 启动 90s TTL
+                        elif status_yes == "FILLED" and status_no != "FILLED":
+                            logger.info(f"[Dual-GTC] 市场 {market_id} YES 已成交，NO 仍在挂单，流转至 LEG1_ONLY！")
+                            trade["leg1"] = {
+                                "order_id": yes_oid,
+                                "token": yes_token,
+                                "side": "BUY",
+                                "cost": float(order_yes_info.get("price", 0.0)),
+                                "size": float(order_yes_info.get("amount", 0.0))
+                            }
+                            trade["leg2_order_id"] = no_oid
+                            trade["leg2"] = {
+                                "order_id": no_oid,
+                                "token": no_token,
+                                "side": "BUY",
+                                "cost": float(order_no_info.get("price", 0.0)),
+                                "size": float(order_no_info.get("amount", 0.0))
+                            }
+                            trade["pegged_price"] = float(order_no_info.get("price", 0.0))
+                            trade["last_peg_time"] = time.time()
+                            fsm.transition_to(TradeState.LEG1_ONLY)
+                            continue
+                            
+                        # 3. 仅 NO 成交 -> NO 为 Leg1，YES 为 Leg2 挂单，进入 LEG1_ONLY 启动 90s TTL
+                        elif status_no == "FILLED" and status_yes != "FILLED":
+                            logger.info(f"[Dual-GTC] 市场 {market_id} NO 已成交，YES 仍在挂单，流转至 LEG1_ONLY！")
+                            trade["leg1"] = {
+                                "order_id": no_oid,
+                                "token": no_token,
+                                "side": "BUY",
+                                "cost": float(order_no_info.get("price", 0.0)),
+                                "size": float(order_no_info.get("amount", 0.0))
+                            }
+                            trade["leg2_order_id"] = yes_oid
+                            trade["leg2"] = {
+                                "order_id": yes_oid,
+                                "token": yes_token,
+                                "side": "BUY",
+                                "cost": float(order_yes_info.get("price", 0.0)),
+                                "size": float(order_yes_info.get("amount", 0.0))
+                            }
+                            trade["pegged_price"] = float(order_yes_info.get("price", 0.0))
+                            trade["last_peg_time"] = time.time()
+                            fsm.transition_to(TradeState.LEG1_ONLY)
+                            continue
 
                 elif fsm.current_state == TradeState.LEG1_ONLY and trade:
                     # 监控二腿补仓与对冲逻辑
@@ -794,6 +956,26 @@ class ArbitrageBotFSM(BaseStrategy):
                     self.fsms.pop(market_id, None)
                     continue
                     
+                if fsm.current_state == TradeState.PENDING_BOTH_LEGS:
+                    dual_orders = trade.get("dual_orders", [])
+                    now = time.time()
+                    time_to_expiry = trade.get("end_time", 0) - now
+                    dual_issued_time = trade.get("dual_issued_time", now)
+                    
+                    # 双挂临期未成交撤单 (剩余时间不足或挂单超 180s)
+                    if time_to_expiry <= self.leg2_cancel_before_expiry or (now - dual_issued_time > 180):
+                        logger.warning(f"[策略FSM：{self.strategy_id}] [Dual-GTC 守护] 市场 {market_id} 双挂单临期未成交 (剩余 {time_to_expiry:.1f}s)，批量撤单！")
+                        if self.is_live:
+                            for o in dual_orders:
+                                oid = o.get("order_id") or o.get("orderID")
+                                if oid:
+                                    try:
+                                        self.client.cancel_order(oid)
+                                    except Exception as ce:
+                                        logger.warning(f"撤单失败: {ce}")
+                        fsm.transition_to(TradeState.FAILED, reason="双挂单临期未成交批量撤单退出")
+                        continue
+
                 if fsm.current_state == TradeState.LEG1_ONLY:
                     filled_time = trade.get("leg1_filled_time", time.time())
                     elapsed = time.time() - filled_time

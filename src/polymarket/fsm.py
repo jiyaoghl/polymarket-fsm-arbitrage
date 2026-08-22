@@ -5,9 +5,10 @@ from polymarket.logger import logger
 class TradeState(str, Enum):
     IDLE = "idle"                        # 初始状态
     PENDING_LEG1 = "pending"             # 首腿下单中 (向后兼容旧的 pending 语义)
-    LEG1_ONLY = "leg1_only"              # 首腿成交，单边敞口
-    PENDING_LEG2 = "pending_leg2"        # 二腿下单中
-    LOCKED = "locked"                    # 双腿成交，锁仓
+    PENDING_BOTH_LEGS = "pending_both"   # 双腿限价单并发挂单中 (Dual-GTC Bracket)
+    LEG1_ONLY = "leg1_only"              # 单边已成交，存在单边敞口
+    PENDING_LEG2 = "pending_leg2"        # 二腿追单/挂单中
+    LOCKED = "locked"                    # 双腿均已全量成交，成功锁仓
     SETTLED = "settled"                  # 已结算 / 生命周期结束
     FAILED = "failed"                    # 流程失败强制退出
 
@@ -24,8 +25,15 @@ class TradeFSM:
     VALID_TRANSITIONS: Dict[TradeState, Set[TradeState]] = {
         TradeState.IDLE: {
             TradeState.PENDING_LEG1,
+            TradeState.PENDING_BOTH_LEGS,
             TradeState.SETTLED, # 比如未成交直接废弃
             TradeState.FAILED
+        },
+        TradeState.PENDING_BOTH_LEGS: {
+            TradeState.LOCKED,     # 双腿均被吃单，秒级完成套利
+            TradeState.LEG1_ONLY,  # 单腿先成交，另一腿仍在排队或需追单
+            TradeState.SETTLED,
+            TradeState.FAILED      # 临期未成交批量撤单
         },
         TradeState.PENDING_LEG1: {
             TradeState.LEG1_ONLY, 
@@ -34,7 +42,8 @@ class TradeFSM:
         },
         TradeState.LEG1_ONLY: {
             TradeState.PENDING_LEG2,
-            TradeState.SETTLED, # 比如单腿触发超时止损并成交
+            TradeState.LOCKED,    # 处于双挂转单边时二腿也迅速成交
+            TradeState.SETTLED,   # 比如单腿触发超时止损并成交
             TradeState.FAILED
         },
         TradeState.PENDING_LEG2: {
