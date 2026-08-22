@@ -345,14 +345,18 @@ class PolyClient:
         d_size = Decimal(str(amount))
 
         if side.upper() == "BUY":
-            # 买入：花 pUSD 买 shares
-            raw_maker = int((d_size * d_price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
-            raw_taker = int(d_size.quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            # 买入：花 pUSD (makerAmount，最大 2 位精度/分) 买入 shares (takerAmount，最大 4 位精度)
+            maker_usdc = (d_size * d_price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            taker_shares = d_size.quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+            raw_maker = int(maker_usdc * Decimal("1000000"))
+            raw_taker = int(taker_shares * Decimal("1000000"))
             side_int = 0
         else:
-            # 卖出：卖 shares 换 pUSD
-            raw_maker = int(d_size.quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
-            raw_taker = int((d_size * d_price).quantize(Decimal("0.000001"), rounding=ROUND_DOWN) * Decimal("1000000"))
+            # 卖出：卖出 shares (makerAmount，最大 2 位精度) 换取 pUSD (takerAmount，最大 2 位精度)
+            maker_shares = d_size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            taker_usdc = (d_size * d_price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            raw_maker = int(maker_shares * Decimal("1000000"))
+            raw_taker = int(taker_usdc * Decimal("1000000"))
             side_int = 1
 
         eip712_data = {

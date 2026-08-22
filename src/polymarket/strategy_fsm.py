@@ -279,7 +279,7 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.warning(f"[策略FSM：{self.strategy_id}] 首发 FOK 失败，启动滑点微重试 (max_slippage={max_slippage})")
         # 开始重试
         for i in range(max_retries):
-            await asyncio.sleep(0.05) # 50ms 后重新发
+            await asyncio.sleep(0.35) # 350ms 避开同秒并发与时间戳碰撞
             
             # 重新拿盘口
             price_info = await self.client.get_market_price_async(token_id)
