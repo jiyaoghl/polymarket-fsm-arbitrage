@@ -406,14 +406,15 @@ class PolyClient:
             signature_hex = "0x" + signature_hex
 
         order_dict = {
-            "salt": str(salt),
+            "salt": int(salt),
             "maker": maker,
             "signer": signer,
             "tokenId": str(token_id),
             "makerAmount": str(raw_maker),
             "takerAmount": str(raw_taker),
             "side": side.upper(),
-            "signatureType": SIGNATURE_TYPE,
+            "expiration": "0",
+            "signatureType": int(SIGNATURE_TYPE),
             "timestamp": str(now_ms),
             "metadata": zero_bytes32,
             "builder": zero_bytes32,
@@ -473,7 +474,13 @@ class PolyClient:
                 return None
 
             safe_price = round(min(max(float(price), 0.001), 0.999), 4)
-            safe_size = round(float(amount), 2)
+            raw_size = float(amount)
+            # CLOB 要求最小份数 >= 5.0 Shares；若传入为 USDC 金额，则折算为份数
+            if raw_size < 5.0 and safe_price > 0:
+                calc_shares = raw_size / safe_price
+                safe_size = round(max(calc_shares, 5.0), 2)
+            else:
+                safe_size = round(max(raw_size, 5.0), 2)
 
             # 纯原生构建 V2 EIP-712 签名订单（0 外部网络延迟）
             signed_order = self._create_v2_signed_order(
@@ -490,6 +497,7 @@ class PolyClient:
                 "order": signed_order,
                 "owner": api_key,
                 "orderType": order_type.upper(),
+                "deferExec": False,
                 "postOnly": False,
             }
 
@@ -557,6 +565,7 @@ class PolyClient:
                     "order": signed_order,
                     "owner": api_key,
                     "orderType": order_type_val,
+                    "deferExec": False,
                     "postOnly": False,
                 })
 
