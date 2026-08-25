@@ -172,6 +172,7 @@ class PolyClient:
 
         # 兼容性属性保持
         self.session = self.http2_client
+        self._http_lock = threading.RLock()
 
         self._rate_limiter = RateLimiter(rate=rate_limit, period=1.0)
         
@@ -234,13 +235,15 @@ class PolyClient:
         body = json.dumps(data, separators=(',', ':'))
         
         headers = self._get_auth_headers("POST", endpoint, body)
-        response = self.http2_client.post(url, content=body, headers=headers)
+        with self._http_lock:
+            response = self.http2_client.post(url, content=body, headers=headers)
         
         if response.status_code == 401:
             logger.warning(f"请求 {endpoint} 遭遇 401 鉴权拦截，疑似处于秒级跨秒临界区。触发动态重签自愈机制...")
             time.sleep(0.15)
             headers = self._get_auth_headers("POST", endpoint, body)
-            response = self.http2_client.post(url, content=body, headers=headers)
+            with self._http_lock:
+                response = self.http2_client.post(url, content=body, headers=headers)
             if response.status_code == 401:
                 logger.error(f"动态重签后依然 401。请检查真实的 API_KEY、API_SECRET 拼写及钱包地址。返回: {response.text}")
                 
@@ -252,7 +255,8 @@ class PolyClient:
         url = f"{self.host}{endpoint}"
         headers = self._get_auth_headers("GET", endpoint)
         
-        response = self.http2_client.get(url, headers=headers)
+        with self._http_lock:
+            response = self.http2_client.get(url, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -318,13 +322,16 @@ class PolyClient:
             return []
 
     def get_orderbook(self, token_id: str) -> Optional[Dict[str, Any]]:
-        """获取指定 Token 的完整订单簿深度 (bids, asks)。基于 HTTP/2 多路复用。"""
+        """获取指定 Token 的完整订单簿深度 (bids, asks)。基于 HTTP/2 多路复用与线程安全锁。"""
         for attempt in range(3):
             try:
                 url = f"{self.host}/book?token_id={token_id}"
-                response = self.http2_client.get(url)
+                with self._http_lock:
+                    response = self.http2_client.get(url)
                 response.raise_for_status()
                 return response.json() or {}
+            except (BlockingIOError, OSError) as e:
+                time.sleep(0.05 * (attempt + 1))
             except Exception as e:
                 if attempt == 2:
                     logger.warning(f"获取订单簿深度最终失败 token={token_id}: {e}")
@@ -333,11 +340,12 @@ class PolyClient:
 
     # ========= 行情/盘口 =========
     def get_market_price(self, token_id: str) -> Optional[Dict[str, float]]:
-        """获取指定市场的买卖盘价格（最佳买一/卖一）。基于 HTTP/2 极速传输。"""
+        """获取指定市场的买卖盘价格（最佳买一/卖一）。基于 HTTP/2 极速传输与线程安全锁。"""
         for attempt in range(3):
             try:
                 url = f"{self.host}/book?token_id={token_id}"
-                response = self.http2_client.get(url)
+                with self._http_lock:
+                    response = self.http2_client.get(url)
                 if response.status_code == 404:
                     return None
                 response.raise_for_status()
@@ -350,16 +358,16 @@ class PolyClient:
                 best_bid = max((float(b["price"]) for b in bids), default=0.0)
 
                 return {"ask": best_ask, "bid": best_bid}
+            except (BlockingIOError, OSError) as e:
+                # Windows 非阻塞套接字缓冲竞争 (WinError 10035)，短暂退避
+                time.sleep(0.05 * (attempt + 1))
             except Exception as e:
                 status = getattr(getattr(e, "response", None), "status_code", 0)
                 if status == 404:
                     return None
                 logger.warning(f"获取价格失败 token={token_id} (重试 {attempt + 1}/3): {e}")
                 if attempt < 2:
-                    time.sleep(1.0 * (2 ** attempt))
-            except Exception as e:
-                logger.error(f"获取价格发生意外错误 token={token_id}: {e}")
-                return None
+                    time.sleep(0.5 * (2 ** attempt))
         logger.error(f"获取价格最终失败 token={token_id}")
         return None
 
