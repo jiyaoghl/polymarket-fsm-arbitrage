@@ -37,7 +37,8 @@
 ## 6. Dev-Prod 分离与云端流水线规范 (Cloud-Native Workflow)
 - **本地断网开发假设**：AI Agent 应当知晓用户的本地 Windows 环境连接 Polymarket 主网极度不稳定。因此，**严禁**在本地开发时要求用户“直接跑一下连网脚本看看效果”。
 - **闭环调试协议**：所有的增量开发、策略参数调整，都应在本地仅执行“静态检查”与“离线代码推理”。修改完毕后，必须提示用户通过 `git commit & push` 提交，依赖于 VPS 上输出的 `trading.db` 交易记录和云端日志来提供反馈，做离线数据回溯优化。
-- **跨平台路径安全**：生产环境已迁至 Ubuntu 24.04 (Python 3.12)，开发环境为 Windows (Python 3.10+)。所有涉及目录拼接、读取文件等 I/O 操作，**必须**使用 `pathlib` 或是严格的 `os.path.join`，绝不允许硬编码 `\` 或 `/` 路径符。在云端启动项目的统一入口需保持 `PYTHONPATH=src python3 -m apps.dashboard`。
+- **跨平台路径安全**：生产环境已迁至 Ubuntu 24.04 (Python 3.12)，开发环境为 Windows (Python 3.10+)。所有涉及目录拼接、读取文件等 I/O 操作，**必须**使用 `pathlib` 或是严格的 `os.path.join`，绝不允许硬编码 `\` 或 `/` 路径符。在云端启动项目的统一入口需保持 `PYTHONPATH=src python3 -m polymarket.apps.dashboard`。
+
 
 ## 7. 策略模型与做市基准 (Strategy & Execution)
 - **放弃纯双边 Taker (No Taker-Taker)**：由于 Python 应用层架构与普通 RPC 存在毫秒至秒级的天然延迟，去尝试抢夺纯盘口双边吃单（Taker-Taker）无异于在竞争最卷的赛道送手续费。在默认配置中应剔除或放弃 `taker_taker` 策略。
@@ -125,4 +126,9 @@
   - 仅在两腿均为 GTC 的做市模式下才允许调用 `post_batch_orders([yes_order, no_order])` 原子双挂。Taker-Maker 模式因涉及市价吃单，**严禁并发双发**（必须严格遵循“首腿成交入账后，再挂二腿”的串行保护）。
 - **强平市价单必须确认与备选 GTC 兜底**：
   - 触发 90s TTL 强平时，发送市价 FOK 平仓单后**必须调用 `_confirm_order_filled` 校验成交**。若 FOK 快速确认未成交或首发异常，必须立即以 `GTC @ 0.99` 紧急挂单兜底，杜绝守护线程丢下单边持仓直接进入 FAILED。
+
+## 21. 领域分层与无状态服务规范 (Domain Layering & Stateless Services)
+- **单一真理源与强类型上下文 (TradeContext Single Source of Truth)**：所有交易状态流转必须使用 `TradeContext` 领域模型，禁止在各 Service 内部私自维护字典状态。对外/看板必须通过 `.to_dict()` 适配输出，维持 100% 契约兼容。
+- **核心 Service 纯无状态化 (Stateless Services)**：`PricingEngine`、`OrderExecutionService`、`AdaptiveLiquidatorService`、`MakerPeggingService` 必须保持 Stateless，仅接收传入的 `TradeContext` 并返回计算结果或直接操作外部 Client，杜绝跨模块双脑分裂。
+- **纯数学与 I/O 严格隔离 (Pure Math vs I/O)**：定价与收益核算逻辑（`PricingEngine`）严禁产生任何网络 I/O 或数据库调用，必须保持为纯函数以支持 100% 内存级本地单元测试。
 

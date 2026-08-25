@@ -131,3 +131,32 @@ Polymarket CLOB V2 (升级后) 对实盘下单采用**双层认证协议 (Dual-L
 - **双向全量清锁 (`release_market_lock`)**：无论交易正常结算（SETTLED）、止损退出（FAILED）还是成功锁仓（LOCKED），无条件显式清空该市场所占用的所有预扣保证金。
 - **事件驱动链上余额自适应**：在市场 Redeem 结算后及 PnL 更新时，动态刷新真实抵押品余额并重设 `max_exposure`，确保小资金账户随时具备充足可用额度。
 
+---
+
+## 8. 领域驱动分层与代码解耦设计 (Software Architecture & Layering)
+
+系统采用了轻量级 **DDD-Lite / Service Pattern** 分层设计，消除上帝类 (God Class)，实现 100% 内存级单测与强类型约束：
+
+```
+src/polymarket/
+├── domain/                     # 1. 领域模型层 (Domain Entities & State)
+│   ├── models.py               # 强类型 TradeContext (单真理源) & LegPosition (内置 .to_dict() 兼容层)
+│   └── fsm.py                  # 规范化的 TradeFSM 状态机与合法转移图
+│
+├── services/                   # 2. 核心解耦服务层 (Stateless Domain Services)
+│   ├── pricing.py              # PricingEngine: VWAP 深度预估、Net EV 扣费数学校验、双挂保利互补定价 (纯无 I/O 计算)
+│   ├── execution.py            # OrderExecutionService: shares >= 5.0 安全钳制、自适应 FOK 滑点微重试、免签 Data API 终极对账
+│   ├── liquidator.py           # AdaptiveLiquidatorService: 自适应 TTL 动态收紧、绝对时间基准防漂移、FOK+GTC 双重兜底止损
+│   ├── pegging.py              # MakerPeggingService: 1.5~3.5s 随机装死迟滞、0.002~0.004 阶梯跃迁反卷
+│   └── repository.py           # TradeRepository: SQLite WAL 模式下 active_trades_cache 维护与 historical_trades 终态冷热归档
+│
+├── apps/                       # 3. 应用层与可视化看板 (Application & UI)
+│   ├── dashboard.py            # FastAPI 实时 WebSocket 仪表盘与 REST 接口
+│   └── manager.py              # 多策略调度器、市场发现与链上自动 Redeem
+│
+├── streamer.py                 # 单例多路复用 WebSocket 数据总线 (防抖限频 + Zero-Copy)
+├── client.py                   # CLOB V2 原生 EIP-712 签名与 HTTP 代理客户端
+├── risk_manager.py             # 全局资金预扣锁与单例风控管理器
+└── strategy_fsm.py             # 瘦身后的策略编排控制器 (Orchestrator, ~350 行)
+```
+

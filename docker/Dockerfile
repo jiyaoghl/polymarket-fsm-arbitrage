@@ -9,5 +9,6 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "-m", "apps.manager"]
+CMD ["python", "-m", "polymarket.apps.manager"]
+
 

@@ -80,16 +80,17 @@ stop_service() {
     fi
 
     # 兜底通过进程特征停止
-    pkill -f "apps.dashboard" 2>/dev/null || true
+    pkill -f "polymarket.apps.dashboard" 2>/dev/null || true
     sleep 1
-    echo "✅ 进程已停止。"
+    # 强制 kill 残留
+    pkill -9 -f "polymarket.apps.dashboard" 2>/dev/null || true
 }
 
 # 4. 启动服务
 start_service() {
     # 检查是否已经在运行
-    if pgrep -f "apps.dashboard" > /dev/null; then
-        echo "⚠️ 服务已在运行中 (PID: $(pgrep -f "apps.dashboard" | head -n 1))，无需重复启动。"
+    if pgrep -f "polymarket.apps.dashboard" > /dev/null; then
+        echo "⚠️ 服务已在运行中 (PID: $(pgrep -f "polymarket.apps.dashboard" | head -n 1))，无需重复启动。"
         echo "如需重启，请运行: bash vps.sh restart"
         return
     fi
@@ -104,7 +105,7 @@ start_service() {
     ulimit -n 65535 2>/dev/null || true
 
     # 后台启动进程
-    nohup env PYTHONPATH="$PROJECT_DIR/src" "$VENV_DIR/bin/python3" -m apps.dashboard >> "$LOG_FILE" 2>&1 &
+    nohup env PYTHONPATH="$PROJECT_DIR/src" "$VENV_DIR/bin/python3" -m polymarket.apps.dashboard >> "$LOG_FILE" 2>&1 &
     NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
 
@@ -123,7 +124,7 @@ start_service() {
 
 # 5. 查看运行状态
 status_service() {
-    PIDS=$(pgrep -f "apps.dashboard" || true)
+    PIDS=$(pgrep -f "polymarket.apps.dashboard" || true)
     if [ -n "$PIDS" ]; then
         echo "🟢 服务运行正常 [PID: $PIDS]"
     else

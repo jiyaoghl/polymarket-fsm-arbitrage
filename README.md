@@ -8,60 +8,67 @@
 
 ```mermaid
 flowchart TD
-    subgraph Market_Data [外部市场数据源]
+    subgraph Market_Data [1. 外部市场数据源]
         WS[Polymarket CLOB WebSocket]
         GAMMA[Gamma HTTP API]
         BINANCE[Binance 1m KLine API]
     end
 
-    subgraph Data_Bus [统一数据总线与调度]
+    subgraph Data_Bus [2. 统一数据总线与调度]
         STREAMER[MarketDataStreamer 单例多路复用总线]
         DISCOVER[5min 滚动市场定位器]
-        CHOP_FILTER[BTC / ETH 分品种波动率过滤器]
+        CHOP_FILTER[kline_analyzer 波动率防爆盾]
     end
 
     WS --> STREAMER
     GAMMA --> DISCOVER
     BINANCE --> CHOP_FILTER
 
-    subgraph Strategy_Matrix [多策略状态机矩阵 (异构 FSM)]
-        S1[Taker + Maker 保守 / 标准 / 激进]
-        S2[Maker + Maker 保守 / 标准]
+    subgraph Domain_Layer [3. 领域模型层 domain/]
+        MODELS[TradeContext 统一交易上下文]
+        FSM[TradeFSM 状态机流转拓扑]
     end
 
-    STREAMER -->|无拷贝分发价格/深度 Bundle| Strategy_Matrix
-    DISCOVER -->|派发新 5min 盘口| Strategy_Matrix
-    CHOP_FILTER -->|单边行情熔断拦截| Strategy_Matrix
-
-    subgraph Execution_Engine [执行层与深度撮合引擎]
-        VWAP_EST[全量订单簿 VWAP 深度加权预估]
-        EV_CHECK[双腿净 EV 扣费数学拦截器]
-        MAKER_PEG[智能 Maker 动态钉盘追单 Order Pegging]
-        ADAPTIVE_FOK[自适应滑点微重试 FOK]
+    subgraph Strategy_Matrix [4. 策略编排层 strategy_fsm.py]
+        ORCHESTRATOR[ArbitrageBotFSM 策略编排控制器]
     end
 
-    Strategy_Matrix --> Execution_Engine
+    STREAMER -->|无拷贝分发价格/深度 Bundle| ORCHESTRATOR
+    DISCOVER -->|派发新 5min 盘口| ORCHESTRATOR
+    CHOP_FILTER -->|单边行情熔断拦截| ORCHESTRATOR
+    ORCHESTRATOR <--> Domain_Layer
 
-    subgraph Risk_Defense [中央风控与防御系统]
-        RISK_GUARD[RiskGuard 独立风控守卫]
-        CIRCUIT[三级资金熔断机制: 黄牌 / 橙牌 / 红牌]
-        ADAPTIVE_TTL[动态自适应 TTL 强平 + 安全撤单]
+    subgraph Core_Services [5. 核心解耦服务层 services/]
+        PRICING[pricing.py: VWAP 深度预估 & 净 EV 扣费拦截]
+        EXECUTION[execution.py: 份数对齐 & FOK 微重试 & Data API 对账]
+        PEGGING[pegging.py: Maker 盯盘反卷 & 迟滞防抖]
+        LIQUIDATOR[liquidator.py: 动态自适应 TTL 强平引擎]
+        REPO[repository.py: SQLite 仓储与热崩溃恢复]
+    end
+
+    ORCHESTRATOR --> PRICING
+    ORCHESTRATOR --> EXECUTION
+    ORCHESTRATOR --> PEGGING
+    ORCHESTRATOR --> LIQUIDATOR
+    ORCHESTRATOR --> REPO
+
+    subgraph Risk_Defense [6. 全局风控与调度]
+        RISK_MGR[RiskManager 全局资金预扣锁]
         AUTO_REDEEM[到期市场自动结算 Redeem]
     end
 
-    Execution_Engine --> Risk_Defense
+    EXECUTION --> RISK_MGR
+    REPO --> DB[(SQLite WAL 高并发模式 trading.db)]
 
-    subgraph Storage_UI [持久化与可视化看板]
-        DB[(SQLite WAL 高并发模式 trading.db)]
+    subgraph Storage_UI [7. 可视化与运维]
         DASHBOARD[FastAPI 实时 WebSocket 仪表盘 :8888]
         VPS_CLI[vps.sh 一键运维管理系统]
     end
 
-    Risk_Defense --> DB
-    Strategy_Matrix --> DB
     DB --> DASHBOARD
     DASHBOARD --> VPS_CLI
 ```
+
 
 ---
 
@@ -151,7 +158,7 @@ cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
 # 3. 启动 Dashboard 仪表盘
-PYTHONPATH=src python3 -m apps.dashboard
+PYTHONPATH=src python3 -m polymarket.apps.dashboard
 ```
 
 ### 2. VPS 云端一键运维 (Ubuntu 22.04 / 24.04 推荐)

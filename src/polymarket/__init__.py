@@ -1,9 +1,7 @@
 """
-Polymarket 交易与回测工具集。
+Polymarket 交易与做市量化系统。
 
-本仓库采用 `src/` 布局；对外推荐扁平入口（桥接层在 `src/apps`）：
-  - `python -m apps.manager`
-  - `python -m apps.dashboard`
-等方式启动。
+启动方式：
+  - `PYTHONPATH=src python -m polymarket.apps.dashboard` (实时量化大盘)
+  - `PYTHONPATH=src python -m polymarket.apps.manager`   (独立策略管理器)
 """
-

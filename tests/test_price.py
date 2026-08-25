@@ -1,14 +1,8 @@
-import asyncio
+import pytest
 from polymarket.client import get_client
 
-async def test():
-    client = get_client()
-    try:
-        res = await client.get_market_price_async('10465256653612705991685953300071241367002353463213121939852578204418036519721')
-        print("Success:", res)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-
-if __name__ == '__main__':
-    asyncio.run(test())
+def test_get_market_price_method_exists():
+    """测试客户端获取市场价格接口方法规范"""
+    client = get_client(is_live=False)
+    assert hasattr(client, "get_market_price")
+    assert callable(client.get_market_price)

@@ -2,138 +2,111 @@ import json
 import time
 import threading
 import asyncio
-import logging
-from typing import Dict, Any, Optional
-
-import websockets
+from typing import Dict, Any, Optional, List
 
 from polymarket.base_strategy import BaseStrategy
 from polymarket import risk_logger
-from polymarket.fsm import TradeFSM, TradeState
 from polymarket.logger import logger
-from polymarket.kline_analyzer import is_asset_choppy
+from polymarket.kline_analyzer import is_asset_choppy, get_asset_status
 from polymarket.streamer import MarketDataStreamer
+from polymarket.config import SUPPORTED_ASSETS, DB_PATH
+
+from polymarket.domain.models import TradeContext, LegPosition
+from polymarket.domain.fsm import TradeFSM, TradeState
+from polymarket.services.pricing import PricingEngine
+from polymarket.services.execution import OrderExecutionService
+from polymarket.services.liquidator import AdaptiveLiquidatorService
+from polymarket.services.pegging import MakerPeggingService
+from polymarket.services.repository import TradeRepository
+from polymarket.risk_manager import RiskManager
 
 class ArbitrageBotFSM(BaseStrategy):
     """
-    全量 FSM (Finite State Machine) 架构的套利机器人。
-    继承自旧的 ArbitrageBot 以复用配置和 client，但彻底重写了核心的订单状态生命周期。
-    所有 while 轮询将被事件驱动的回调 (Callbacks) 取代。
+    轻量化 FSM 策略编排器 (Strategy Orchestrator)。
+    
+    已完成代码分层解耦重构：
+    1. 定价与收益计算 -> PricingEngine
+    2. 订单执行与对账 -> OrderExecutionService
+    3. 自适应强平与止损 -> AdaptiveLiquidatorService
+    4. 智能盯盘与反卷 -> MakerPeggingService
+    5. SQLite 缓存与归档 -> TradeRepository
     """
     
     def __init__(self, strategy_config: Dict[str, Any]):
         super().__init__(strategy_config)
         
-        # [风控] 引入全局风控单例
-        from polymarket.risk_manager import RiskManager
+        # 基础设施与服务装配
         self.risk_manager = RiskManager()
+        self.repository = TradeRepository(DB_PATH)
         
-        # market_id -> TradeFSM
+        # 状态机映射: market_id -> TradeFSM
         self.fsms: Dict[str, TradeFSM] = {}
         self._last_silent_filter_log: Dict[str, float] = {}
-        # 负责触发超时的后台守护线程
-        self._timer_thread = threading.Thread(target=self._fsm_timeout_daemon, daemon=True)
-        self._timer_thread.start()
         
-        # [做市双挂] 是否启用首腿与二腿并发限价挂单 (Dual-GTC Bracket)
+        # 做市双挂配置 (Dual-GTC Bracket)
         self.dual_bracket_entry = strategy_config.get(
             "dual_bracket_entry",
             (self.leg1_order_type == "GTC" and self.leg2_order_type == "GTC")
         )
+        
+        # 恢复活跃未对冲敞口
         self._recover_active_trades()
+        
+        # 启动自适应超时强平守护线程
+        self._timer_thread = threading.Thread(target=self._fsm_timeout_daemon, daemon=True, name=f"Liquidator_{self.strategy_id}")
+        self._timer_thread.start()
 
     def _recover_active_trades(self):
-        try:
-            from polymarket import db as _db
-            from polymarket.config import DB_PATH
-            caches = _db.get_all_trade_caches(self.strategy_id, DB_PATH)
+        """开机从 SQLite 仓储层恢复未对冲敞口"""
+        recovered_contexts = self.repository.recover_unhedged_trades(self.strategy_id, self.is_live)
+        for ctx in recovered_contexts:
+            market_id = ctx.market_id
+            self._set_trade(market_id, ctx.to_dict())
             
-            # 模拟盘环境下，历史崩溃的单腿毫无意义，直接清空 DB 缓存
-            if not self.is_live:
-                for cache in caches:
-                    _db.delete_trade_cache(cache["market_id"], self.strategy_id, DB_PATH)
-                if caches:
-                    logger.info(f"[策略FSM：{self.strategy_id}] (模拟模式) 已清理 {len(caches)} 个无意义的历史未对冲缓存。")
-                return
-
-            for cache in caches:
-                market_id = cache["market_id"]
-                try:
-                    trade_data = json.loads(cache["trade_json"])
-                    status_str = trade_data.get("status")
-                    
-                    if status_str in (TradeState.LOCKED.value, TradeState.SETTLED.value, TradeState.FAILED.value):
-                        _db.delete_trade_cache(market_id, self.strategy_id, DB_PATH)
-                        continue
-                        
-                    logger.info(f"[策略FSM：{self.strategy_id}] 从 DB 恢复未对冲敞口: {market_id}, 状态: {status_str}")
-                    
-                    self._set_trade(market_id, trade_data)
-                    fsm = self._init_fsm_for_market(market_id)
-                    fsm._state = TradeState(status_str)
-                    
-                    market_mock = {
-                        "id": market_id,
-                        "tokens": trade_data.get("tokens", {})
-                    }
-                    threading.Thread(
-                        target=lambda m=market_mock, f=fsm: asyncio.run(self._fsm_ws_listener(m, f)),
-                        daemon=True,
-                    ).start()
-                    
-                except Exception as e:
-                    logger.warning(f"[策略FSM：{self.strategy_id}] 恢复敞口 {market_id} 失败: {e}")
-                    
-        except Exception as e:
-            logger.warning(f"[策略FSM：{self.strategy_id}] _recover_active_trades 失败: {e}")
+            fsm = self._init_fsm_for_market(market_id)
+            fsm._state = TradeState(ctx.status)
+            
+            market_mock = {
+                "id": market_id,
+                "tokens": ctx.tokens,
+                "__asset_type": ctx.asset
+            }
+            threading.Thread(
+                target=lambda m=market_mock, f=fsm: asyncio.run(self._fsm_ws_listener(m, f)),
+                daemon=True,
+            ).start()
 
     def _update_trade_status(self, market_id: str, status: Optional[str], **kwargs) -> None:
+        """更新交易状态并同步到仓储层"""
         super()._update_trade_status(market_id, status, **kwargs)
         trade = self._get_trade(market_id)
-        if trade:
-            try:
-                from polymarket import db as _db
-                from polymarket.config import DB_PATH
-                current_status = trade.get("status")
-                if current_status in (TradeState.LOCKED.value, TradeState.SETTLED.value, TradeState.FAILED.value):
-                    ev = 0.0
-                    if current_status == TradeState.LOCKED.value:
-                        leg1 = trade.get("leg1")
-                        leg2 = trade.get("leg2")
-                        if leg1 and leg2:
-                            try:
-                                c1 = float(leg1.get("cost", 0.0))
-                                s1 = float(leg1.get("size", 0.0))
-                                c2 = float(leg2.get("cost", 0.0))
-                                s2 = float(leg2.get("size", 0.0))
-                                if s1 > 0 and s2 > 0:
-                                    # [改进] 扣除手续费后的真实 EV
-                                    from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-                                    fee1_rate = TAKER_FEE_RATE if self.leg1_order_type == "FOK" else MAKER_FEE_RATE
-                                    fee2_rate = TAKER_FEE_RATE if self.leg2_order_type == "FOK" else MAKER_FEE_RATE
-                                    fee1 = c1 * s1 * fee1_rate
-                                    fee2 = c2 * s2 * fee2_rate
-                                    gross_ev = min(s1, s2) - (c1 * s1 + c2 * s2)
-                                    total_fee = fee1 + fee2
-                                    net_ev = gross_ev - total_fee
-                                    trade["gross_profit_usdc"] = round(gross_ev, 4)
-                                    trade["fee_usdc"] = round(total_fee, 4)
-                                    trade["profit_usdc"] = round(net_ev, 4)
-                                    ev = net_ev
-                            except Exception:
-                                pass
-                    _db.archive_trade(market_id, self.strategy_id, json.dumps(trade), ev, DB_PATH)
-                    _db.delete_trade_cache(market_id, self.strategy_id, DB_PATH)
-                else:
-                    _db.upsert_trade_cache(market_id, self.strategy_id, json.dumps(trade), DB_PATH)
-            except Exception as e:
-                logger.warning(f"[策略FSM：{self.strategy_id}] 持久化 trade cache 失败: {e}")
+        if not trade:
+            return
+
+        ctx = TradeContext.from_dict(trade)
+        current_status = ctx.status
+        
+        # 若进入终态，核算净 EV 并归档
+        if current_status in (TradeState.LOCKED.value, TradeState.SETTLED.value, TradeState.FAILED.value):
+            if current_status == TradeState.LOCKED.value and ctx.leg1 and ctx.leg2:
+                gross, fee, net = PricingEngine.calculate_net_ev(
+                    ctx.leg1.cost, ctx.leg1.size,
+                    ctx.leg2.cost, ctx.leg2.size,
+                    self.leg1_order_type, self.leg2_order_type
+                )
+                ctx.gross_profit_usdc = gross
+                ctx.fee_usdc = fee
+                ctx.profit_usdc = net
+                self._set_trade(market_id, ctx.to_dict())
+                
+            self.repository.archive_trade(self.strategy_id, ctx)
+        else:
+            self.repository.save_active_trade(self.strategy_id, ctx)
 
     def _init_fsm_for_market(self, market_id: str) -> TradeFSM:
         """为单个市场初始化 FSM 并绑定所有流转钩子"""
         fsm = TradeFSM(market_id, initial_state=TradeState.IDLE)
         
-        # 注册事件触发器
         fsm.register_transition_hook(TradeState.PENDING_LEG1, self.on_pending_leg1)
         fsm.register_transition_hook(TradeState.PENDING_BOTH_LEGS, self.on_pending_both_legs)
         fsm.register_transition_hook(TradeState.LEG1_ONLY, self.on_leg1_only)
@@ -146,60 +119,44 @@ class ArbitrageBotFSM(BaseStrategy):
         return fsm
 
     def execute_strategy(self, market: Dict[str, Any]) -> None:
-        """入口方法：创建 FSM 并触发首条边。"""
+        """入口调度方法：校验行情单边防爆盾并拉起市场监听"""
         market_id = market["id"]
-        
         if self._is_market_processed(market_id):
             return
 
-        # [风控] 动态资产单边行情拦截
+        # 动态 K 线防爆盾校验
         asset = market.get("__asset_type")
-        from polymarket.config import SUPPORTED_ASSETS
         if asset and asset in SUPPORTED_ASSETS:
-            from polymarket.kline_analyzer import is_asset_choppy, get_asset_status
             if not is_asset_choppy(asset, limit=10):
                 now_ts = time.time()
                 if now_ts - self._last_silent_filter_log.get(f"{market_id}_choppy", 0) > 30:
                     logger.info(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
                     self._last_silent_filter_log[f"{market_id}_choppy"] = now_ts
-                else:
-                    logger.debug(f"[策略FSM：{self.strategy_id}] {asset} 拒绝入场：检测到单边行情。")
                 
-                # 透传到 Dashboard
                 status = get_asset_status(asset)
                 amp = status.get("amplitude", 0.0)
                 net = status.get("net_change", 0.0)
-                err_msg = status.get("error") if status.get("error") else f"单边波幅过大 (振幅 {amp:.2f}%, 净变 {net:.2f}%)"
+                err_msg = status.get("error") or f"单边波幅过大 (振幅 {amp:.2f}%, 净变 {net:.2f}%)"
                 
                 risk_logger.push_risk_event(
-                    market_id=market_id,
-                    asset=asset,
-                    strategy=self.strategy_id,
-                    reason=f"币安 K 线防爆盾: {err_msg}",
-                    level="error"
+                    market_id=market_id, asset=asset, strategy=self.strategy_id,
+                    reason=f"币安 K 线防爆盾: {err_msg}", level="error"
                 )
-                
-                # 警告：不要将此市场加入 processed_markets，也不要写入 db！
-                # 单边行情是动态的，必须允许系统在行情恢复震荡后重新尝试入场。
                 return
 
         logger.info(f"[策略FSM：{self.strategy_id}] 开始基于 FSM 监控市场：{market_id}")
-        
         fsm = self._init_fsm_for_market(market_id)
         
-        # 将原有 trade 对象初始化并存入 active_trades，此时状态为 IDLE
-        self._set_trade(market_id, {
-            "market_id": market_id,
-            "status": TradeState.IDLE.value,
-            "leg1": None,
-            "leg2": None,
-            "tokens": market.get("tokens", {}),
-            "end_time": float(market.get("expiry") or market.get("endDate") or (time.time() + 300)), 
-            "start_time": time.time(),
-        })
-        self._add_trade_event(market_id, TradeState.IDLE.value, "开始监听此市场的盘口流动性。")
+        ctx = TradeContext(
+            market_id=market_id,
+            status=TradeState.IDLE.value,
+            asset=asset or "",
+            tokens=market.get("tokens", {}),
+            end_time=float(market.get("expiry") or market.get("endDate") or (time.time() + 300))
+        )
+        ctx.add_event(TradeState.IDLE.value, "开始监听此市场的盘口流动性。")
+        self._set_trade(market_id, ctx.to_dict())
 
-        # 启动事件循环专门监听这个市场的 WebSocket
         threading.Thread(
             target=lambda: asyncio.run(self._fsm_ws_listener(market, fsm)),
             daemon=True,
@@ -210,18 +167,13 @@ class ArbitrageBotFSM(BaseStrategy):
     # =========================================================
 
     def on_pending_leg1(self, fsm: TradeFSM, **kwargs):
-        msg = f"首腿发单：{kwargs.get('order_info', {}).get('order_id', 'unknown')}"
+        order = kwargs.get("order_info", {})
+        msg = f"首腿发单：{order.get('order_id', 'unknown')}"
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG1 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.PENDING_LEG1.value, msg)
-        order = kwargs.get("order_info", {})
-        leg1_data = {
-            "order_id": order.get("order_id"),
-            "token": order.get("token_id"),
-            "side": order.get("side"),
-            "cost": order.get("price"),
-            "size": order.get("amount")
-        } if order else None
-        self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG1.value, leg1=leg1_data)
+        
+        leg1 = LegPosition.from_dict(order)
+        self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG1.value, leg1=leg1.to_dict() if leg1 else None)
 
     def on_pending_both_legs(self, fsm: TradeFSM, **kwargs):
         orders = kwargs.get("orders", [])
@@ -229,39 +181,29 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_BOTH_LEGS 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.PENDING_BOTH_LEGS.value, msg)
         self._update_trade_status(
-            fsm.market_id, 
-            TradeState.PENDING_BOTH_LEGS.value,
-            dual_orders=orders,
-            dual_issued_time=time.time()
+            fsm.market_id, TradeState.PENDING_BOTH_LEGS.value,
+            dual_orders=orders, dual_issued_time=time.time()
         )
 
     def on_leg1_only(self, fsm: TradeFSM, **kwargs):
         msg = "单边敞口倒计时启动，等待另一侧回落锁单。"
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 LEG1_ONLY 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.LEG1_ONLY.value, msg)
-        self._update_trade_status(
-            fsm.market_id, 
-            TradeState.LEG1_ONLY.value, 
-            leg1_filled_time=time.time()
-        )
+        self._update_trade_status(fsm.market_id, TradeState.LEG1_ONLY.value, leg1_filled_time=time.time())
 
     def on_pending_leg2(self, fsm: TradeFSM, **kwargs):
-        is_stop_loss = kwargs.get("is_stop_loss", False)
-        msg = f"二腿发单({'止损' if is_stop_loss else '对冲'})：{kwargs.get('order_info', {}).get('order_id', 'unknown')}"
+        is_stop = kwargs.get("is_stop_loss", False)
+        order = kwargs.get("order_info", {})
+        msg = f"二腿发单({'止损' if is_stop else '对冲'})：{order.get('order_id', 'unknown')}"
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 PENDING_LEG2 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.PENDING_LEG2.value, msg)
-        order = kwargs.get("order_info", {})
-        leg2_data = {
-            "order_id": order.get("order_id"),
-            "token": order.get("token_id"),
-            "side": order.get("side"),
-            "cost": order.get("price"),
-            "size": order.get("amount")
-        } if order else None
         
-        # 兼容旧逻辑，如果没有传 order_info 而是传了 order_id，也至少写进去
+        leg2 = LegPosition.from_dict(order)
         order_id = order.get("order_id") if order else kwargs.get("order_id")
-        self._update_trade_status(fsm.market_id, TradeState.PENDING_LEG2.value, leg2_order_id=order_id, leg2=leg2_data, leg2_issued_time=time.time())
+        self._update_trade_status(
+            fsm.market_id, TradeState.PENDING_LEG2.value,
+            leg2_order_id=order_id, leg2=leg2.to_dict() if leg2 else None, leg2_issued_time=time.time()
+        )
 
     def on_locked(self, fsm: TradeFSM, **kwargs):
         msg = "双腿全量成交，成功套利锁仓！"
@@ -274,7 +216,7 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.info(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 SETTLED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.SETTLED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.SETTLED.value)
-        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id)
+        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id, is_live=self.is_live)
         if self.is_live:
             self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 
@@ -284,841 +226,272 @@ class ArbitrageBotFSM(BaseStrategy):
         logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Hook] {fsm.market_id} 进入 FAILED 状态。{msg}")
         self._add_trade_event(fsm.market_id, TradeState.FAILED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.FAILED.value)
-        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id)
+        self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id, is_live=self.is_live)
         if self.is_live:
             self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 
     # =========================================================
-    # 事件触发源
+    # 事件流驱动与盘口监听
     # =========================================================
 
-    async def _adaptive_post_order(self, token_id, initial_price, amount, side, initial_order_type, max_slippage=0.005, max_retries=3):
-        # 第一次冲击
-        order = await self.client.post_order_async(token_id, initial_price, amount, side, initial_order_type)
-        if order and order.get("status") not in ("ERROR", None):
-            return order
-            
-        logger.warning(f"[策略FSM：{self.strategy_id}] 首发 FOK 失败，启动滑点微重试 (max_slippage={max_slippage})")
-        # 开始重试
-        for i in range(max_retries):
-            await asyncio.sleep(0.35) # 350ms 避开同秒并发与时间戳碰撞
-            
-            # 重新拿盘口
-            price_info = await self.client.get_market_price_async(token_id)
-            if not price_info:
-                continue
-                
-            new_price = price_info["ask"] if side == "BUY" else price_info["bid"]
-            
-            if side == "BUY" and new_price > initial_price + max_slippage:
-                logger.warning(f"[策略FSM：{self.strategy_id}] 重试失败：当前卖一价 {new_price} 已超出滑点上限 {initial_price + max_slippage}")
-                break
-            if side == "SELL" and new_price < initial_price - max_slippage:
-                logger.warning(f"[策略FSM：{self.strategy_id}] 重试失败：当前买一价 {new_price} 已低于滑点下限 {initial_price - max_slippage}")
-                break
-                
-            # 价格仍可接受，重新发起！
-            new_price = round(new_price, 4)
-            logger.info(f"[策略FSM：{self.strategy_id}] 第 {i+1} 次微重试，以新价格 {new_price} 下单")
-            order = await self.client.post_order_async(token_id, new_price, amount, side, initial_order_type)
-            if order and order.get("status") not in ("ERROR", None):
-                self.risk_manager.record_adaptive_retry(True)
-                return order
-                
-        self.risk_manager.record_adaptive_retry(False)
-        return None
-
     async def _fsm_ws_listener(self, market: Dict[str, Any], fsm: TradeFSM):
-        """完全解耦的单一 WebSocket 监听器，现在已重构为接入单例事件总线 (Streamer)。"""
+        """接入单例事件总线 (Streamer) 的异步事件监听器"""
         market_id = market["id"]
-        
-        if not market.get("tokens") or len(market["tokens"]) < 2:
-            return
-            
-        yes_token = market["tokens"].get("YES")
-        no_token = market["tokens"].get("NO")
+        tokens = market.get("tokens", {})
+        yes_token = tokens.get("YES")
+        no_token = tokens.get("NO")
         
         if not yes_token or not no_token:
             return
-        
-        # 预先存下 token，方便 timeout daemon 中使用
-        asset = market.get("__asset_type", "")
-        self._update_trade_status(market_id, None, yes_token=yes_token, no_token=no_token, asset=asset)
-        
+
         streamer = MarketDataStreamer()
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue()
-        
-        # 注册订阅
         streamer.subscribe(market_id, [yes_token, no_token], queue, loop)
         
-        # 【BugFix】由于 Polymarket WS 推送的数据可能是单边或增量更新的
-        # 必须在本地缓存该市场内各个 token 的最新盘口数据，否则会导致凑不齐双边价格而无限跳过拦截
         market_prices_cache: Dict[str, Dict[str, float]] = {}
-        
         last_ws_msg_time = time.time()
         last_ws_timeout_log = 0
-        
+
+        market_expiry = float(market.get("expiry") or market.get("endDate") or 0)
+
         try:
             while fsm.current_state not in (TradeState.SETTLED, TradeState.FAILED, TradeState.LOCKED):
+                now_ts = time.time()
+                # 市场已到期，安全退出并清理
+                if market_expiry > 0 and now_ts >= market_expiry:
+                    if fsm.current_state == TradeState.IDLE:
+                        logger.info(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 已到期且未开仓，安全退出监听。")
+                    else:
+                        logger.info(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 已到期，退出 WS 监听（当前状态: {fsm.current_state.value}）。")
+                    break
+
                 try:
-                    # 从单例数据总线获取深度数据 (Zero-Copy JSON parsing)
                     bundle = await asyncio.wait_for(queue.get(), timeout=5)
-                    
-                    # ⚠️ 致命 Bug 修复：清空积压的旧数据，只取最新的一帧！
-                    # 因为网络请求（比如刚才的下单）可能会阻塞 FSM 零点几秒，这期间总线塞进来了几十条旧价格。
-                    # 如果不排空队列，我们会用过期的盘口去对冲，导致血亏！
+                    # 排空旧数据队列，保持最新盘口
                     while not queue.empty():
                         bundle = queue.get_nowait()
-                        
                 except asyncio.TimeoutError:
                     now_ts = time.time()
+                    if market_expiry > 0 and now_ts >= market_expiry:
+                        break
+
+                    # 仅在市场尚未到期时才记录断流警告
                     if now_ts - last_ws_msg_time > 60 and now_ts - last_ws_timeout_log > 60:
-                        logger.warning(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 超过 60 秒未收到 WebSocket 行情推送 (订阅异常或行情停滞)。")
+                        logger.warning(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 超过 60 秒未收到行情推送。")
                         last_ws_timeout_log = now_ts
                     continue
-                    
+
                 last_ws_msg_time = time.time()
-                data = bundle["data"]
-                prices = bundle["prices"]
-                
-                # 累加合并接收到的各个 token 的价格信息
-                for asset_id, info in prices.items():
-                    if asset_id not in market_prices_cache:
-                        market_prices_cache[asset_id] = {}
-                    market_prices_cache[asset_id].update(info)
-                
-                # 模拟核心的事件逻辑
-                trade = self._get_trade(market_id)
+                for asset_id, info in bundle.get("prices", {}).items():
+                    market_prices_cache.setdefault(asset_id, {}).update(info)
 
-                if fsm.current_state == TradeState.IDLE:
-                    yes_info = market_prices_cache.get(str(yes_token), {})
-                    no_info = market_prices_cache.get(str(no_token), {})
-                    
-                    best_ask_yes = yes_info.get("ask")
-                    best_ask_no = no_info.get("ask")
-                    best_bid_yes = yes_info.get("bid")
-                    best_bid_no = no_info.get("bid")
+                yes_info = market_prices_cache.get(str(yes_token), {})
+                no_info = market_prices_cache.get(str(no_token), {})
+                best_ask_yes, best_bid_yes = yes_info.get("ask"), yes_info.get("bid")
+                best_ask_no, best_bid_no = no_info.get("ask"), no_info.get("bid")
 
-                    if best_ask_yes is None or best_ask_no is None:
-                        continue
-                        
-                    now_ts = time.time()
-                    
-                    def record_silent_filter(reason: str):
-                        t = self._get_trade(market_id)
-                        if not t:
-                            t = {
-                                "status": TradeState.IDLE.value,
-                                "start_time": now_ts,
-                                "end_time": now_ts + 60,
-                                "events": []
-                            }
-                            self._set_trade(market_id, t)
-                        t["filter_reason"] = reason
+                if best_ask_yes is None or best_ask_no is None:
+                    continue
 
-                        if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
-                            logger.info(f"[{self.strategy_id}] [静默拦截] {market_id} {reason}")
-                            self._add_trade_event(market_id, TradeState.IDLE.value, f"静默拦截: {reason}")
-                            self._last_silent_filter_log[market_id] = now_ts
-                            
-                        # 同步压入前端展示面板队列
-                        risk_logger.push_risk_event(
-                            market_id=market_id,
-                            asset=market.get("__asset_type", "UNKNOWN"),
-                            strategy=self.strategy_id,
-                            reason=reason,
-                            level="warning"
-                        )
-
-                    # 【临期交割拦截】：防止距离结束过近导致刚买入首腿就被强制平仓
-                    end_time = float(trade.get("end_time", 0.0))
-                    time_to_expiry = end_time - now_ts
-                    if end_time > 0:
-                        if time_to_expiry <= 0:
-                            logger.info(f"[{self.strategy_id}] 市场 {market_id} 已过结算时间，退出监听。")
-                            fsm.fire(TradeEvent.ERROR, reason="市场已过结算时间")
-                            continue
-                        if time_to_expiry < self.min_time_to_expiry_entry:
-                            record_silent_filter(f"临近交割 (剩余 {time_to_expiry:.1f}s < {self.min_time_to_expiry_entry}s)，禁止开仓")
-                            continue
-
-                    # 【波动率盾牌】：买卖价差过大说明流动性真空，直接拦截首腿开仓
-                    if best_bid_yes is not None and (best_ask_yes - best_bid_yes) > 0.05:
-                        record_silent_filter(f"YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
-                        continue
-                    if best_bid_no is not None and (best_ask_no - best_bid_no) > 0.05:
-                        record_silent_filter(f"NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
-                        continue
-                        
-                    # ──────────────────────────────────────────────────────────
-                    # 模式 A：双腿并发限价挂单 (Dual-GTC Bracket Maker)
-                    # ──────────────────────────────────────────────────────────
-                    if self.dual_bracket_entry and best_bid_yes is not None and best_bid_no is not None:
-                        # 1. 检查全账户当前未对冲单腿数量上限
-                        unhedged_count = self._get_unhedged_trade_count()
-                        if unhedged_count >= self.max_concurrent_unhedged_trades:
-                            record_silent_filter(f"达到最大并发敞口数 ({unhedged_count})")
-                            continue
-
-                        # 2. 定价：YES 挂买一前沿，NO 挂互补保利买价 (保底 1.5% 净利)
-                        min_profit_margin = 0.015
-                        yes_bid_price = round(min(best_bid_yes + 0.001, self.entry_max_price), 4)
-                        no_bid_price = round(1.0 - yes_bid_price - min_profit_margin, 4)
-
-                        # 3. 价格与盘口合理性校验
-                        if yes_bid_price < self.entry_min_price or no_bid_price < self.entry_min_price:
-                            record_silent_filter(f"双挂价格偏斜: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} < {self.entry_min_price}")
-                            continue
-
-                        if no_bid_price > (best_bid_no + 0.01):
-                            record_silent_filter(f"NO 侧溢价过高 ({no_bid_price:.4f} > 买一 {best_bid_no:.4f} + 0.01)")
-                            continue
-
-                        # 4. 双腿净收益严格数学校验
-                        is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
-                            leg1_cost=yes_bid_price,
-                            leg1_size=self.order_amount,
-                            leg2_cost=no_bid_price,
-                            leg2_size=self.order_amount,
-                            min_profit_margin=min_profit_margin,
-                            leg1_order_type="GTC",
-                            leg2_order_type="GTC",
-                        )
-                        if not is_profit:
-                            record_silent_filter(f"双挂锁利校验未通过: {profit_msg}")
-                            continue
-
-                        # 5. 份数对齐 (Shares >= 5.0) 与双倍风控额度申请
-                        calc_shares = self.order_amount / yes_bid_price
-                        shares = round(max(calc_shares, 5.0), 2)
-                        lock_amount = round(shares * (yes_bid_price + no_bid_price), 2)
-
-                        if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, lock_amount):
-                            record_silent_filter(f"风控敞口超限 (双挂要求 {lock_amount} USDC)")
-                            continue
-
-                        logger.info(f"[Dual-GTC 引擎] {market_id} 满足双挂条件，原子提交: YES @ {yes_bid_price:.4f} x {shares}, NO @ {no_bid_price:.4f} x {shares} (预估净EV: {est_ev:.4f})")
-                        yes_order_payload = {"token_id": yes_token, "price": yes_bid_price, "amount": shares, "side": "BUY", "order_type": "GTC"}
-                        no_order_payload = {"token_id": no_token, "price": no_bid_price, "amount": shares, "side": "BUY", "order_type": "GTC"}
-
-                        batch_res = await asyncio.to_thread(self.client.post_batch_orders, [yes_order_payload, no_order_payload])
-                        if batch_res and batch_res.get("status") != "ERROR":
-                            orders_list = batch_res.get("orders") or []
-                            if len(orders_list) >= 2:
-                                fsm.transition_to(TradeState.PENDING_BOTH_LEGS, orders=orders_list)
-                                continue
-                        
-                        fsm.transition_to(TradeState.FAILED, reason="双腿批量挂单 API 请求失败")
-                        continue
-
-                    # ──────────────────────────────────────────────────────────
-                    # 模式 B：常规单腿 Taker/Maker 入场
-                    # ──────────────────────────────────────────────────────────
-                    if best_ask_yes <= best_ask_no:
-                        choice = "YES"
-                        entry_price = best_ask_yes
-                        token_id = yes_token
-                    else:
-                        choice = "NO"
-                        entry_price = best_ask_no
-                        token_id = no_token
-                        
-                    if entry_price > self.entry_max_price:
-                        record_silent_filter(f"最优价 {choice} = {entry_price:.4f} > {self.entry_max_price}")
-                        continue
-                        
-                    if entry_price < self.entry_min_price:
-                        record_silent_filter(f"极度偏斜盘口 {choice} = {entry_price:.4f} < {self.entry_min_price}")
-                        continue
-                        
-                    if entry_price <= self.entry_max_price:
-                        # 1. 检查全账户当前未对冲单腿数量上限
-                        unhedged_count = self._get_unhedged_trade_count()
-                        if unhedged_count >= self.max_concurrent_unhedged_trades:
-                            record_silent_filter(f"达到最大并发敞口数 ({unhedged_count})")
-                            continue
-                            
-                        # 2. 从原始 WS 深度中提取深度并计算微观结构与 VWAP
-                        asks_list, bids_list = self._extract_token_depth(data, str(token_id))
-                        obi, micro_price = self._calculate_micro_structure(bids_list, asks_list)
-                        
-                        # 【OBI 极端防守】：如果我们准备做 Taker 买入 (Buy Ask)，但 OBI 极度不利 (比如 < -0.8) 说明有巨大抛压诱多
-                        if obi < -0.8:
-                            record_silent_filter(f"极端盘口抛压 (OBI: {obi:.2f})，防诱多拦截")
-                            continue
-
-                        is_valid, vwap_price, filled_usdc, reason_msg = self._check_orderbook_depth_and_vwap(
-                            asks=asks_list,
-                            target_usdc_amount=self.order_amount,
-                            max_price_threshold=self.entry_max_price,
-                            max_slippage_tolerance=self.max_slippage_tolerance,
-                        )
-                        if not is_valid:
-                            record_silent_filter(f"首腿深度不足: {reason_msg}")
-                            continue
-                        
-                        # 使用实际加权均价 VWAP 作为成交/出价基准
-                        entry_price = vwap_price
-
-                        entry_price = round(entry_price, 4)
-                        amount = round(self.order_amount, 2)
-                        
-                        # 【风控拦截】申请预扣可用敞口！
-                        if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, amount):
-                            record_silent_filter(f"风控敞口超限 (要求 {amount} USDC)")
-                            continue
-                            
-                        logger.info(f"[FSM 引擎] {market_id} 触发首腿: {choice} @ VWAP={entry_price:.4f}")
-                        order = await self._adaptive_post_order(
-                            token_id, entry_price, amount, side="BUY", initial_order_type=self.leg1_order_type, max_slippage=self.max_slippage_tolerance
-                        )
-                        if order:
-                            order_id = order.get("order_id") or ""
-                            fsm.transition_to(TradeState.PENDING_LEG1, order_info=order)
-                            if self._confirm_order_filled(order_id, token_id=str(token_id)):
-                                fsm.transition_to(TradeState.LEG1_ONLY, order_info=order)
-                            else:
-                                fsm.transition_to(TradeState.FAILED, reason="首腿 FOK 确认未成交")
-                        else:
-                            fsm.transition_to(TradeState.FAILED, reason="首腿 API 请求失败")
-
-                elif fsm.current_state == TradeState.PENDING_BOTH_LEGS and trade:
-                    # ──────────────────────────────────────────────────────────
-                    # 双腿并发挂单状态监控 (Dual-GTC Bracket Active Monitor)
-                    # ──────────────────────────────────────────────────────────
-                    dual_orders = trade.get("dual_orders", [])
-                    if len(dual_orders) >= 2:
-                        order_yes_info = dual_orders[0]
-                        order_no_info = dual_orders[1]
-                        yes_oid = order_yes_info.get("order_id") or order_yes_info.get("orderID") or ""
-                        no_oid = order_no_info.get("order_id") or order_no_info.get("orderID") or ""
-                        
-                        status_yes = self._check_order_filled_once(yes_oid) if yes_oid else "PENDING"
-                        status_no = self._check_order_filled_once(no_oid) if no_oid else "PENDING"
-                        
-                        # 1. 双腿均全量成交 -> 直接进入 LOCKED 达成完美套利
-                        if status_yes == "FILLED" and status_no == "FILLED":
-                            logger.info(f"[Dual-GTC] 市场 {market_id} 双腿均已成交，零暴露达成完美套利！")
-                            trade["leg1"] = {
-                                "order_id": yes_oid,
-                                "token": yes_token,
-                                "side": "BUY",
-                                "cost": float(order_yes_info.get("price", 0.0)),
-                                "size": float(order_yes_info.get("amount", 0.0))
-                            }
-                            trade["leg2"] = {
-                                "order_id": no_oid,
-                                "token": no_token,
-                                "side": "BUY",
-                                "cost": float(order_no_info.get("price", 0.0)),
-                                "size": float(order_no_info.get("amount", 0.0))
-                            }
-                            fsm.transition_to(TradeState.LOCKED)
-                            continue
-                            
-                        # 2. 仅 YES 成交 -> YES 为 Leg1，NO 为 Leg2 挂单，进入 LEG1_ONLY 启动 90s TTL
-                        elif status_yes == "FILLED" and status_no != "FILLED":
-                            logger.info(f"[Dual-GTC] 市场 {market_id} YES 已成交，NO 仍在挂单，流转至 LEG1_ONLY！")
-                            trade["leg1"] = {
-                                "order_id": yes_oid,
-                                "token": yes_token,
-                                "side": "BUY",
-                                "cost": float(order_yes_info.get("price", 0.0)),
-                                "size": float(order_yes_info.get("amount", 0.0))
-                            }
-                            trade["leg2_order_id"] = no_oid
-                            trade["leg2"] = {
-                                "order_id": no_oid,
-                                "token": no_token,
-                                "side": "BUY",
-                                "cost": float(order_no_info.get("price", 0.0)),
-                                "size": float(order_no_info.get("amount", 0.0))
-                            }
-                            trade["pegged_price"] = float(order_no_info.get("price", 0.0))
-                            trade["last_peg_time"] = time.time()
-                            fsm.transition_to(TradeState.LEG1_ONLY)
-                            continue
-                            
-                        # 3. 仅 NO 成交 -> NO 为 Leg1，YES 为 Leg2 挂单，进入 LEG1_ONLY 启动 90s TTL
-                        elif status_no == "FILLED" and status_yes != "FILLED":
-                            logger.info(f"[Dual-GTC] 市场 {market_id} NO 已成交，YES 仍在挂单，流转至 LEG1_ONLY！")
-                            trade["leg1"] = {
-                                "order_id": no_oid,
-                                "token": no_token,
-                                "side": "BUY",
-                                "cost": float(order_no_info.get("price", 0.0)),
-                                "size": float(order_no_info.get("amount", 0.0))
-                            }
-                            trade["leg2_order_id"] = yes_oid
-                            trade["leg2"] = {
-                                "order_id": yes_oid,
-                                "token": yes_token,
-                                "side": "BUY",
-                                "cost": float(order_yes_info.get("price", 0.0)),
-                                "size": float(order_yes_info.get("amount", 0.0))
-                            }
-                            trade["pegged_price"] = float(order_yes_info.get("price", 0.0))
-                            trade["last_peg_time"] = time.time()
-                            fsm.transition_to(TradeState.LEG1_ONLY)
-                            continue
-
-                elif fsm.current_state == TradeState.LEG1_ONLY and trade:
-                    # 监控二腿补仓与对冲逻辑
-                    leg1_info = trade.get("leg1")
-                    if not leg1_info:
-                        continue
-                        
-                    leg1_cost = float(leg1_info.get("cost", 0.0))
-                    leg1_size = float(leg1_info.get("size", self.order_amount))
-                    if leg1_cost <= 0.0:
-                        leg1_cost = self.entry_max_price
-
-                    other_token_id = no_token if str(leg1_info.get("token") or leg1_info.get("token_id")) == str(yes_token) else yes_token
-                    other_info = market_prices_cache.get(str(other_token_id), {})
-                    other_ask = other_info.get("ask")
-                    other_bid = other_info.get("bid", 0.0)
-                    
-                    # 理论最高允许对冲上限（扣除 1% 最低保底利润空间）
-                    dynamic_reentry_max = 1.0 - leg1_cost - 0.01
-                    leg1_size = float(leg1_info.get("size") or self.order_amount)
-                    amount = round(leg1_size, 2)
-                    other_asks, other_bids = self._extract_token_depth(data, str(other_token_id))
-
-                    # ──────────────────────────────────────────────────────────
-                    # 模式 1：二腿 Taker 吃单对冲
-                    # ──────────────────────────────────────────────────────────
-                    if self.leg2_order_type == "FOK" or self.leg2_price_mode == "ask":
-                        if other_ask and other_ask <= dynamic_reentry_max:
-                            # 深度与 VWAP 穿透保护
-                            is_valid, vwap_est, _, reason_msg = self._check_orderbook_depth_and_vwap(
-                                asks=other_asks,
-                                target_usdc_amount=amount,
-                                max_price_threshold=dynamic_reentry_max,
-                                max_slippage_tolerance=self.max_slippage_tolerance,
-                            )
-                            if not is_valid:
-                                logger.debug(f"[二腿深度拦截] {market_id}: {reason_msg}")
-                                continue
-                            vwap_leg2 = vwap_est
-
-                            # 双腿净收益严格数学检验 (Net EV Check)
-                            is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
-                                leg1_cost=leg1_cost,
-                                leg1_size=leg1_size,
-                                leg2_cost=vwap_leg2,
-                                leg2_size=amount,
-                                min_profit_margin=0.01,
-                                leg1_order_type=self.leg1_order_type,
-                                leg2_order_type="FOK",
-                            )
-                            if not is_profit:
-                                logger.warning(f"[二腿锁利拦截] {market_id}: {profit_msg}")
-                                continue
-
-                            final_order_price = round(vwap_leg2, 4)
-                            logger.info(f"[FSM 引擎] {market_id} 满足二腿 Taker 条件: @ VWAP={final_order_price:.4f} (预期 EV: {est_ev:.4f})")
-                            order = await self.client.post_order_async(
-                                other_token_id, final_order_price, amount, side="BUY", order_type="FOK"
-                            )
-                            if order and order.get("status") not in ("ERROR", None):
-                                fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
-                                if self._confirm_order_filled(order.get("order_id", ""), token_id=str(other_token_id)):
-                                    fsm.transition_to(TradeState.LOCKED)
-                                else:
-                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 FOK 未全量成交")
-                                    if self.leg2_fallback_to_maker:
-                                        logger.warning(f"[FSM 引擎] {market_id} 智能降级为 Maker (GTC) 挂单")
-                                        pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
-                                        fallback_price = round(pegged_bid, 4)
-                                        fallback_order = await self.client.post_order_async(
-                                            other_token_id, fallback_price, amount, side="BUY", order_type="GTC"
-                                        )
-                                        if fallback_order and not fallback_order.get("error"):
-                                            logger.info(f"[FSM 引擎] 降级 Maker 挂单成功: {fallback_order.get('order_id')} @ {fallback_price}")
-                                            trade["pegged_price"] = fallback_price
-                                            trade["last_peg_time"] = time.time()
-                                            trade["leg2_order_id"] = fallback_order.get("order_id")
-                                            trade["leg2"] = {
-                                                "order_id": fallback_order.get("order_id"),
-                                                "token": other_token_id,
-                                                "side": "BUY",
-                                                "cost": fallback_price,
-                                                "size": amount
-                                            }
-                                    else:
-                                        fsm.transition_to(TradeState.LEG1_ONLY)
-                            else:
-                                if self.leg2_fallback_to_maker:
-                                    logger.warning(f"[FSM 引擎] {market_id} 二腿 Taker API 失败，智能降级为 Maker (GTC) 挂单")
-                                    # 挂在买一前沿
-                                    pegged_bid = min(other_bid + 0.001, dynamic_reentry_max) if other_bid > 0 else (dynamic_reentry_max - 0.02)
-                                    fallback_price = round(pegged_bid, 4)
-                                    fallback_order = await self.client.post_order_async(
-                                        other_token_id, fallback_price, amount, side="BUY", order_type="GTC"
-                                    )
-                                    if fallback_order and not fallback_order.get("error"):
-                                        logger.info(f"[FSM 引擎] 降级 Maker 挂单成功: {fallback_order.get('order_id')} @ {fallback_price}")
-                                        trade["pegged_price"] = fallback_price
-                                        trade["last_peg_time"] = time.time()
-                                        trade["leg2_order_id"] = fallback_order.get("order_id")
-                                        trade["leg2"] = {
-                                            "order_id": fallback_order.get("order_id"),
-                                            "token": other_token_id,
-                                            "side": "BUY",
-                                            "cost": fallback_price,
-                                            "size": amount
-                                        }
-                                        fsm.transition_to(TradeState.PENDING_LEG2, order_info=fallback_order)
-
-                    # ──────────────────────────────────────────────────────────
-                    # 模式 2：二腿 Maker 智能挂单对冲 (Order Pegging)
-                    # ──────────────────────────────────────────────────────────
-                    else:
-                        best_bid_avail = other_bid if other_bid > 0 else (dynamic_reentry_max - 0.05)
-                        pegged_bid = min(best_bid_avail + 0.001, dynamic_reentry_max)
-                        pegged_bid = round(pegged_bid, 4)
-
-                        is_profit, est_ev, profit_msg = self._verify_hedged_profitability(
-                            leg1_cost=leg1_cost,
-                            leg1_size=leg1_size,
-                            leg2_cost=pegged_bid,
-                            leg2_size=amount,
-                            min_profit_margin=0.01,
-                            leg1_order_type=self.leg1_order_type,
-                            leg2_order_type="GTC",
-                        )
-                        if is_profit and pegged_bid <= dynamic_reentry_max:
-                            logger.info(f"[FSM 引擎] {market_id} 发起智能 Maker 挂单: @ {pegged_bid:.4f}")
-                            maker_order = await self.client.post_order_async(
-                                other_token_id, pegged_bid, amount, side="BUY", order_type="GTC"
-                            )
-                            if maker_order and maker_order.get("status") not in ("ERROR", None):
-                                trade["pegged_price"] = pegged_bid
-                                trade["last_peg_time"] = time.time()
-                                fsm.transition_to(TradeState.PENDING_LEG2, order_info=maker_order)
-
-                elif fsm.current_state == TradeState.PENDING_LEG2 and trade:
-                    # ──────────────────────────────────────────────────────────
-                    # 实时 Maker 动态钉盘追单处理 (Active Pegging Monitor)
-                    # ──────────────────────────────────────────────────────────
-                    leg2_order_id = trade.get("leg2_order_id")
-                    pegged_price = trade.get("pegged_price")
-                    last_peg_time = trade.get("last_peg_time", 0.0)
-                    now_ts = time.time()
-
-                    if leg2_order_id and pegged_price and (now_ts - last_peg_time) >= 1.0:
-                        leg1_info = trade.get("leg1", {})
-                        leg1_cost = float(leg1_info.get("cost", self.entry_max_price))
-                        dynamic_reentry_max = 1.0 - leg1_cost - 0.01
-
-                        other_token_id = trade.get("leg2", {}).get("token") or trade.get("no_token")
-                        other_info = market_prices_cache.get(str(other_token_id), {})
-                        current_best_bid = other_info.get("bid", 0.0)
-
-                        # 防一分钱互卷 (Anti-Pennying) 与阶梯跃迁机制
-                        if current_best_bid <= pegged_price:
-                            # 已经夺回买一或价格回落，清除装死计时
-                            if "peg_wait_until" in trade:
-                                del trade["peg_wait_until"]
-                        else:
-                            # 发现落后，启动装死随机延迟
-                            if "peg_wait_until" not in trade:
-                                import random
-                                delay = random.uniform(1.5, 3.5)
-                                trade["peg_wait_until"] = now_ts + delay
-                                logger.debug(f"[Maker 防护] {market_id} 挂单被超，启动随机迟滞 {delay:.1f}s")
-                                
-                            if now_ts < trade["peg_wait_until"]:
-                                continue
-                                
-                            # 迟滞期满，对手还在，我们发起阶梯跃迁 (越过 0.002~0.004)
-                            del trade["peg_wait_until"]
-                            import random
-                            step = round(random.uniform(0.002, 0.004), 4)
-                            
-                            new_pegged = min(current_best_bid + step, dynamic_reentry_max)
-                            new_pegged = round(new_pegged, 4)
-
-                            if new_pegged > pegged_price and (new_pegged - pegged_price) >= 0.002 and new_pegged <= dynamic_reentry_max:
-                                logger.info(
-                                    f"[Maker 动态钉盘] {market_id} 盘口上移 ({pegged_price} -> {new_pegged})，撤销旧单并追挂买一！"
-                                )
-                                if self.is_live:
-                                    try:
-                                        self.client.cancel_order(leg2_order_id)
-                                    except Exception as e:
-                                        logger.warning(f"[Maker 钉盘] 撤销旧挂单异常: {e}")
-
-                                leg1_size = float(leg1_info.get("size") or self.order_amount)
-                                amount = round(leg1_size, 2)
-                                new_order = await self.client.post_order_async(
-                                    other_token_id, new_pegged, amount, side="BUY", order_type="GTC"
-                                )
-                                if new_order and not new_order.get("error"):
-                                    trade["leg2_order_id"] = new_order.get("order_id")
-                                    trade["pegged_price"] = new_pegged
-                                    trade["last_peg_time"] = now_ts
-                                    trade["leg2"] = {
-                                        "order_id": new_order.get("order_id"),
-                                        "token": other_token_id,
-                                        "side": "BUY",
-                                        "cost": new_pegged,
-                                        "size": amount
-                                    }
+                # 根据 FSM 状态流转处理
+                await self._process_market_tick(
+                    market, fsm, yes_token, no_token,
+                    best_ask_yes, best_bid_yes, best_ask_no, best_bid_no
+                )
 
         except Exception as e:
-            logger.error(f"[策略FSM：{self.strategy_id}] 数据总线分发异常 {market_id}: {e}")
-            # 【P0 资金安全防御】若已持有单边仓位 (LEG1_ONLY / PENDING_LEG2)，严禁直接设为 FAILED！
-            # 必须保留状态，由 _fsm_timeout_daemon 守护线程继续执行 TTL 强平对冲，防止单边裸奔归零。
-            if fsm.current_state in (TradeState.IDLE, TradeState.PENDING_LEG1):
-                fsm.transition_to(TradeState.FAILED, reason=f"WS 数据总线异常: {e}")
-            else:
-                logger.warning(f"[策略FSM：{self.strategy_id}] {market_id} 处于持仓状态 {fsm.current_state.value}，WS 异常退出后交由后台守护线程兜底强平！")
+            logger.error(f"[策略FSM：{self.strategy_id}] 监听循环异常 ({market_id}): {e}")
         finally:
             streamer.unsubscribe(market_id, queue)
+            # 若从未开仓且已结束，清理活跃交易字典避免内存泄漏
             if fsm.current_state == TradeState.IDLE:
-                logger.info(f"[FSM WS] 市场 {market_id} 取消订阅，正常结束。")
-                
-    def _calculate_dynamic_ttl(self, market_id: str, trade: Dict[str, Any]) -> float:
-        """
-        计算单边持仓 (LEG1_ONLY) 的动态自适应强平超时时间 (TTL)。
-        
-        风控规则与单调递减保护：
-        1. 基础 TTL: self.leg1_max_unhedged_seconds (默认 90s)
-        2. K 线波动率收紧: 若当前振幅高于警戒线 (>= 阈值的 70%)，线性收紧至 35s~60s
-        3. 到期时间截断: 若市场距到期交割不足 60s，强制截断至 max(15, time_to_expiry - 10)
-        4. 单调递减原则: 动态 TTL 只允许变短，绝不允许随着震荡稍缓而反向延长，避免振荡误强平
-        """
-        base_ttl = float(self.leg1_max_unhedged_seconds)
-        now = time.time()
-        
-        # 1. 临期交割时间截断
-        end_time = float(trade.get("end_time", 0.0))
-        if end_time > now:
-            time_to_expiry = end_time - now
-            if time_to_expiry < 60:
-                expiry_ttl = max(15.0, time_to_expiry - 10.0)
-                base_ttl = min(base_ttl, expiry_ttl)
-                
-        # 2. K 线波动率自适应调整
-        asset = trade.get("asset") or trade.get("__asset_type")
-        if asset:
-            try:
-                from polymarket.kline_analyzer import get_asset_status
-                from polymarket.config import ASSET_CHOP_THRESHOLDS, CRYPTO_CHOP_MAX_AMPLITUDE
-                status = get_asset_status(asset)
-                amp = status.get("amplitude", 0.0)
-                asset_thresh = ASSET_CHOP_THRESHOLDS.get(asset.upper(), {}).get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE)
-                if asset_thresh > 0:
-                    amp_ratio = amp / asset_thresh
-                    if amp_ratio >= 0.7:  # 振幅达到安全阈值的 70% 以上，波动加剧
-                        # 将 TTL 从 90s 线性压缩到 35s
-                        tightened_ttl = max(35.0, base_ttl * (1.0 - (amp_ratio - 0.7) * 1.5))
-                        base_ttl = min(base_ttl, tightened_ttl)
-            except Exception:
-                pass
-                    
-        # 3. 单调递减原则 (Monotonic Decreasing)
-        prev_ttl = trade.get("effective_ttl")
-        if prev_ttl is not None:
-            effective_ttl = min(float(prev_ttl), base_ttl)
-        else:
-            effective_ttl = base_ttl
+                self._delete_trade(market_id)
+
+
+    async def _process_market_tick(
+        self, market: Dict[str, Any], fsm: TradeFSM,
+        yes_token: str, no_token: str,
+        best_ask_yes: float, best_bid_yes: Optional[float],
+        best_ask_no: float, best_bid_no: Optional[float]
+    ):
+        """处理单次盘口变动 tick"""
+        market_id = market["id"]
+        trade = self._get_trade(market_id)
+        if not trade:
+            return
             
-        trade["effective_ttl"] = effective_ttl
-        return effective_ttl
+        ctx = TradeContext.from_dict(trade)
+        now_ts = time.time()
+
+        def filter_and_log(reason: str):
+            ctx.filter_reason = reason
+            self._set_trade(market_id, ctx.to_dict())
+            if now_ts - self._last_silent_filter_log.get(market_id, 0) > 30:
+                logger.info(f"[{self.strategy_id}] [静默拦截] {market_id} {reason}")
+                self._add_trade_event(market_id, ctx.status, f"静默拦截: {reason}")
+                self._last_silent_filter_log[market_id] = now_ts
+            risk_logger.push_risk_event(
+                market_id=market_id, asset=market.get("__asset_type", "UNKNOWN"),
+                strategy=self.strategy_id, reason=reason, level="warning"
+            )
+
+        # ── 1. IDLE 状态开仓决策 ──────────────────────────────
+        if fsm.current_state == TradeState.IDLE:
+            # 临期交割拦截
+            time_to_expiry = ctx.end_time - now_ts if ctx.end_time > 0 else 999.0
+            if ctx.end_time > 0 and time_to_expiry < self.min_time_to_expiry_entry:
+                filter_and_log(f"临近交割 (剩余 {time_to_expiry:.1f}s < {self.min_time_to_expiry_entry}s)，禁止开仓")
+                return
+
+            # 买卖价差过大拦截 (流动性真空)
+            if best_bid_yes and (best_ask_yes - best_bid_yes) > 0.05:
+                filter_and_log(f"YES 买卖价差 {(best_ask_yes - best_bid_yes):.4f} > 0.05")
+                return
+            if best_bid_no and (best_ask_no - best_bid_no) > 0.05:
+                filter_and_log(f"NO 买卖价差 {(best_ask_no - best_bid_no):.4f} > 0.05")
+                return
+
+            # [模式 A] Dual-GTC Bracket 双挂做市
+            if self.dual_bracket_entry and best_bid_yes is not None and best_bid_no is not None:
+                if self._get_unhedged_trade_count() >= self.max_concurrent_unhedged_trades:
+                    filter_and_log(f"达到最大并发敞口数 ({self.max_concurrent_unhedged_trades})")
+                    return
+
+                yes_p, no_p, err = PricingEngine.calculate_dual_bracket_prices(
+                    best_bid_yes, best_bid_no, self.entry_max_price, self.entry_min_price
+                )
+                if err:
+                    filter_and_log(err)
+                    return
+
+                is_prof, net_ev, p_msg = PricingEngine.verify_hedged_profitability(
+                    yes_p, self.order_amount, no_p, self.order_amount,
+                    leg1_order_type="GTC", leg2_order_type="GTC"
+                )
+                if not is_prof:
+                    filter_and_log(f"双挂锁利校验未通过: {p_msg}")
+                    return
+
+                safe_p_yes, shares = OrderExecutionService.sanitize_order_params(yes_p, self.order_amount)
+                safe_p_no, _ = OrderExecutionService.sanitize_order_params(no_p, self.order_amount)
+                lock_amount = round(shares * (safe_p_yes + safe_p_no), 2)
+
+                if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, lock_amount, is_live=self.is_live):
+                    filter_and_log(f"风控敞口超限 (双挂要求 ${lock_amount:.2f})")
+                    return
+
+                # 原子双挂发单
+                order_yes = {"token_id": str(yes_token), "price": safe_p_yes, "size": shares, "side": "BUY", "order_type": "GTC"}
+                order_no = {"token_id": str(no_token), "price": safe_p_no, "size": shares, "side": "BUY", "order_type": "GTC"}
+                batch_res = await self.client.post_batch_orders_async([order_yes, order_no])
+                
+                if batch_res and batch_res.get("status") != "ERROR":
+                    fsm.transition_to(TradeState.PENDING_BOTH_LEGS, orders=batch_res.get("orders", []))
+                else:
+                    self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
+                return
+
+            # [模式 B] Taker-Maker 吃单开首腿
+            min_ask, target_token, target_side = (best_ask_yes, yes_token, "YES") if best_ask_yes <= best_ask_no else (best_ask_no, no_token, "NO")
+            if min_ask <= self.entry_max_price and min_ask >= self.entry_min_price:
+                safe_p, safe_s = OrderExecutionService.sanitize_order_params(min_ask, self.order_amount)
+                lock_amount = round(safe_p * safe_s, 2)
+                
+                if not self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, lock_amount, is_live=self.is_live):
+                    filter_and_log(f"风控敞口超限 (首腿要求 ${lock_amount:.2f})")
+                    return
+
+                order = await OrderExecutionService.adaptive_post_order(
+                    self.client, self.risk_manager, str(target_token), safe_p, safe_s,
+                    side="BUY", initial_order_type=self.leg1_order_type, strategy_id=self.strategy_id
+                )
+                if order:
+                    ctx.leg1_dir = target_side
+                    fsm.transition_to(TradeState.PENDING_LEG1, order_info=order)
+                    # 轮询成交或对账
+                    is_fill, pos = OrderExecutionService.reconcile_phantom_fill(
+                        self.client, order.get("orderID"), str(target_token), safe_s, self.strategy_id
+                    )
+                    if is_fill:
+                        fsm.transition_to(TradeState.LEG1_ONLY)
+                    else:
+                        fsm.transition_to(TradeState.FAILED, reason="首腿成交确认超时")
+                else:
+                    self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
+
+        # ── 2. LEG1_ONLY 状态对冲追单 ──────────────────────────
+        elif fsm.current_state == TradeState.LEG1_ONLY:
+            leg1 = ctx.leg1
+            if not leg1:
+                return
+            
+            # 确定二腿 token 与方向
+            is_leg1_yes = (str(leg1.token) == str(yes_token))
+            opp_token = no_token if is_leg1_yes else yes_token
+            opp_ask = best_ask_no if is_leg1_yes else best_ask_yes
+            opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
+
+            target_leg2_price = opp_bid if self.leg2_price_mode == "bid" and opp_bid else opp_ask
+            if not target_leg2_price:
+                return
+
+            # 对冲盈利数学校验
+            is_prof, net_ev, p_msg = PricingEngine.verify_hedged_profitability(
+                leg1_cost=leg1.cost, leg1_size=leg1.size,
+                leg2_cost=target_leg2_price, leg2_size=leg1.size,
+                leg1_order_type=self.leg1_order_type, leg2_order_type=self.leg2_order_type
+            )
+            if is_prof:
+                safe_p, safe_s = OrderExecutionService.sanitize_order_params(target_leg2_price, target_leg2_price * leg1.size)
+                # 申请二腿额度
+                if self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=self.is_live):
+                    order = await self.client.post_order_async(str(opp_token), safe_p, safe_s, "BUY", self.leg2_order_type)
+                    if order and order.get("status") not in ("ERROR", None):
+                        fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+                    else:
+                        self.risk_manager.release_trade_lock(self.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=self.is_live)
+
+    # =========================================================
+    # 后台自适应强平守护守护线程
+    # =========================================================
 
     def _fsm_timeout_daemon(self):
-        """全局守护线程，专门处理所有处于耗时的轮询和超时事件"""
+        """顶层 try-except 保护的强平守护线程"""
+        logger.info(f"[策略FSM：{self.strategy_id}] 启动动态自适应强平守护线程。")
         while True:
-            time.sleep(1)
-            for market_id, fsm in list(self.fsms.items()):
-              try:
-                trade = self._get_trade(market_id)
-                if not trade:
-                    continue
-                    
-                # 【清理机制】回收历史无效订单与内存
-                # 规则：已过期 (>60s) 且 (完全没建仓 或 已进入终态)
-                is_expired = time.time() > trade.get("end_time", 0) + 60
-                has_no_leg1 = not trade.get("leg1")
-                is_terminal = fsm.current_state in (TradeState.SETTLED, TradeState.FAILED, TradeState.LOCKED)
+            try:
+                time.sleep(2.0)
+                trades_snapshot = self._get_all_active_trades()
                 
-                if is_expired and (has_no_leg1 or is_terminal):
-                    logger.info(f"[策略FSM：{self.strategy_id}] 清理历史过期/无效订单内存: {market_id}")
-                    if not is_terminal:
-                        # 【BugFix】必须显式修改状态，否则后台 _fsm_ws_listener 监听线程会变成死循环孤儿，且永远不会触发 unsubscribe()！
-                        fsm.transition_to(TradeState.FAILED, reason="超时强平: 清理历史过期订单内存")
-                        
-                    with self._trades_lock:
-                        self.active_trades.pop(market_id, None)
-                    self.fsms.pop(market_id, None)
-                    continue
-                    
-                if fsm.current_state == TradeState.PENDING_BOTH_LEGS:
-                    dual_orders = trade.get("dual_orders", [])
-                    now = time.time()
-                    time_to_expiry = trade.get("end_time", 0) - now
-                    dual_issued_time = trade.get("dual_issued_time", now)
-                    
-                    # 双挂临期未成交撤单 (剩余时间不足或挂单超 180s)
-                    if time_to_expiry <= self.leg2_cancel_before_expiry or (now - dual_issued_time > 180):
-                        logger.warning(f"[策略FSM：{self.strategy_id}] [Dual-GTC 守护] 市场 {market_id} 双挂单临期未成交 (剩余 {time_to_expiry:.1f}s)，批量撤单！")
-                        if self.is_live:
-                            for o in dual_orders:
-                                oid = o.get("order_id") or o.get("orderID")
-                                if oid:
-                                    try:
-                                        self.client.cancel_order(oid)
-                                    except Exception as ce:
-                                        logger.warning(f"撤单失败: {ce}")
-                        fsm.transition_to(TradeState.FAILED, reason="双挂单临期未成交批量撤单退出")
+                for market_id, trade_dict in trades_snapshot.items():
+                    status = trade_dict.get("status")
+                    if status not in (TradeState.LEG1_ONLY.value, TradeState.PENDING_LEG2.value):
                         continue
 
-                if fsm.current_state == TradeState.LEG1_ONLY:
-                    filled_time = trade.get("leg1_filled_time", time.time())
-                    elapsed = time.time() - filled_time
-                    dynamic_ttl = self._calculate_dynamic_ttl(market_id, trade)
-                    trade["unhedged_elapsed"] = elapsed
-                    trade["dynamic_ttl"] = dynamic_ttl
+                    ctx = TradeContext.from_dict(trade_dict)
                     
-                    if elapsed > dynamic_ttl:
-                        leg1 = trade.get("leg1", {})
-                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 触发动态超时止损: {market_id} 已持仓 {elapsed:.1f}s > 动态TTL {dynamic_ttl:.1f}s, 当前持有 token={leg1.get('token')} size={leg1.get('size')}")
-                        
-                        # [安全撤单] 若二腿已有挂单，强平前先撤单，防止挂单与市价单同时成交导致超额单边暴露
-                        leg2_order_id = trade.get("leg2_order_id")
-                        if leg2_order_id:
-                            logger.info(f"[策略FSM：{self.strategy_id}] [安全撤单] 强平前先撤销二腿挂单: {leg2_order_id}")
-                            if self.is_live:
-                                try:
-                                    self.client.cancel_order(leg2_order_id)
-                                except Exception as ce:
-                                    logger.warning(f"[策略FSM：{self.strategy_id}] 强平前撤销二腿挂单失败: {ce}")
-                            trade.pop("leg2_order_id", None)
-                            trade.pop("leg2", None)
-                        
-                        leg1_token = leg1.get("token")
-                        if not leg1_token:
-                            fsm.transition_to(TradeState.FAILED, reason="leg1_token为空，无法止损")
-                            continue
+                    # 获取资产波动率
+                    asset = ctx.asset
+                    amp_pct = 0.0
+                    if asset:
+                        st = get_asset_status(asset)
+                        amp_pct = st.get("amplitude", 0.0)
+
+                    is_timed_out, elapsed, cur_ttl = AdaptiveLiquidatorService.evaluate_timeout(
+                        ctx, base_ttl=float(self.leg1_max_unhedged_seconds),
+                        asset_amplitude_pct=amp_pct
+                    )
+                    # 更新当前动态 TTL 到内存与看板
+                    self._update_trade_status(market_id, None, dynamic_ttl=cur_ttl)
+
+                    if is_timed_out:
+                        fsm = self.fsms.get(market_id)
+                        if fsm and fsm.current_state in (TradeState.LEG1_ONLY, TradeState.PENDING_LEG2):
+                            success = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
+                            fsm.transition_to(TradeState.FAILED if not success else TradeState.SETTLED, reason="自适应 TTL 强平")
                             
-                        yes_token = trade.get("yes_token")
-                        no_token = trade.get("no_token")
-                        other_token_id = no_token if str(leg1_token) == str(yes_token) else yes_token
-                        
-                        if not other_token_id:
-                            fsm.transition_to(TradeState.FAILED, reason="找不到二腿token")
-                            continue
-                            
-                        # 【强制逃命止损】为了确保 FOK 能够填满规模并绝对离场，直接设置允许的最大滑点为 0.99（平台撮合会自动用最优价）。
-                        stop_price = 0.99
-                        leg1_size = float(leg1.get("size") or self.order_amount)
-                        amount = round(leg1_size, 2)
-                        logger.info(f"[策略FSM：{self.strategy_id}] [FSM Timer] 执行强制穿透止损二腿: size={amount} @ {stop_price:.4f} FOK")
-                        
-                        order = self.client.post_order(
-                            other_token_id, stop_price, amount, side="BUY", order_type="FOK"
-                        )
-                        
-                        if order and order.get("status") not in ("ERROR", None):
-                            order_id = order.get("order_id", "")
-                            fsm.transition_to(TradeState.PENDING_LEG2, is_stop_loss=True, order_info=order)
-                            # 立即尝试确认强平成交，若 FOK 快速确认未成交，启动紧急 GTC 兜底
-                            if not self._confirm_order_filled(order_id, token_id=str(other_token_id)):
-                                logger.warning(f"[策略FSM：{self.strategy_id}] [紧急强平兜底] 强平 FOK 未确认成交，以 GTC @ {stop_price} 紧急挂单兜底！")
-                                gtc_order = self.client.post_order(
-                                    other_token_id, stop_price, amount, side="BUY", order_type="GTC"
-                                )
-                                if gtc_order and gtc_order.get("status") not in ("ERROR", None):
-                                    trade["leg2_order_id"] = gtc_order.get("order_id")
-                                    trade["leg2"] = {
-                                        "order_id": gtc_order.get("order_id"),
-                                        "token": other_token_id,
-                                        "side": "BUY",
-                                        "cost": stop_price,
-                                        "size": amount
-                                    }
-                                else:
-                                    fsm.transition_to(TradeState.FAILED, reason="紧急 GTC 强平挂单失败")
-                        else:
-                            # 首发 FOK 异常，尝试以 GTC @ 0.99 紧急挂单兜底
-                            logger.error(f"[策略FSM：{self.strategy_id}] 强平 FOK 下单异常，尝试 GTC @ {stop_price} 备选兜底！")
-                            fallback_order = self.client.post_order(
-                                other_token_id, stop_price, amount, side="BUY", order_type="GTC"
-                            )
-                            if fallback_order and fallback_order.get("status") not in ("ERROR", None):
-                                fsm.transition_to(TradeState.PENDING_LEG2, is_stop_loss=True, order_info=fallback_order)
-                                trade["leg2_order_id"] = fallback_order.get("order_id")
-                                trade["leg2"] = {
-                                    "order_id": fallback_order.get("order_id"),
-                                    "token": other_token_id,
-                                    "side": "BUY",
-                                    "cost": stop_price,
-                                    "size": amount
-                                }
-                            else:
-                                fsm.transition_to(TradeState.FAILED, reason="强制止损市价与挂单均发送失败")
-                        
-                elif fsm.current_state == TradeState.PENDING_LEG2:
-                    leg2_order_id = trade.get("leg2_order_id")
-                    if not leg2_order_id:
-                        continue
-                        
-                    # 非阻塞查询成交状态
-                    status = self._check_order_filled_once(leg2_order_id)
-                    if status == "FILLED":
-                        logger.info(f"[FSM Timer] 挂单已确认成交: {market_id}")
-                        fsm.transition_to(TradeState.LOCKED)
-                        continue
-                    elif status == "FAILED":
-                        logger.warning(f"[策略FSM：{self.strategy_id}] [FSM Timer] 二腿挂单失效，回退到 LEG1_ONLY")
-                        trade.pop("leg2_order_id", None)
-                        trade.pop("leg2", None)
-                        fsm.transition_to(TradeState.LEG1_ONLY)
-                        continue
-                        
-                    # 判断挂单过期时间
-                    now = time.time()
-                    
-                    # 挂单深度跟随 (Pegged Maker)
-                    leg2_issued_time = trade.get("leg2_issued_time", now)
-                    if (now - leg2_issued_time) > 15:
-                        logger.warning(f"[FSM Timer] {market_id} 二腿挂单超过 15 秒未成交，启动 Pegging 撤单重发！")
-                        if self.is_live:
-                            self.client.cancel_order(leg2_order_id)
-                        
-                        # 撤单后清除记录，重置为 LEG1_ONLY 以便基于最新盘口动态重新计算对冲价
-                        trade.pop("leg2_order_id", None)
-                        trade.pop("leg2", None)
-                        # 更新独立重试时间节流，严禁重置 leg1_filled_time，确保 TTL 强平倒计时不被续命
-                        trade["last_leg2_retry_time"] = now
-                        fsm.transition_to(TradeState.LEG1_ONLY)
-                        continue
-                        
-                    time_to_expiry = trade.get("end_time", 0) - now
-                    if time_to_expiry > 0 and time_to_expiry <= self.leg2_cancel_before_expiry:
-                        logger.warning(
-                            f"[FSM Timer] {market_id} 挂单即将到期，剩余 {time_to_expiry:.1f}s，强制取消"
-                        )
-                        if self.is_live:
-                            self.client.cancel_order(leg2_order_id)
-                            
-                        if self.leg2_fallback_to_maker:
-                            logger.info(f"[FSM Timer] {market_id} 回退到吃单强平模式，准备平掉敞口 token={trade.get('leg1', {}).get('token')}")
-                            # 重置回 LEG1_ONLY 状态，使下一个 WS push 判断回吃单价
-                            fsm.transition_to(TradeState.LEG1_ONLY)
-                        else:
-                            fsm.transition_to(TradeState.FAILED, reason=f"二腿挂单过期且未配置回退, 锁定敞口 market_id={market_id}")
-              except Exception as e:
-                # [P0 修复] 顶层异常守护：无论单个市场出什么错，守护线程必须存活
-                # 否则所有 TTL 强平机制全部失效，资金将被无限期锁定在单边敞口中
-                logger.critical(f"[策略FSM：{self.strategy_id}] [CRITICAL] 守护线程处理 {market_id} 时异常: {e}", exc_info=True)
-                risk_logger.push_risk_event(
-                    market_id=market_id,
-                    asset="SYSTEM",
-                    strategy=self.strategy_id,
-                    reason=f"守护线程异常: {e}",
-                    level="critical"
-                )
+            except Exception as e:
+                logger.critical(f"[策略FSM：{self.strategy_id}] 强平守护线程发生严重异常: {e}", exc_info=True)
+                risk_logger.push_risk_event(strategy=self.strategy_id, reason=f"强平守护异常: {e}", level="critical")
+                continue

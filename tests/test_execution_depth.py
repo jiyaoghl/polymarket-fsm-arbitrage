@@ -47,16 +47,19 @@ def test_vwap_sufficient_liquidity():
 
 def test_hedged_profitability_verification():
     """测试双腿锁仓套利确定性回报与净 EV 严格数学校验。"""
-    # 案例 1: 完美正 EV 组合 (0.42 + 0.45 = 0.87 < 0.99)
+    # 案例 1: 完美正 EV 组合 (0.42 + 0.45 = 0.87 < 0.99, FOK+GTC 扣费后 1.26)
     ok1, ev1, msg1 = BaseStrategy._verify_hedged_profitability(
         leg1_cost=0.42,
         leg1_size=10.0,
         leg2_cost=0.45,
         leg2_size=10.0,
-        min_profit_margin=0.01
+        min_profit_margin=0.01,
+        leg1_order_type="FOK",
+        leg2_order_type="GTC"
     )
     assert ok1 is True
-    assert round(ev1, 2) == 1.30  # 10.0 - 8.70 = 1.30 USDC 净收益
+    assert round(ev1, 2) == 1.26  # 1.30 - 0.042(Taker fee) = 1.258 -> 1.26
+
 
     # 案例 2: 滑点击穿导致总成本 >= 1.00 (锁亏场景 0.52 + 0.50 = 1.02)
     ok2, ev2, msg2 = BaseStrategy._verify_hedged_profitability(

@@ -294,14 +294,16 @@ class StrategyManager:
                     ).start()
 
     def _get_traded_market_ids(self) -> set:
-        """收集所有策略实际交易过的市场 ID。"""
+        """收集所有策略实际达成锁仓或已处理的市场 ID（过滤未开仓的纯 IDLE 盘口）。"""
         ids = set()
         for bot in self.bots:
-            for market_id in bot._get_all_active_trades():
-                ids.add(market_id)
+            for market_id, trade in bot._get_all_active_trades().items():
+                if trade.get("status") in ("locked", "settled"):
+                    ids.add(market_id)
             for market_id in list(bot.processed_markets):
                 ids.add(market_id)
         return ids
+
 
     def _loop_redeem_closed_markets(self) -> None:
         """定期对自己交易过的已结束市场执行 redeem。"""

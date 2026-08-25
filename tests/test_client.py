@@ -122,7 +122,7 @@ class TestPolyClient:
         
         assert "usdc" in balance
         assert "pending" in balance
-        assert balance["usdc"] == 10000.0  # 模拟余额
+        assert balance["usdc"] == 100.0  # 模拟盘默认 100U
 
     def test_get_order_status_mock(self):
         """测试模拟模式查询订单状态。"""

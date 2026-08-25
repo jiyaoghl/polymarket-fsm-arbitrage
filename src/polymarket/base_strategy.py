@@ -186,28 +186,15 @@ class BaseStrategy:
         max_price_threshold: float,
         max_slippage_tolerance: float = 0.015,
     ) -> Tuple[bool, float, float, str]:
-        """
-        根据盘口 Ask 深度计算买入指定 USDC 金额时的加权平均成交价 (VWAP)。
-
-        Args:
-            asks: Orderbook 中的 asks 列表 [{"price": "0.45", "size": "20"}, ...]
-            target_usdc_amount: 拟投入的 USDC 金额
-            max_price_threshold: 最高可接受单点价格 (如 0.50)
-            max_slippage_tolerance: 相对 best ask 允许的最大滑点比例
-
-        Returns:
-            (is_valid, vwap_price, filled_usdc, reason_msg)
-        """
+        """根据盘口 Ask 深度计算买入指定 USDC 金额时的加权平均成交价 (VWAP)。"""
         if not asks or target_usdc_amount <= 0:
             return False, 1.0, 0.0, "Ask 盘口为空或投入金额不合法"
 
-        # 按价格升序排序
         valid_asks = []
         for a in asks:
             if isinstance(a, dict) and "price" in a and "size" in a:
                 try:
-                    p = float(a["price"])
-                    s = float(a["size"])
+                    p, s = float(a["price"]), float(a["size"])
                     if p > 0 and s > 0:
                         valid_asks.append((p, s))
                 except (ValueError, TypeError):
@@ -228,7 +215,6 @@ class BaseStrategy:
         for price, size in valid_asks:
             layer_max_usdc = price * size
             if remaining_usdc <= layer_max_usdc:
-                # 这一层足以覆盖剩余部分
                 tokens_bought = remaining_usdc / price
                 total_tokens += tokens_bought
                 total_spent_usdc += remaining_usdc
@@ -253,76 +239,6 @@ class BaseStrategy:
 
         return True, vwap, total_spent_usdc, "OK"
 
-    @staticmethod
-    def _extract_token_depth(data: Any, token_id: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        从 WS 消息中提取指定 token_id 的 asks 和 bids 深度列表。
-        兼容单 dict、list of dict、price_change 以及标准 book 快照格式。
-        """
-        asks_list: List[Dict[str, Any]] = []
-        bids_list: List[Dict[str, Any]] = []
-        token_str = str(token_id)
-
-        items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            tid = str(item.get("asset_id") or item.get("token_id") or "")
-            if tid == token_str:
-                asks_list = item.get("asks", [])
-                bids_list = item.get("bids", [])
-                break
-
-        return asks_list, bids_list
-
-    @staticmethod
-    def _calculate_micro_structure(bids: List[Dict[str, Any]], asks: List[Dict[str, Any]], depth_levels: int = 3) -> Tuple[float, float]:
-        """
-        计算订单薄微观结构特征。
-        Returns:
-            (obi, micro_price)
-            obi (Orderbook Imbalance): [-1.0, 1.0]。正数代表买盘强，负数代表卖盘强(抛压)。
-            micro_price (Micro-Price): 深度加权价格。
-        """
-        valid_bids = []
-        for b in bids:
-            try:
-                p = float(b["price"])
-                s = float(b["size"])
-                if p > 0 and s > 0:
-                    valid_bids.append((p, s))
-            except (KeyError, ValueError, TypeError):
-                continue
-        valid_bids.sort(key=lambda x: x[0], reverse=True)
-        
-        valid_asks = []
-        for a in asks:
-            try:
-                p = float(a["price"])
-                s = float(a["size"])
-                if p > 0 and s > 0:
-                    valid_asks.append((p, s))
-            except (KeyError, ValueError, TypeError):
-                continue
-        valid_asks.sort(key=lambda x: x[0])
-        
-        if not valid_bids or not valid_asks:
-            return 0.0, 0.0
-            
-        best_bid = valid_bids[0][0]
-        best_ask = valid_asks[0][0]
-        
-        bid_vol = sum(s for p, s in valid_bids[:depth_levels])
-        ask_vol = sum(s for p, s in valid_asks[:depth_levels])
-        
-        total_vol = bid_vol + ask_vol
-        if total_vol == 0:
-            return 0.0, (best_bid + best_ask) / 2.0
-            
-        obi = (bid_vol - ask_vol) / total_vol
-        micro_price = (best_bid * ask_vol + best_ask * bid_vol) / total_vol
-        
-        return obi, micro_price
 
     @staticmethod
     def _verify_hedged_profitability(
@@ -334,42 +250,13 @@ class BaseStrategy:
         leg1_order_type: str = "FOK",
         leg2_order_type: str = "GTC",
     ) -> Tuple[bool, float, str]:
-        """
-        严密校验双腿对冲成交后的净套利收益率 (Net EV Margin)。
-        
-        套利确定性回报 = min(leg1_size, leg2_size) * 1.0 USDC
-        双腿总支出成本 = leg1_cost * leg1_size + leg2_cost * leg2_size
-        净期望收益 (EV) = 确定性回报 - 总成本 - 精准双腿手续费
-        
-        Returns:
-            (is_profitable, net_ev, reason_msg)
-        """
-        if leg1_cost <= 0 or leg1_size <= 0 or leg2_cost <= 0 or leg2_size <= 0:
-            return False, 0.0, "双腿价格或数量必须大于 0"
+        """委托给 PricingEngine 严密校验双腿净收益"""
+        from polymarket.services.pricing import PricingEngine
+        return PricingEngine.verify_hedged_profitability(
+            leg1_cost, leg1_size, leg2_cost, leg2_size,
+            min_profit_margin, leg1_order_type, leg2_order_type
+        )
 
-        spent1 = leg1_cost * leg1_size
-        spent2 = leg2_cost * leg2_size
-        total_spent = spent1 + spent2
-        hedged_shares = min(leg1_size, leg2_size)
-        guaranteed_payout = hedged_shares * 1.0
-        
-        # [P1 优化] 根据两腿各自的订单类型精确分摊费率（FOK=1%, GTC=0%）
-        from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-        fee1_rate = TAKER_FEE_RATE if leg1_order_type.upper() == "FOK" else MAKER_FEE_RATE
-        fee2_rate = TAKER_FEE_RATE if leg2_order_type.upper() == "FOK" else MAKER_FEE_RATE
-        total_fee = (spent1 * fee1_rate) + (spent2 * fee2_rate)
-        net_ev = guaranteed_payout - total_spent - total_fee
-
-        # 综合平均单位成本 (每 1 份对冲份额的组合买入成本 + 手续费摊销)
-        unit_combined_cost = (total_spent + total_fee) / hedged_shares if hedged_shares > 0 else 2.0
-
-        if unit_combined_cost >= (1.0 - min_profit_margin):
-            return False, net_ev, (
-                f"双腿组合成本过高: {unit_combined_cost:.4f} >= 允许上限 {1.0 - min_profit_margin:.4f} "
-                f"(预期 EV: {net_ev:.4f} USDC)"
-            )
-
-        return True, net_ev, f"OK (预估净 EV: {net_ev:.4f} USDC, 收益率: {(net_ev/total_spent)*100:.2f}%)"
 
     def _get_unhedged_trade_count(self) -> int:
         """获取当前处于未对冲（leg1_only 或 monitoring）状态的交易数量。"""
@@ -513,6 +400,12 @@ class BaseStrategy:
         """线程安全地设置交易。"""
         with self._trades_lock:
             self.active_trades[market_id] = trade
+
+    def _delete_trade(self, market_id: str) -> None:
+        """线程安全地删除交易。"""
+        with self._trades_lock:
+            self.active_trades.pop(market_id, None)
+
 
     def _update_trade_status(self, market_id: str, status: str, **kwargs) -> None:
         """线程安全地更新交易状态。"""

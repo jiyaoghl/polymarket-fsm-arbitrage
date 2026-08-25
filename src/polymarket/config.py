@@ -67,9 +67,10 @@ ASSET_CHOP_THRESHOLDS = {
         "max_net_change": float(os.getenv("ETH_CHOP_MAX_NET_CHANGE", "0.30")),
     },
 }
-# 风控配置（旧版，保留兼容）
+# 资金与风控配置
 DAILY_MAX_DRAWDOWN = float(os.getenv("DAILY_MAX_DRAWDOWN", "0.05"))  # 5% 最大回撤
-INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100.0"))       # 小资金默认 100 USDC
+INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100.0"))       # 默认资金基准（100 USDC）
+PAPER_INITIAL_CAPITAL = float(os.getenv("PAPER_INITIAL_CAPITAL", os.getenv("INITIAL_CAPITAL", "100.0"))) # 模拟盘默认资金池（100 USDC）
 
 # 网络配置
 CHAIN_ID = int(os.getenv("CHAIN_ID", "137"))

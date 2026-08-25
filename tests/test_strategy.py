@@ -99,17 +99,20 @@ class TestArbitrageBot:
         # 模拟 client.get_market_price 返回
         with patch.object(bot.client, 'get_market_price', return_value={"bid": 0.30, "ask": 0.35}):
             stop_price = bot._calculate_dynamic_stop_price("test_token")
-            # 应该是 bid * 0.95 = 0.285
-            assert stop_price == pytest.approx(0.285, rel=0.01)
+            # 买入平仓应为 ask * 1.05 = 0.3675
+            assert stop_price == pytest.approx(0.3675, rel=0.01)
+
 
     def test_confirm_order_filled_mock_mode(self):
         """测试模拟模式订单确认。"""
         config = {"strategy_id": "test", "is_live": False}
         bot = ArbitrageBot(config)
         
-        # 模拟模式应该直接返回 True
-        result = bot._confirm_order_filled("test_order_id")
-        assert result is True
+        # 模拟模式下 mock 命中成交概率
+        with patch('random.random', return_value=0.1):
+            result = bot._confirm_order_filled("test_order_id")
+            assert result is True
+
 
     def test_backoff_calculation(self):
         """测试指数退避计算。"""

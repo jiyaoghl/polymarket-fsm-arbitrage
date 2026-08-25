@@ -678,7 +678,9 @@ class PolyClient:
     def get_balance(self) -> Dict[str, float]:
         """获取账户 USDC / pUSD 抵押品可用余额。"""
         if not self.is_live:
-            return {"usdc": 10000.0, "pending": 0.0}
+            from polymarket import config
+            paper_cap = getattr(config, "PAPER_INITIAL_CAPITAL", 100.0)
+            return {"usdc": float(paper_cap), "pending": 0.0}
         
         # 优先使用官方 py_clob_client
         try:
@@ -898,6 +900,13 @@ class PolyClient:
             return {"order_id": f"sim_{now_ms}", "status": "LIVE", "token_id": token_id, "side": side, "price": sim_price, "amount": amount, "timestamp": now_ms, "metadata": zero_bytes32, "builder": zero_bytes32}
 
         return await asyncio.to_thread(self.post_order, token_id, price, amount, side, order_type)
+
+    async def post_batch_orders_async(self, orders: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        异步批量下单（调度同步 post_batch_orders，支持模拟与实盘模式）。
+        """
+        import asyncio
+        return await asyncio.to_thread(self.post_batch_orders, orders)
 
 # ================= 全局单例池 =================
 _CLIENT_POOL: Dict[bool, PolyClient] = {}

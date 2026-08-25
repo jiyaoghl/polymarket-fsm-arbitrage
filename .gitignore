@@ -22,3 +22,5 @@ backtest_cache/
 smoke_test_halt/
 
 .agents/
+scratch/
+tmp/
