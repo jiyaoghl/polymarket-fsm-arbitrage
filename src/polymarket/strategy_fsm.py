@@ -564,6 +564,13 @@ class ArbitrageBotFSM(BaseStrategy):
                     ctx.gross_profit_usdc = gross_pnl
                     ctx.fee_usdc = fee
                     ctx.settlement_type = "DUAL_EXIT_SELL_SETTLED"
+                    ctx.leg2 = LegPosition(
+                        token=str(leg1.token),
+                        side="SELL",
+                        cost=sell_price,
+                        size=leg1.size,
+                        order_id=sell_id or "sim_sell"
+                    )
                     self._set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.SETTLED, reason=f"OCO 做T卖出率先成交变现，净锁定 ${realized_pnl:.4f}")
                     return

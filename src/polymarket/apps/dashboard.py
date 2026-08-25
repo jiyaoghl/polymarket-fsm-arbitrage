@@ -722,14 +722,25 @@ def index() -> str:
               
               let leg2 = '--';
               if (t.leg2) {
-                leg2 = `${leg2DirHTML}${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}`;
+                const isT = (t.settlement_type === 'DUAL_EXIT_SELL_SETTLED' || t.settlement_type === 'SMART_FLIP_SETTLED');
+                const tBadge = isT ? ' <span style="font-size:9px; color:#34d399; background:rgba(52,211,153,0.15); padding:1px 3px; border-radius:3px;">做T</span>' : '';
+                leg2 = `${leg2DirHTML}${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}${tBadge}`;
               } else if (t.status === 'settled' && t.settlement_type === 'DUAL_EXIT_SELL_SETTLED') {
-                leg2 = '<span style="color:#34d399; font-size:11px;" title="OCO 做T高抛率先成交变现">📈 做T平仓变现</span>';
+                let sPrice = '--';
+                let sSize = t.leg1 ? t.leg1.size.toFixed(2) : '--';
+                if (t.dual_orders && t.dual_orders.length) {
+                  const sOrder = t.dual_orders.find(o => o.side === 'SELL');
+                  if (sOrder && sOrder.price) sPrice = Number(sOrder.price).toFixed(3);
+                }
+                if (sPrice === '--' && t.leg1) {
+                  sPrice = ((t.leg1.cost * t.leg1.size + (t.gross_profit_usdc || t.profit_usdc || 0)) / t.leg1.size).toFixed(3);
+                }
+                leg2 = `<span style="color:#f87171;">SELL ${sPrice}×${sSize}</span> <span style="font-size:9px; color:#34d399; background:rgba(52,211,153,0.15); padding:1px 3px; border-radius:3px;">做T</span>`;
               } else if (t.status === 'pending_leg2' && t.dual_orders && t.dual_orders.length >= 2) {
                 const sOrder = t.dual_orders.find(o => o.side === 'SELL');
                 const bOrder = t.dual_orders.find(o => o.side === 'BUY');
-                const sPrice = sOrder ? sOrder.price.toFixed(3) : '--';
-                const bPrice = bOrder ? bOrder.price.toFixed(3) : '--';
+                const sPrice = sOrder ? Number(sOrder.price).toFixed(3) : '--';
+                const bPrice = bOrder ? Number(bOrder.price).toFixed(3) : '--';
                 leg2 = `<span style="color:#60a5fa; font-size:10px;" title="双出口挂单撮合中">🎯 挂卖${sPrice} / 挂买${bPrice}</span>`;
               }
                 
