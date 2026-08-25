@@ -133,7 +133,68 @@ Polymarket CLOB V2 (升级后) 对实盘下单采用**双层认证协议 (Dual-L
 
 ---
 
-## 8. 领域驱动分层与代码解耦设计 (Software Architecture & Layering)
+## 9. 双资金池风控与资金管理 (Dual-Pool Capital Management)
+
+系统实现了 **实盘与模拟盘双资金池物理隔离 (Dual-Pool Isolation)**：
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                 RiskManager (单例风控中心)                 │
+├─────────────────────────────┬─────────────────────────────┤
+│   模拟盘资金池 (Paper Pool)  │   实盘资金池 (Live Pool)    │
+├─────────────────────────────┼─────────────────────────────┤
+│ • 默认资金: $100.00 USDC     │ • 链上实时 USDC 抵押品余额  │
+│ • 独立 paper_used_exposure  │ • 95% 安全敞口缓冲          │
+│ • 独立模拟锁仓与释放        │ • 独立 live_used_exposure   │
+└─────────────────────────────┴─────────────────────────────┘
+```
+
+- **杜绝小额锁死**：实盘极小额测试账户（如 0.14U）不会阻碍模拟盘策略（100U）对多市场的并发演练。
+- **动态释放与链上同步**：交易在进入 `LOCKED`、`SETTLED`、`FAILED` 或自动 `Redeem` 领奖后，无条件全生命周期释放风控额度并从链上刷新真实余额。
+
+---
+
+## 10. 私有 WebSocket 用户订单流 (User Order Stream)
+
+为彻底消灭首腿成交后二腿对冲的 REST 轮询等待与 503 限流风险，系统新增了 **`UserOrderStreamer`** 单例：
+
+- **端点协议**：直连 `wss://ws-subscriptions-clob.polymarket.com/ws/user`，长连接自动发送 L2 API 鉴权帧与心跳保活。
+- **⚡ <5ms 极速对冲**：首腿在撮合引擎内撮合成交的瞬间，WS 主动推送 `FILLED` 事件，毫秒级唤醒协程推进至 `LEG1_ONLY` 并下发二腿挂单，将单边敞口暴露期压缩至极限。
+- **终极双保险**：若私有 WS 遭遇网络偶发抖动，自动平滑降级至免签公共 Data API 链上对账防线。
+
+---
+
+## 11. 平仓与到期交割结算价格闭环 (Settlement & Realized PnL)
+
+系统建立了完整的 **平仓与交割真实盈亏核算体系**，彻底终结了此前强平显示 `EV: $0.0000` 造成的账本失真：
+
+```mermaid
+graph TD
+    A[单边持仓触发自适应强平] --> B[撤销二腿未成交挂单]
+    B --> C[穿透订单簿买盘深度计算 Bid VWAP 均价]
+    C --> D[发送市价 FOK 平仓单]
+    
+    D -->|✅ 平仓成功| E["生成平仓卖出明细: LegPosition(side='SELL', cost=VWAP)"]
+    E --> F["核算 Realized PnL = (close_price - leg1_cost) * size - fees"]
+    
+    D -->|❌ 平仓失败/临期锁定| G[自动捕获到期最终结算价 settlement_price (1.0 或 0.0)]
+    G --> H["核算 Settled PnL = (settlement_price - leg1_cost) * size - entry_fee"]
+    
+    F --> I[更新 ctx.leg2 为 SELL 明细，精准归档入库与看板]
+    H --> I
+```
+
+1. **市价平仓成功 (`FORCE_CLOSED`)**：
+   - 自动拉取买单深度计算 **Bid VWAP 深度加权均价**；
+   - 核算扣除双边手续费后的真实 `Realized PnL`；
+   - 将 `ctx.leg2` 明确记录为 **`SELL YES @ close_price`** 卖单明细，消除误导性 `BUY` 挂单残留。
+2. **二腿平仓失败直至到期 (`EXPIRY_RESOLVED`)**：
+   - 自动捕获市场最终裁决结算价 `settlement_price`（胜者 1.0 / 败者 0.0）；
+   - 计算终态交割损益（免卖出手续费）并持久化到 SQLite 历史账本。
+
+---
+
+## 12. 领域驱动分层与代码解耦设计 (Software Architecture & Layering)
 
 系统采用了轻量级 **DDD-Lite / Service Pattern** 分层设计，消除上帝类 (God Class)，实现 100% 内存级单测与强类型约束：
 
@@ -144,9 +205,9 @@ src/polymarket/
 │   └── fsm.py                  # 规范化的 TradeFSM 状态机与合法转移图
 │
 ├── services/                   # 2. 核心解耦服务层 (Stateless Domain Services)
-│   ├── pricing.py              # PricingEngine: VWAP 深度预估、Net EV 扣费数学校验、双挂保利互补定价 (纯无 I/O 计算)
-│   ├── execution.py            # OrderExecutionService: shares >= 5.0 安全钳制、自适应 FOK 滑点微重试、免签 Data API 终极对账
-│   ├── liquidator.py           # AdaptiveLiquidatorService: 自适应 TTL 动态收紧、绝对时间基准防漂移、FOK+GTC 双重兜底止损
+│   ├── pricing.py              # PricingEngine: VWAP 深度预估 (Ask/Bid)、Net EV 扣费数学、双挂保利互补定价 (纯无 I/O 计算)
+│   ├── execution.py            # OrderExecutionService: shares >= 5.0 钳制、私有 WS 极速监听、免签 Data API 终极对账
+│   ├── liquidator.py           # AdaptiveLiquidatorService: 自适应 TTL 动态收紧、Orderbook Bid VWAP 平仓、Realized PnL 真实核算
 │   ├── pegging.py              # MakerPeggingService: 1.5~3.5s 随机装死迟滞、0.002~0.004 阶梯跃迁反卷
 │   └── repository.py           # TradeRepository: SQLite WAL 模式下 active_trades_cache 维护与 historical_trades 终态冷热归档
 │
@@ -154,9 +215,10 @@ src/polymarket/
 │   ├── dashboard.py            # FastAPI 实时 WebSocket 仪表盘与 REST 接口
 │   └── manager.py              # 多策略调度器、市场发现与链上自动 Redeem
 │
-├── streamer.py                 # 单例多路复用 WebSocket 数据总线 (防抖限频 + Zero-Copy)
-├── client.py                   # CLOB V2 原生 EIP-712 签名与 HTTP 代理客户端
-├── risk_manager.py             # 全局资金预扣锁与单例风控管理器
-└── strategy_fsm.py             # 瘦身后的策略编排控制器 (Orchestrator, ~350 行)
+├── streamer.py                 # 单例多路复用公共行情 WebSocket 数据总线 (防抖限频 + Zero-Copy)
+├── user_streamer.py            # 单例私有用户订单流 WebSocket (<5ms 成交回报与协程唤醒)
+├── client.py                   # CLOB V2 原生 EIP-712 签名与 HTTP 代理客户端 (带 get_orderbook)
+├── risk_manager.py             # 双资金池独立管理与单例风控中心 (Paper: 100U, Live: 链上真实余额)
+└── strategy_fsm.py             # 瘦身后的策略编排控制器 (Orchestrator)
 ```
 

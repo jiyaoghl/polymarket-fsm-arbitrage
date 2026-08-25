@@ -132,3 +132,21 @@
 - **核心 Service 纯无状态化 (Stateless Services)**：`PricingEngine`、`OrderExecutionService`、`AdaptiveLiquidatorService`、`MakerPeggingService` 必须保持 Stateless，仅接收传入的 `TradeContext` 并返回计算结果或直接操作外部 Client，杜绝跨模块双脑分裂。
 - **纯数学与 I/O 严格隔离 (Pure Math vs I/O)**：定价与收益核算逻辑（`PricingEngine`）严禁产生任何网络 I/O 或数据库调用，必须保持为纯函数以支持 100% 内存级本地单元测试。
 
+## 22. 强平平仓与结算损益闭环 (Liquidation & Settlement PnL Realization)
+- **平仓明细与撤单状态隔离**：
+  - 强平平仓完成后，必须将 `TradeContext.leg2` 明确标记为 `side="SELL"` 的平仓卖单明细（包含实际平仓均价与份数），严禁在看板和账本中残留此前已被撤销的 `BUY` 对冲挂单。
+- **终态真实损益核算 (Realized PnL)**：
+  - 触发强平后，必须精确核算扣除开仓与平仓双边手续费后的已实现损益 `realized_pnl` 并赋予 `profit_usdc`；
+  - 若市价平仓失败直至到期，必须捕获市场最终裁决结算价 `settlement_price` (1.0 或 0.0) 核算交割盈亏，坚决杜绝因记录为 `$0.0000` 造成的账本与看板失真。
+  > **教训来源**：2026-08-25 发现强平止损后归档日志显示 `EV: $0.0000`，且看板二腿仍残留未成交的 `BUY` 挂单，导致用户误判为平仓逻辑未执行。
+
+## 23. 买盘 VWAP 订单簿深度加权平仓 (Orderbook Depth & Bid VWAP)
+- **穿透订单簿买盘深度**：
+  - 在执行单边持仓市价 FOK 平仓时，严禁仅使用单一买一价（Best Bid）计算。必须调用 `PricingEngine.calculate_bid_vwap` 穿透买盘深度逐档吃满目标持仓份数，计算真实的深度加权均价。
+  - 若买盘总深度不足以吃满目标持仓，需提前识别流动性枯竭并启动保护兜底。
+
+## 24. 私有 WebSocket 极速事件流驱动 (Private WS Order Stream)
+- **0 延迟成交回报与二腿触发**：
+  - 首腿吃单后，优先通过 `UserOrderStreamer` 监听 `wss://ws-subscriptions-clob.polymarket.com/ws/user` 私有订单成交事件，实现 `<5ms` 极速唤醒状态机并下发二腿挂单。
+  - 避免频繁通过 REST 轮询查单引发 CLOB 503 限流与百毫秒级对冲延迟。
+
