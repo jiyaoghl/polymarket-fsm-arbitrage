@@ -104,13 +104,22 @@ def test_clob_auth(wallet_address: str) -> bool:
     print(f"   CLOB Host: {CLOB_HOST}")
     
     # 优先使用官方 py_clob_client 进行鉴权验证
+    clean_pk = os.getenv("POLX_PK") or PK or ""
+    if clean_pk.startswith("0x"):
+        clean_pk_fmt = clean_pk
+    else:
+        clean_pk_fmt = f"0x{clean_pk}"
+
+    api_k = os.getenv("POLX_API_KEY") or CLOB_API_KEY
+    api_s = os.getenv("POLX_API_SECRET") or CLOB_API_SECRET
+    api_p = os.getenv("POLX_API_PASSPHRASE") or CLOB_API_PASSPHRASE
+
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, ApiCreds
         
-        clean_pk = PK if PK.startswith("0x") else f"0x{PK}"
-        c = ClobClient(host=CLOB_HOST, key=clean_pk, chain_id=137)
-        c.set_api_creds(ApiCreds(api_key=CLOB_API_KEY, api_secret=CLOB_API_SECRET, api_passphrase=CLOB_API_PASSPHRASE))
+        c = ClobClient(host=CLOB_HOST, key=clean_pk_fmt, chain_id=137)
+        c.set_api_creds(ApiCreds(api_key=api_k, api_secret=api_s, api_passphrase=api_p))
         
         bal = c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
         if bal is not None:
@@ -120,9 +129,9 @@ def test_clob_auth(wallet_address: str) -> bool:
             print(f"   CLOB 撮合可用抵押品余额: {GREEN}{usdc_val:.4f} pUSD/USDC{RESET}")
             return True
     except Exception as ce:
-        pass
+        print(f"{YELLOW}   py_clob_client 尝试失败 ({ce})，正在尝试原生 HMAC 签名重试...{RESET}")
 
-    # 构造标准原生 L2 鉴权头部（包含完整 Query String）
+    # 构造标准原生 L2 鉴权头部（包含完整 Query String 与 POLY_ADDRESS）
     timestamp = str(int(time.time()))
     method = "GET"
     request_path = "/balance-allowance?asset_type=COLLATERAL"
@@ -130,15 +139,16 @@ def test_clob_auth(wallet_address: str) -> bool:
     message = f"{timestamp}{method}{request_path}{body}"
 
     try:
-        secret_bytes = base64.b64decode(CLOB_API_SECRET)
+        secret_bytes = base64.b64decode(api_s)
         signature = hmac.new(secret_bytes, message.encode("utf-8"), hashlib.sha256).digest()
         sig_b64 = base64.b64encode(signature).decode("utf-8")
 
         headers = {
-            "POLY_API_KEY": CLOB_API_KEY,
+            "POLY_API_KEY": api_k,
             "POLY_SIGNATURE": sig_b64,
             "POLY_TIMESTAMP": timestamp,
-            "POLY_PASSPHRASE": CLOB_API_PASSPHRASE,
+            "POLY_PASSPHRASE": api_p,
+            "POLY_ADDRESS": wallet_address,
             "User-Agent": "curl/8.13.0",
         }
 
