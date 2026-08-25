@@ -1,0 +1,76 @@
+[
+    {
+        // ── 基础标识与运行模式 ─────────────────────────────────────────────
+        "strategy_id": "taker_maker_conservative",        // [必填] 策略唯一标识符 (用于日志、SQLite 归档与风控隔离)
+        "name": "吃单+挂单 保守实盘策略 (3U极小额)",       // [必填] 策略中文显示名称 (展示在 Dashboard 看板与通知中)
+        "description": "首腿FOK市价吃单，二腿双出口并发退出。低入场价区间，严格防滑点与小额安全试水", // 策略业务描述
+        "is_live": true,                                 // [必填] 运行模式: true=连接真实钱包链上实盘交易, false=本地高保真模拟盘
+        "amount": 3.0,                                   // [必填] 单笔投入金额 (USDC)，系统自动折算为 Token 份数并保证 >= 5.0 Shares
+
+        // ── 入场价格与触发条件 ─────────────────────────────────────────────
+        "entry_max_price": 0.45,                         // [必填] 首腿最大允许吃单买价 (高于此值不入场，保留对冲利润空间)
+        "entry_min_price": 0.30,                         // [必填] 首腿最小允许吃单买价 (低于此值不入场，防黑天鹅极端归零)
+        "reentry_trigger": 0.35,                         // [必填] 二腿反卷对冲触发阈值 (盘口价格低于此值时触发反超买一)
+        "min_time_to_expiry_entry": 45,                  // 临近交割禁止入场时间 (秒，离交割不足 45s 时不开新仓)
+
+        // ── 下单类型与定价参考 ─────────────────────────────────────────────
+        "leg1_order_type": "FOK",                        // [必填] 首腿订单类型: "FOK"=市价立即吃单未满即撤, "GTC"=限价挂单等待被吃
+        "leg2_order_type": "GTC",                        // [必填] 二腿订单类型: "GTC"=限价做市挂单赚取流动性溢价, "FOK"=市价吃单
+        "leg2_price_mode": "bid",                        // [必填] 二腿定价参考基准: "bid"=参考买一价跟单做市, "ask"=参考卖一价
+        "dual_bracket_entry": false,                     // 是否开启开局双边并发双挂 (仅 maker_maker 做市策略设为 true)
+
+        // ── 二腿智能出场与动态做T ─────────────────────────────────────────
+        "exit_mode": "dual_exit",                        // [必填] 出场模式: "dual_exit"=OCO双出口并发, "smart_flip"=做T优先, "pair_only"=纯对冲
+        "initial_margin": 0.025,                         // [必填] 初始做T期望毛利率 (0.025 代表追求 +2.5% 利差高抛)
+        "breakeven_margin": 0.002,                       // [必填] 保本安全最低毛利率 (时间衰减后的最低保本安全底线 0.2%)
+        "flip_timeout_sec": 35,                          // [必填] 做T等待超时周期 (秒，在此周期内价格按时间衰减阶梯降利)
+
+        // ── 临期风控与兜底设置 ─────────────────────────────────────────────
+        "leg2_cancel_before_expiry": 30,                 // [必填] 到期前强制撤单时间 (秒，距离结算不足30s且未成交时强制撤单)
+        "leg2_fallback_to_maker": true                   // [必填] 挂单取消后是否允许降级为盘口做市吃单
+    },
+    {
+        // ── 标准主力策略样例 (10U 均衡型) ─────────────────────────────────
+        "strategy_id": "taker_maker_standard",
+        "name": "吃单+挂单 标准主力策略",
+        "description": "主力均衡策略，平衡开仓频率与利差收益，适合 BTC/ETH 5min 盘口日常自动化套利",
+        "is_live": false,
+        "amount": 10.0,
+        "entry_max_price": 0.50,
+        "entry_min_price": 0.25,
+        "reentry_trigger": 0.42,
+        "min_time_to_expiry_entry": 45,
+        "leg1_order_type": "FOK",
+        "leg2_order_type": "GTC",
+        "leg2_price_mode": "bid",
+        "dual_bracket_entry": false,
+        "exit_mode": "dual_exit",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35,
+        "leg2_cancel_before_expiry": 30,
+        "leg2_fallback_to_maker": true
+    },
+    {
+        // ── 双边做市策略样例 (Dual Bracket 0 手续费) ───────────────────────
+        "strategy_id": "maker_maker_standard",
+        "name": "挂单+挂单 标准双做市策略",
+        "description": "双边限价做市主力策略，享受Polymarket Maker零手续费福利，原子并发双挂完美套利",
+        "is_live": false,
+        "amount": 10.0,
+        "entry_max_price": 0.50,
+        "entry_min_price": 0.25,
+        "reentry_trigger": 0.42,
+        "min_time_to_expiry_entry": 45,
+        "leg1_order_type": "GTC",
+        "leg2_order_type": "GTC",
+        "leg2_price_mode": "bid",
+        "dual_bracket_entry": true,
+        "exit_mode": "dual_exit",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35,
+        "leg2_cancel_before_expiry": 30,
+        "leg2_fallback_to_maker": true
+    }
+]
