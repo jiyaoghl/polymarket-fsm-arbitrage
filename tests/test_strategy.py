@@ -13,19 +13,42 @@ from polymarket.base_strategy import BaseStrategy as ArbitrageBot
 from polymarket.base_strategy import INITIAL_ENTRY_MAX_PRICE, REENTRY_TRIGGER_PRICE
 
 
+def make_valid_config(**kwargs):
+    cfg = {
+        "strategy_id": "test_strategy",
+        "name": "测试策略",
+        "amount": 10.0,
+        "entry_max_price": 0.50,
+        "entry_min_price": 0.25,
+        "reentry_trigger": 0.40,
+        "is_live": False,
+        "leg1_order_type": "FOK",
+        "leg2_order_type": "GTC",
+        "leg2_price_mode": "bid",
+        "exit_mode": "dual_exit",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35.0,
+        "leg2_cancel_before_expiry": 30,
+        "leg2_fallback_to_maker": True,
+    }
+    cfg.update(kwargs)
+    return cfg
+
+
 class TestArbitrageBot:
     """ArbitrageBot 测试类。"""
 
     def test_init(self):
         """测试初始化。"""
-        config = {
-            "strategy_id": "test_strategy",
-            "name": "测试策略",
-            "entry_max_price": 0.50,
-            "reentry_trigger": 0.40,
-            "amount": 10.0,
-            "is_live": False,
-        }
+        config = make_valid_config(
+            strategy_id="test_strategy",
+            name="测试策略",
+            entry_max_price=0.50,
+            reentry_trigger=0.40,
+            amount=10.0,
+            is_live=False,
+        )
         
         bot = ArbitrageBot(config)
         
@@ -37,7 +60,7 @@ class TestArbitrageBot:
 
     def test_thread_safety_methods(self):
         """测试线程安全方法。"""
-        config = {"strategy_id": "test", "is_live": False}
+        config = make_valid_config()
         bot = ArbitrageBot(config)
         
         # 测试市场处理标记
@@ -59,7 +82,7 @@ class TestArbitrageBot:
 
     def test_thread_safety_concurrent_access(self):
         """测试并发访问线程安全。"""
-        config = {"strategy_id": "test", "is_live": False}
+        config = make_valid_config()
         bot = ArbitrageBot(config)
         
         num_threads = 10
@@ -93,7 +116,7 @@ class TestArbitrageBot:
 
     def test_calculate_dynamic_stop_price(self):
         """测试动态止损价格计算。"""
-        config = {"strategy_id": "test", "is_live": False}
+        config = make_valid_config()
         bot = ArbitrageBot(config)
         
         # 模拟 client.get_market_price 返回
@@ -105,7 +128,7 @@ class TestArbitrageBot:
 
     def test_confirm_order_filled_mock_mode(self):
         """测试模拟模式订单确认。"""
-        config = {"strategy_id": "test", "is_live": False}
+        config = make_valid_config()
         bot = ArbitrageBot(config)
         
         # 模拟模式下 mock 命中成交概率
@@ -116,7 +139,7 @@ class TestArbitrageBot:
 
     def test_backoff_calculation(self):
         """测试指数退避计算。"""
-        config = {"strategy_id": "test", "is_live": False}
+        config = make_valid_config()
         bot = ArbitrageBot(config)
         
         # 测试退避延迟

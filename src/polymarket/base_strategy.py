@@ -21,6 +21,67 @@ from polymarket.config import (
 from polymarket.logger import logger
 
 
+REQUIRED_STRATEGY_KEYS = [
+    "strategy_id",
+    "name",
+    "amount",
+    "entry_max_price",
+    "entry_min_price",
+    "reentry_trigger",
+    "is_live",
+    "leg1_order_type",
+    "leg2_order_type",
+    "leg2_price_mode",
+    "exit_mode",
+    "initial_margin",
+    "breakeven_margin",
+    "flip_timeout_sec",
+    "leg2_cancel_before_expiry",
+    "leg2_fallback_to_maker",
+]
+
+def validate_strategy_config(cfg: Dict[str, Any]) -> None:
+    """
+    严格校验策略配置完整性与合法性 (Strict Validation, No Fallback Silently).
+    若缺少任何必填参数或取值不合法，直接抛出 ValueError 拒绝启动。
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("策略配置必须为 JSON 字典对象")
+
+    missing_keys = [k for k in REQUIRED_STRATEGY_KEYS if k not in cfg]
+    if missing_keys:
+        sid = cfg.get("strategy_id", "未知策略")
+        raise ValueError(f"[配置严格校验失败] 策略 '{sid}' 缺少以下必填参数: {missing_keys}")
+
+    # 类型与取值范围强校验
+    if not isinstance(cfg["strategy_id"], str) or not cfg["strategy_id"].strip():
+        raise ValueError(f"strategy_id 必须为非空字符串: {cfg.get('strategy_id')}")
+
+    if not isinstance(cfg["amount"], (int, float)) or cfg["amount"] <= 0:
+        raise ValueError(f"amount 必须为大于 0 的数值: {cfg.get('amount')}")
+
+    if not (0.0 < float(cfg["entry_max_price"]) < 1.0):
+        raise ValueError(f"entry_max_price ({cfg['entry_max_price']}) 必须在 (0.0, 1.0) 区间内")
+
+    if not (0.0 < float(cfg["entry_min_price"]) <= float(cfg["entry_max_price"])):
+        raise ValueError(f"entry_min_price ({cfg['entry_min_price']}) 必须大于 0 且小于等于 entry_max_price")
+
+    if cfg["leg1_order_type"] not in ("FOK", "GTC"):
+        raise ValueError(f"leg1_order_type ({cfg['leg1_order_type']}) 必须为 'FOK' 或 'GTC'")
+
+    if cfg["leg2_order_type"] not in ("FOK", "GTC"):
+        raise ValueError(f"leg2_order_type ({cfg['leg2_order_type']}) 必须为 'FOK' 或 'GTC'")
+
+    if cfg["leg2_price_mode"] not in ("bid", "ask"):
+        raise ValueError(f"leg2_price_mode ({cfg['leg2_price_mode']}) 必须为 'bid' 或 'ask'")
+
+    if cfg["exit_mode"] not in ("dual_exit", "smart_flip", "pair_only"):
+        raise ValueError(f"exit_mode ({cfg['exit_mode']}) 必须为 'dual_exit'、'smart_flip' 或 'pair_only'")
+
+    if not isinstance(cfg["is_live"], bool):
+        raise ValueError("is_live 必须为布尔值 (true/false)")
+
+
 class BaseStrategy:
     """
     5Min Symmetric Bot 的单策略实例。
@@ -37,9 +98,12 @@ class BaseStrategy:
     WS_RECONNECT_MAX_DELAY = 30.0  # 最大重连延迟（秒）
 
     def __init__(self, strategy_config: Dict[str, Any]):
+        # 1. 执行严格参数校验 (Fail-Fast: 必须具备所有必填参数，严禁隐式静默兜底)
+        validate_strategy_config(strategy_config)
+
         self.config = strategy_config
-        self.strategy_id = strategy_config.get("strategy_id", "default")
-        self.is_live = strategy_config.get("is_live", False)
+        self.strategy_id = str(strategy_config["strategy_id"])
+        self.is_live = bool(strategy_config["is_live"])
         self.client = get_client(is_live=self.is_live)
         self.active_trades: Dict[str, Dict[str, Any]] = {}
 
@@ -47,21 +111,19 @@ class BaseStrategy:
         self._trades_lock = threading.RLock()
         self._markets_lock = threading.RLock()
 
-        # 策略参数注入
-        self.entry_max_price = strategy_config.get(
-            "entry_max_price", INITIAL_ENTRY_MAX_PRICE
-        )
-        self.entry_min_price = strategy_config.get(
-            "entry_min_price", INITIAL_ENTRY_MIN_PRICE
-        )
-        self.reentry_trigger = strategy_config.get(
-            "reentry_trigger", REENTRY_TRIGGER_PRICE
-        )
-        self.order_amount = strategy_config.get("amount", ORDER_AMOUNT)
-        self.max_slippage_tolerance = strategy_config.get("max_slippage_tolerance", MAX_SLIPPAGE_TOLERANCE)
-        self.leg1_max_unhedged_seconds = strategy_config.get("leg1_max_unhedged_seconds", LEG1_MAX_UNHEDGED_SECONDS)
-        self.max_concurrent_unhedged_trades = strategy_config.get("max_concurrent_unhedged_trades", MAX_CONCURRENT_UNHEDGED_TRADES)
+        # 策略核心参数显式绑定 (无隐式 fallback)
+        self.name = str(strategy_config["name"])
+        self.entry_max_price = float(strategy_config["entry_max_price"])
+        self.entry_min_price = float(strategy_config["entry_min_price"])
+        self.reentry_trigger = float(strategy_config["reentry_trigger"])
+        self.order_amount = float(strategy_config["amount"])
+        self.dual_bracket_entry = bool(strategy_config.get("dual_bracket_entry", False))
+        
+        self.max_slippage_tolerance = float(strategy_config.get("max_slippage_tolerance", MAX_SLIPPAGE_TOLERANCE))
+        self.leg1_max_unhedged_seconds = float(strategy_config.get("leg1_max_unhedged_seconds", LEG1_MAX_UNHEDGED_SECONDS))
+        self.max_concurrent_unhedged_trades = int(strategy_config.get("max_concurrent_unhedged_trades", MAX_CONCURRENT_UNHEDGED_TRADES))
         self.processed_markets = set()
+
         # ── P0新增：启动时从 DB 自动恢复 processed_markets ──────────────────
         try:
             from polymarket.config import DB_PATH
@@ -86,21 +148,23 @@ class BaseStrategy:
         self.order_confirm_timeout = 15.0  # 订单确认超时（秒），适应 VPS 与网络抖动
         self.order_confirm_interval = 0.5  # 订单确认轮询间隔（秒）
         
-        # 下单方式配置（新增）
-        self.leg1_order_type = strategy_config.get("leg1_order_type", "FOK")  # 首腿订单类型：FOK(吃单) / GTC(挂单)
-        self.leg2_order_type = strategy_config.get("leg2_order_type", "GTC")  # 二腿订单类型：FOK(吃单) / GTC(挂单)
-        self.leg2_price_mode = strategy_config.get("leg2_price_mode", "bid")   # 二腿价格模式：ask(吃单价) / bid(挂单价)
-        self.leg2_cancel_before_expiry = strategy_config.get("leg2_cancel_before_expiry", 30)  # 二腿挂单到期前取消时间
-        self.leg2_fallback_to_maker = strategy_config.get("leg2_fallback_to_maker", True)  # 挂单取消后是否改为吃单
+        # 下单与出场方式显式绑定
+        self.leg1_order_type = str(strategy_config["leg1_order_type"])
+        self.leg2_order_type = str(strategy_config["leg2_order_type"])
+        self.leg2_price_mode = str(strategy_config["leg2_price_mode"])
+        self.leg2_cancel_before_expiry = float(strategy_config["leg2_cancel_before_expiry"])
+        self.leg2_fallback_to_maker = bool(strategy_config["leg2_fallback_to_maker"])
         
         # 二腿智能出场配置 (Smart Exit & Flip)
-        self.exit_mode = strategy_config.get("exit_mode", "smart_flip")  # smart_flip | pair_only
-        self.initial_margin = float(strategy_config.get("initial_margin", 0.025))  # 初始做T期望毛利 2.5%
-        self.breakeven_margin = float(strategy_config.get("breakeven_margin", 0.002))  # 保本安全毛利 0.2%
-        self.flip_timeout_sec = float(strategy_config.get("flip_timeout_sec", 35.0))  # 做T等待超时(秒)
+        self.exit_mode = str(strategy_config["exit_mode"])
+        self.initial_margin = float(strategy_config["initial_margin"])
+        self.breakeven_margin = float(strategy_config["breakeven_margin"])
+        self.flip_timeout_sec = float(strategy_config["flip_timeout_sec"])
         
         from polymarket import config
-        self.min_time_to_expiry_entry = strategy_config.get("min_time_to_expiry_entry", getattr(config, "MIN_TIME_TO_EXPIRY_ENTRY", 45)) # 临近交割禁止入场时间（秒）
+        self.min_time_to_expiry_entry = float(strategy_config.get("min_time_to_expiry_entry", getattr(config, "MIN_TIME_TO_EXPIRY_ENTRY", 45)))
+        
+        # 挂单状态跟踪
         
         # 挂单状态跟踪
         self.pending_orders: Dict[str, Dict[str, Any]] = {}  # market_id -> order_info

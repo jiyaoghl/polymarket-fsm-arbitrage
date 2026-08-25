@@ -62,7 +62,24 @@ def test_insufficient_depth():
 
 def test_unhedged_trade_counter():
     """测试 ArbitrageBot 统计未对冲单腿数量的方法。"""
-    strategy_cfg = {"strategy_id": "test_bot", "is_live": False}
+    strategy_cfg = {
+        "strategy_id": "test_bot",
+        "name": "测试策略",
+        "amount": 10.0,
+        "entry_max_price": 0.50,
+        "entry_min_price": 0.25,
+        "reentry_trigger": 0.40,
+        "is_live": False,
+        "leg1_order_type": "FOK",
+        "leg2_order_type": "GTC",
+        "leg2_price_mode": "bid",
+        "exit_mode": "dual_exit",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35.0,
+        "leg2_cancel_before_expiry": 30,
+        "leg2_fallback_to_maker": True,
+    }
     bot = ArbitrageBot(strategy_cfg)
 
     # 初始状态为 0
