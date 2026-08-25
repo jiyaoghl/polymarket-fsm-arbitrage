@@ -45,11 +45,18 @@
 - **模式 B：单腿切入 (Taker-Maker / Taker-Taker)**：
   - 针对流动性较好的一端，以最优卖价（`best_ask <= entry_max_price`）作为首腿 FOK 吃单目标，提交后跃迁至 `PENDING_LEG1`。
 
-### 🚀 状态 2: `PENDING_BOTH_LEGS` (双边并发挂单做市)
-- 系统在 WS 事件循环与轮询中持续跟踪双边挂单状态：
-  - **双边同时成交**：直接进入 `LOCKED`，达成**零单边暴露完美套利**。
-  - **单边先被吃单**：将已成交侧标记为 `leg1`，未成交侧标记为 `leg2`，进入 `LEG1_ONLY` 并立即启动 **90s 动态 TTL 倒计时**。
-  - **临期未成交**：剩余时间 $<30s$ 且双边均未被吃时，调用批量撤单，安全退出回到 `IDLE/FAILED`。
+### 🚀 状态 2: `PENDING_BOTH_LEGS` (双边并发挂单做市推进闭环)
+- 系统在盘口事件流 `_process_market_tick` 中持续跟踪双边挂单状态：
+  - **双边同时成交 (`yes_filled and no_filled`)**：
+    - 直接判定双方成交，调用 `PricingEngine.calculate_net_ev` 核算纯做市零手续费 Net EV；
+    - 流转至 `TradeState.LOCKED`，达成**零单边暴露完美套利**。
+  - **单边率先成交（YES 或 NO）**：
+    - 将已成交方确认为 `leg1` 并注入 `leg1_filled_time = time.time()`；
+    - 将未成交方确认为 `leg2`（对冲挂单）并记录 `leg2_order_id`；
+    - 流转至 `TradeState.PENDING_LEG2`，**自动接入 90s 自适应 TTL 强平守护线程监控**。
+  - **双边均未成交且临近交割**：
+    - 距离交割剩余时间 $\le 30$ 秒（或 `min_time_to_expiry_entry`）且双边均未被吃时，调用 `cancel_order_async` 原子撤销 YES/NO 双挂单；
+    - 100% 释放预扣的风控敞口锁，流转至 `TradeState.FAILED` 干净退出。
 
 ### 💸 状态 3: `PENDING_LEG1` (首腿吃单 / Taker)
 - 向目标资产发送 `FOK (Fill-or-Kill)` 订单。

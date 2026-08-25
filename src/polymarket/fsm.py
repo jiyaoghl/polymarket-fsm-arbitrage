@@ -30,10 +30,11 @@ class TradeFSM:
             TradeState.FAILED
         },
         TradeState.PENDING_BOTH_LEGS: {
-            TradeState.LOCKED,     # 双腿均被吃单，秒级完成套利
-            TradeState.LEG1_ONLY,  # 单腿先成交，另一腿仍在排队或需追单
+            TradeState.LOCKED,       # 双腿均被吃单，秒级完成套利
+            TradeState.LEG1_ONLY,    # 单腿先成交，另一腿仍在排队或需追单
+            TradeState.PENDING_LEG2, # 单腿先成交，另一腿作为二腿继续等待撮合
             TradeState.SETTLED,
-            TradeState.FAILED      # 临期未成交批量撤单
+            TradeState.FAILED        # 临期未成交批量撤单
         },
         TradeState.PENDING_LEG1: {
             TradeState.LEG1_ONLY, 

@@ -81,9 +81,11 @@ flowchart TD
    │
    ├─► 双挂做市 (Maker-Maker) ─► [PENDING_BOTH_LEGS] ──► 双边均成交 ──► [LOCKED 零暴露完美套利]
    │                                  │
-   │                                  └─► 单边先成交 ──► [LEG1_ONLY 单腿敞口]
-   │                                                       │
-   ├─► 单腿吃单 (Taker-Maker) ─► [PENDING_LEG1] ─► 成交 ───┘
+   │                                  ├─► 单边先成交 ──► [PENDING_LEG2 等待二腿 + 启动 90s TTL]
+   │                                  │
+   │                                  └─► 临期未成交 (≤30s) ──► 原子撤单 + 释放锁 ──► [FAILED 安全退出]
+   │
+   ├─► 单腿吃单 (Taker-Maker) ─► [PENDING_LEG1] ─► 成交 ──► [LEG1_ONLY 单腿敞口]
    │                                                       │
    │   ┌───────────────────────────────────────────────────┘
    │   ├─► 满足对冲阈值 (Net EV > 0) ─► [PENDING_LEG2] ─► 成交 ─► [LOCKED 锁仓套利]
@@ -100,7 +102,7 @@ flowchart TD
 针对 `maker_maker` 类做市策略，系统支持通过 CLOB V2 的 `/batch-orders` 接口**原子级并发双挂**：
 * **互补保利定价**：$\text{YES}_{\text{bid}} = \text{买一} + 0.001$，$\text{NO}_{\text{bid}} = 1.0 - \text{YES}_{\text{bid}} - 1.5\%$，组合成本压制在 $0.985$ 锁定纯利。
 * **0% Maker 零手续费**：彻底免去 1% Taker 吃单费，毛利润 100% 留存。
-* **秒级双吃与 90s TTL 容灾**：若双腿被瞬时插针吃满，直接无单边暴露达成套利；若单边先被吃，立即无缝无缝转入 `LEG1_ONLY` 启动 90s 强平防护。
+* **秒级双吃与 90s TTL 容灾**：若双腿被瞬时插针吃满，直接无单边暴露达成套利；若单边先被吃，立即无缝转入 `PENDING_LEG2` 并启动 90s 强平防护；若临近交割未成交，原子撤单并 100% 释放风控锁。
 
 ### 3. 幻象失败防御与 Data API 终极对账防线
 * **OrderID 异常深度捕获**：在遇到 HTTP 400（FOK killed）或 401 鉴权抖动时，底层强制解析出撮合层 `orderID` 返回 `UNCONFIRMED` 态，拒绝直接丢单。
@@ -158,7 +160,13 @@ cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
 # 3. 启动 Dashboard 仪表盘
+# Linux / macOS / VPS:
 PYTHONPATH=src python3 -m polymarket.apps.dashboard
+
+# Windows (PowerShell / CMD):
+$env:PYTHONPATH="src"; python -m polymarket.apps.dashboard
+# 或直接在项目根目录下执行:
+python -m polymarket.apps.dashboard
 ```
 
 ### 2. VPS 云端一键运维 (Ubuntu 22.04 / 24.04 推荐)

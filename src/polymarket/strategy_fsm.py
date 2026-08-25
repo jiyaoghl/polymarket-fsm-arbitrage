@@ -420,7 +420,104 @@ class ArbitrageBotFSM(BaseStrategy):
                 else:
                     self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
 
-        # ── 2. LEG1_ONLY 状态智能出场 (做T高抛 or 配对对冲) ─────
+        # ── 2. PENDING_BOTH_LEGS 状态双挂单成交推进 (Dual-GTC Bracket) ──
+        elif fsm.current_state == TradeState.PENDING_BOTH_LEGS:
+            orders = ctx.dual_orders
+            if not orders or len(orders) < 2:
+                return
+
+            # 分别提取 YES 与 NO 挂单信息
+            yes_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(yes_token)), orders[0])
+            no_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(no_token)), orders[1])
+
+            yes_price = float(yes_order_info.get("price") or 0.0)
+            yes_size = float(yes_order_info.get("size") or yes_order_info.get("amount") or 0.0)
+            yes_id = yes_order_info.get("order_id") or yes_order_info.get("orderID")
+
+            no_price = float(no_order_info.get("price") or 0.0)
+            no_size = float(no_order_info.get("size") or no_order_info.get("amount") or 0.0)
+            no_id = no_order_info.get("order_id") or no_order_info.get("orderID")
+
+            # 判定 YES 挂单成交情况
+            yes_filled = False
+            if not self.is_live:
+                yes_filled = (best_bid_yes is not None and best_bid_yes >= yes_price) or (best_ask_yes is not None and best_ask_yes <= yes_price)
+            elif yes_id:
+                yes_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                    self.client, yes_id, str(yes_token), yes_size, self.strategy_id, timeout=2.0
+                )
+
+            # 判定 NO 挂单成交情况
+            no_filled = False
+            if not self.is_live:
+                no_filled = (best_bid_no is not None and best_bid_no >= no_price) or (best_ask_no is not None and best_ask_no <= no_price)
+            elif no_id:
+                no_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                    self.client, no_id, str(no_token), no_size, self.strategy_id, timeout=2.0
+                )
+
+            # 分支 A: 双腿均被吃单，达成无风险对冲 (秒级锁定)
+            if yes_filled and no_filled:
+                ctx.leg1 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
+                ctx.leg2 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+                ctx.leg1_dir = "YES"
+                ctx.leg2_dir = "NO"
+
+                net_ev, gross_ev, fee = PricingEngine.calculate_net_ev(
+                    leg1_cost=yes_price, leg1_size=yes_size,
+                    leg2_cost=no_price, leg2_size=no_size,
+                    leg1_order_type="GTC", leg2_order_type="GTC"
+                )
+                ctx.profit_usdc = net_ev
+                ctx.realized_pnl = net_ev
+                ctx.gross_profit_usdc = gross_ev
+                ctx.fee_usdc = fee
+                ctx.settlement_type = "HEDGED_LOCKED"
+                self._set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.LOCKED)
+                return
+
+            # 分支 B: YES 率先成交，NO 保持挂单，进入二腿等待并启动 TTL
+            if yes_filled and not no_filled:
+                now_time = time.time()
+                ctx.leg1 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
+                ctx.leg2 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+                ctx.leg1_dir = "YES"
+                ctx.leg2_dir = "NO"
+                ctx.leg1_filled_time = now_time
+                ctx.leg2_issued_time = now_time
+                ctx.leg2_order_id = no_id
+                self._set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.PENDING_LEG2, order_info=no_order_info)
+                return
+
+            # 分支 C: NO 率先成交，YES 保持挂单，进入二腿等待并启动 TTL
+            if no_filled and not yes_filled:
+                now_time = time.time()
+                ctx.leg1 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+                ctx.leg2 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
+                ctx.leg1_dir = "NO"
+                ctx.leg2_dir = "YES"
+                ctx.leg1_filled_time = now_time
+                ctx.leg2_issued_time = now_time
+                ctx.leg2_order_id = yes_id
+                self._set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.PENDING_LEG2, order_info=yes_order_info)
+                return
+
+            # 分支 D: 双边均未成交且临近到期，原子撤单安全退出
+            time_to_expiry = ctx.end_time - now_ts if ctx.end_time > 0 else 999.0
+            if ctx.end_time > 0 and time_to_expiry <= max(30.0, self.min_time_to_expiry_entry):
+                logger.info(f"[策略FSM：{self.strategy_id}] 双挂单临近交割未成交 (剩余 {time_to_expiry:.1f}s)，执行原子撤单安全退出。")
+                if yes_id:
+                    await self.client.cancel_order_async(yes_id)
+                if no_id:
+                    await self.client.cancel_order_async(no_id)
+                self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
+                fsm.transition_to(TradeState.FAILED, reason=f"双挂单临近到期未成交，撤单退出 (剩余 {time_to_expiry:.1f}s)")
+                return
+
+        # ── 3. LEG1_ONLY 状态智能出场 (做T高抛 or 配对对冲) ─────
         elif fsm.current_state == TradeState.LEG1_ONLY:
             leg1 = ctx.leg1
             if not leg1:
@@ -639,6 +736,17 @@ class ArbitrageBotFSM(BaseStrategy):
                     self._set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.SETTLED, reason=f"智能做T高抛成交变现，净锁定 ${realized_pnl:.4f}")
                 else:
+                    net_ev, gross_ev, fee = PricingEngine.calculate_net_ev(
+                        leg1_cost=ctx.leg1.cost, leg1_size=ctx.leg1.size,
+                        leg2_cost=ctx.leg2.cost, leg2_size=ctx.leg2.size,
+                        leg1_order_type=self.leg1_order_type, leg2_order_type=self.leg2_order_type
+                    )
+                    ctx.profit_usdc = net_ev
+                    ctx.realized_pnl = net_ev
+                    ctx.gross_profit_usdc = gross_ev
+                    ctx.fee_usdc = fee
+                    ctx.settlement_type = "HEDGED_LOCKED"
+                    self._set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.LOCKED)
 
     # =========================================================
