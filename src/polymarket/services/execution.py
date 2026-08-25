@@ -89,13 +89,57 @@ class OrderExecutionService:
         return None
 
     @staticmethod
+    async def async_reconcile_phantom_fill(
+        client: PolyClient,
+        order_id: Optional[str],
+        token_id: str,
+        expected_size: float,
+        strategy_id: str = "default",
+        timeout: float = 10.0
+    ) -> Tuple[bool, Optional[LegPosition]]:
+        """
+        全异步高阶成交确认服务：
+        1. [P0 极速防线] 优先通过 UserOrderStreamer 私有 WebSocket 监听成交推送 (<5ms 响应)。
+        2. [P0 终极对账] 若 WS 超时或未捕获，无缝降级到 CLOB REST 与 Data API 链上对账。
+        """
+        if not client.is_live:
+            # 模拟盘直接按成交返回
+            return True, LegPosition(order_id=order_id or "sim_order", token=token_id, cost=0.5, size=expected_size)
+
+        if not order_id:
+            return False, None
+
+        # 1. 优先尝试私有 WebSocket 事件流
+        try:
+            from polymarket.user_streamer import UserOrderStreamer
+            streamer = UserOrderStreamer.get_instance()
+            if streamer.is_authenticated:
+                ws_result = await streamer.wait_for_order_fill(order_id, timeout=min(timeout, 3.0))
+                if ws_result and ws_result.get("status") == "FILLED":
+                    logger.info(f"[执行服务：{strategy_id}] ⚡ [私有WS] 毫秒级捕获到订单成交回报！Order: {order_id}")
+                    return True, LegPosition(
+                        order_id=order_id,
+                        token=token_id,
+                        cost=float(ws_result.get("price") or 0.5),
+                        size=float(ws_result.get("size") or expected_size)
+                    )
+        except Exception as e:
+            logger.warning(f"[执行服务：{strategy_id}] 私有 WS 监听异常，转入 REST 对账: {e}")
+
+        # 2. 降级到线程池调度同步终极对账
+        return await asyncio.to_thread(
+            OrderExecutionService.reconcile_phantom_fill,
+            client, order_id, token_id, expected_size, strategy_id, timeout
+        )
+
+    @staticmethod
     def reconcile_phantom_fill(
         client: PolyClient,
         order_id: Optional[str],
         token_id: str,
         expected_size: float,
         strategy_id: str = "default",
-        timeout: float = 15.0
+        timeout: float = 10.0
     ) -> Tuple[bool, Optional[LegPosition]]:
         """
         终极防线：在 REST 超时或抛出 400/401 疑似丢单时，向免签公共 Data API 对账链上真实成交。

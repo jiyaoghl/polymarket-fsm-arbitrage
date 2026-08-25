@@ -409,9 +409,9 @@ class ArbitrageBotFSM(BaseStrategy):
                 if order:
                     ctx.leg1_dir = target_side
                     fsm.transition_to(TradeState.PENDING_LEG1, order_info=order)
-                    # 轮询成交或对账
-                    is_fill, pos = OrderExecutionService.reconcile_phantom_fill(
-                        self.client, order.get("orderID"), str(target_token), safe_s, self.strategy_id
+                    # 优先通过私有 WebSocket 极速捕获成交 (超时自动降级至 Data API 终极对账)
+                    is_fill, pos = await OrderExecutionService.async_reconcile_phantom_fill(
+                        self.client, order.get("orderID") or order.get("order_id"), str(target_token), safe_s, self.strategy_id
                     )
                     if is_fill:
                         fsm.transition_to(TradeState.LEG1_ONLY)
