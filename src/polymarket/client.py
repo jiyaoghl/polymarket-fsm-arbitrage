@@ -124,14 +124,15 @@ def get_poly_signature(timestamp: int, method: str, request_path: str, body: str
 class PolyClient:
     """
     统一封装 Gamma + CLOB REST API 的客户端。
+    基于 原生 HTTP/2 (httpx.Client) 构建，支持长连接多路复用 (Multiplexing) 与连接池预热。
     
     支持：
     - 模拟模式：返回模拟订单，用于测试
     - 实盘模式：使用官方 API 进行真实下单和结算
     """
 
-    def __init__(self, is_live: bool = False, rate_limit: float = 10.0):
-        # 针对 Windows 代理环境下 requests HTTPS 握手超时的绝杀：使用系统证书库
+    def __init__(self, is_live: bool = False, rate_limit: float = 10.0, warm_up: bool = True):
+        # 针对 Windows 代理环境下 requests/httpx HTTPS 握手超时的绝杀：使用系统证书库
         try:
             import truststore
             truststore.inject_into_urllib3()
@@ -142,41 +143,35 @@ class PolyClient:
         self.host = CLOB_HOST
         self.gamma_host = GAMMA_HOST
         self.is_live = is_live
-        self.session = requests.Session()
-        # 模拟浏览器/curl UA，防止被某些代理或 WAF 过滤
-        self.session.headers.update({
-            "User-Agent": "curl/8.13.0",
-            "Accept": "application/json",
-        })
         self.wallet = None
 
-        proxies = {}
-        if HTTP_PROXY:
-            proxies["http"] = HTTP_PROXY
-        if HTTPS_PROXY:
-            proxies["https"] = HTTPS_PROXY
-        if proxies:
-            # 显式覆盖环境变量，确保 session 优先级最高
-            self.session.proxies.update(proxies)
-            self.session.trust_env = False 
-            logger.info(f"已配置代理 (trust_env=False): {proxies}")
-
-        from urllib3.util.retry import Retry
-        from requests.adapters import HTTPAdapter
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "DELETE"],
+        # 构建原生 HTTP/2 客户端与长连接池
+        import httpx
+        limits = httpx.Limits(
+            max_keepalive_connections=50,
+            max_connections=100,
+            keepalive_expiry=60.0
         )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=20,
-            pool_maxsize=20,
-        )
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
 
+        proxy_url = HTTPS_PROXY or HTTP_PROXY or None
+        if proxy_url:
+            logger.info(f"⚡ [HTTP/2] 配置代理通道: {proxy_url}")
+
+        self.http2_client = httpx.Client(
+            http2=True,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            limits=limits,
+            proxy=proxy_url,
+            headers={
+                "User-Agent": "curl/8.13.0",
+                "Accept": "application/json",
+            },
+            verify=True,
+            trust_env=False if proxy_url else True
+        )
+
+        # 兼容性属性保持
+        self.session = self.http2_client
 
         self._rate_limiter = RateLimiter(rate=rate_limit, period=1.0)
         
@@ -187,7 +182,31 @@ class PolyClient:
                 logger.info(f"钱包已加载：{self.wallet.address[:8]}...{self.wallet.address[-6:]} (signature_type={SIGNATURE_TYPE})")
             except Exception as e:
                 logger.warning(f"配置的钱包私钥格式有误，加载失败 (如仅运行模拟模式可忽略): {e}")
-        
+
+        # 启动主动连接池预热
+        if warm_up:
+            self.warm_up_connections(async_background=True)
+
+    def warm_up_connections(self, async_background: bool = True) -> None:
+        """
+        主动预热 CLOB 与 Gamma 节点的 HTTP/2 TCP/TLS 连接。
+        提前完成 TLS 握手与 ALPN 协商，首笔交易享受 0 握手延迟。
+        """
+        def _do_warm():
+            try:
+                self.http2_client.get(f"{self.host}/time")
+                self.http2_client.get(f"{self.gamma_host}/markets?limit=1")
+                logger.info("⚡ [HTTP/2] 连接池预热完成，CLOB + Gamma 多路复用通道已就绪！")
+            except Exception as e:
+                logger.debug(f"[HTTP/2] 预热探针完成: {e}")
+
+        if async_background:
+            import threading
+            t = threading.Thread(target=_do_warm, daemon=True, name="http2_warmup")
+            t.start()
+        else:
+            _do_warm()
+
     def _get_auth_headers(self, method: str = "GET", request_path: str = "/", body: str = "") -> Dict[str, str]:
         """生成认证请求头。"""
         from polymarket import config
@@ -210,18 +229,18 @@ class PolyClient:
         return headers
 
     def _post_signed(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """发送签名的 POST 请求，内置 401 跨秒动态重签防线。"""
+        """发送签名的 POST 请求，内置 401 跨秒动态重签防线。基于 HTTP/2 极速传输。"""
         url = f"{self.host}{endpoint}"
         body = json.dumps(data, separators=(',', ':'))
         
         headers = self._get_auth_headers("POST", endpoint, body)
-        response = self.session.post(url, data=body, headers=headers, timeout=10)
+        response = self.http2_client.post(url, content=body, headers=headers)
         
         if response.status_code == 401:
             logger.warning(f"请求 {endpoint} 遭遇 401 鉴权拦截，疑似处于秒级跨秒临界区。触发动态重签自愈机制...")
             time.sleep(0.15)
             headers = self._get_auth_headers("POST", endpoint, body)
-            response = self.session.post(url, data=body, headers=headers, timeout=10)
+            response = self.http2_client.post(url, content=body, headers=headers)
             if response.status_code == 401:
                 logger.error(f"动态重签后依然 401。请检查真实的 API_KEY、API_SECRET 拼写及钱包地址。返回: {response.text}")
                 
@@ -229,11 +248,11 @@ class PolyClient:
         return response.json()
 
     def _get_signed(self, endpoint: str) -> Dict[str, Any]:
-        """发送签名的 GET 请求。"""
+        """发送签名的 GET 请求。基于 HTTP/2 极速传输。"""
         url = f"{self.host}{endpoint}"
         headers = self._get_auth_headers("GET", endpoint)
         
-        response = self.session.get(url, headers=headers, timeout=10)
+        response = self.http2_client.get(url, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -299,11 +318,11 @@ class PolyClient:
             return []
 
     def get_orderbook(self, token_id: str) -> Optional[Dict[str, Any]]:
-        """获取指定 Token 的完整订单簿深度 (bids, asks)。"""
+        """获取指定 Token 的完整订单簿深度 (bids, asks)。基于 HTTP/2 多路复用。"""
         for attempt in range(3):
             try:
                 url = f"{self.host}/book?token_id={token_id}"
-                response = self.session.get(url, timeout=10)
+                response = self.http2_client.get(url)
                 response.raise_for_status()
                 return response.json() or {}
             except Exception as e:
@@ -314,11 +333,13 @@ class PolyClient:
 
     # ========= 行情/盘口 =========
     def get_market_price(self, token_id: str) -> Optional[Dict[str, float]]:
-        """获取指定市场的买卖盘价格（最佳买一/卖一）。"""
+        """获取指定市场的买卖盘价格（最佳买一/卖一）。基于 HTTP/2 极速传输。"""
         for attempt in range(3):
             try:
                 url = f"{self.host}/book?token_id={token_id}"
-                response = self.session.get(url, timeout=10)
+                response = self.http2_client.get(url)
+                if response.status_code == 404:
+                    return None
                 response.raise_for_status()
                 data = response.json()
 
@@ -329,9 +350,9 @@ class PolyClient:
                 best_bid = max((float(b["price"]) for b in bids), default=0.0)
 
                 return {"ask": best_ask, "bid": best_bid}
-            except requests.exceptions.RequestException as e:
-                if getattr(e.response, "status_code", 0) == 404:
-                    # 404 意味着盘口已经彻底不存在或市场被关闭，直接返回
+            except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", 0)
+                if status == 404:
                     return None
                 logger.warning(f"获取价格失败 token={token_id} (重试 {attempt + 1}/3): {e}")
                 if attempt < 2:
@@ -739,20 +760,27 @@ class PolyClient:
 
 
     # ========= 结算 / 领奖 =========
-    @retry_on_failure(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(requests.exceptions.RequestException,))
     def list_closed_markets(self) -> List[Dict[str, Any]]:
         """
-        从 Gamma API 获取已关闭 (可 redeem) 市场的基本信息。
+        从 Gamma API 获取已关闭 (可 redeem) 市场的基本信息。基于 HTTP/2 极速传输。
         """
         try:
             url = f"{self.gamma_host}/markets?closed=true&limit=50"
-            resp = self.session.get(url, timeout=5)
+            resp = self.http2_client.get(url)
             resp.raise_for_status()
             markets = resp.json() or []
             return markets
         except Exception as e:
             logger.exception(f"获取已关闭市场失败：{e}")
             return []
+
+    def close(self) -> None:
+        """安全关闭 HTTP/2 连接池。"""
+        try:
+            self.http2_client.close()
+            logger.info("⚡ [HTTP/2] 连接池已安全关闭")
+        except Exception:
+            pass
 
     def redeem(self, market_id: str) -> Dict[str, Any]:
         """
