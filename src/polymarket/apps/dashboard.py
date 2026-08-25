@@ -54,6 +54,8 @@ class TradeModel(BaseModel):
     time_to_expiry: float
     strategy_id: str
     filter_reason: str | None = None
+    settlement_type: str | None = None
+    dual_orders: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
 
 
@@ -717,9 +719,19 @@ def index() -> str:
               const leg1 = t.leg1 
                 ? `${leg1DirHTML}${t.leg1.side} ${t.leg1.cost.toFixed(3)}×${t.leg1.size.toFixed(2)}`
                 : '--';
-              const leg2 = t.leg2 
-                ? `${leg2DirHTML}${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}`
-                : '--';
+              
+              let leg2 = '--';
+              if (t.leg2) {
+                leg2 = `${leg2DirHTML}${t.leg2.side} ${t.leg2.cost.toFixed(3)}×${t.leg2.size.toFixed(2)}`;
+              } else if (t.status === 'settled' && t.settlement_type === 'DUAL_EXIT_SELL_SETTLED') {
+                leg2 = '<span style="color:#34d399; font-size:11px;" title="OCO 做T高抛率先成交变现">📈 做T平仓变现</span>';
+              } else if (t.status === 'pending_leg2' && t.dual_orders && t.dual_orders.length >= 2) {
+                const sOrder = t.dual_orders.find(o => o.side === 'SELL');
+                const bOrder = t.dual_orders.find(o => o.side === 'BUY');
+                const sPrice = sOrder ? sOrder.price.toFixed(3) : '--';
+                const bPrice = bOrder ? bOrder.price.toFixed(3) : '--';
+                leg2 = `<span style="color:#60a5fa; font-size:10px;" title="双出口挂单撮合中">🎯 挂卖${sPrice} / 挂买${bPrice}</span>`;
+              }
                 
               const timeStr = new Date(t.end_time * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
               const assetTag = t.asset ? `<span style="background: rgba(167,139,250,0.2); color:#a78bfa; padding:2px 4px; border-radius:4px; margin-right:4px;">${t.asset}</span>` : '';
@@ -907,6 +919,8 @@ def api_status() -> DashboardStatusModel:
                     time_to_expiry=float(ttl),
                     strategy_id=bot.strategy_id,
                     filter_reason=trade.get("filter_reason"),
+                    settlement_type=trade.get("settlement_type"),
+                    dual_orders=trade.get("dual_orders", []),
                     events=trade.get("events", [])
                 )
             )
@@ -971,6 +985,8 @@ def api_status() -> DashboardStatusModel:
                         dynamic_ttl=None,
                         time_to_expiry=-1.0,
                         strategy_id=bot.strategy_id,
+                        settlement_type=trade.get("settlement_type"),
+                        dual_orders=trade.get("dual_orders", []),
                         events=trade.get("events", [])
                     )
                 )

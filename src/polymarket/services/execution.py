@@ -116,7 +116,7 @@ class OrderExecutionService:
             if streamer.is_authenticated:
                 ws_result = await streamer.wait_for_order_fill(order_id, timeout=min(timeout, 3.0))
                 if ws_result and ws_result.get("status") == "FILLED":
-                    logger.info(f"[执行服务：{strategy_id}] ⚡ [私有WS] 毫秒级捕获到订单成交回报！Order: {order_id}")
+                    logger.info(f"[执行服务：{strategy_id}] [私有WS] 毫秒级捕获到订单成交回报！Order: {order_id}")
                     return True, LegPosition(
                         order_id=order_id,
                         token=token_id,

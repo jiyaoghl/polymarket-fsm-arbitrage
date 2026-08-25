@@ -536,10 +536,17 @@ class ArbitrageBotFSM(BaseStrategy):
 
                 # 检查卖单是否成交
                 sell_filled = False
-                if sell_id:
-                    sell_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
-                        self.client, sell_id, str(leg1.token), leg1.size, self.strategy_id
-                    )
+                if sell_info:
+                    sell_target_price = float(sell_info.get("price", 0.0))
+                    cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                    if not self.is_live:
+                        # 模拟盘：只有当买一价达到或超过做T卖单挂单价时才判定成交
+                        sell_filled = (cur_bid is not None and cur_bid >= sell_target_price)
+                    elif sell_id:
+                        sell_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                            self.client, sell_id, str(leg1.token), leg1.size, self.strategy_id
+                        )
+
                 if sell_filled:
                     # 卖单成交！立即取消买单并释放额度
                     if buy_id:
@@ -563,14 +570,30 @@ class ArbitrageBotFSM(BaseStrategy):
 
                 # 检查买单是否成交
                 buy_filled = False
-                if buy_id:
-                    buy_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
-                        self.client, buy_id, str(opp_token), leg1.size, self.strategy_id
-                    )
+                if buy_info:
+                    buy_target_price = float(buy_info.get("price", 0.0))
+                    cur_ask = best_ask_no if is_leg1_yes else best_ask_yes
+                    if not self.is_live:
+                        # 模拟盘：只有当卖一价达到或低于对冲买单挂单价时才判定成交
+                        buy_filled = (cur_ask is not None and cur_ask <= buy_target_price)
+                    elif buy_id:
+                        buy_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                            self.client, buy_id, str(opp_token), leg1.size, self.strategy_id
+                        )
+
                 if buy_filled:
                     # 买单成交！立即取消卖单
                     if sell_id:
                         await self.client.cancel_order_async(sell_id)
+                    buy_price = float(buy_info.get("price", 0.5)) if buy_info else 0.5
+                    ctx.leg2 = LegPosition(
+                        token=str(opp_token),
+                        side="BUY",
+                        cost=buy_price,
+                        size=leg1.size,
+                        order_id=buy_id or "sim_leg2"
+                    )
+                    self._set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.LOCKED)
                     return
                 return
@@ -580,9 +603,20 @@ class ArbitrageBotFSM(BaseStrategy):
             if not leg2 or not ctx.leg2_order_id:
                 return
 
-            is_fill, _ = await OrderExecutionService.async_reconcile_phantom_fill(
-                self.client, ctx.leg2_order_id, str(leg2.token), leg2.size, self.strategy_id
-            )
+            is_fill = False
+            if not self.is_live:
+                target_price = leg2.cost
+                if leg2.side == "SELL":
+                    cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                    is_fill = (cur_bid is not None and cur_bid >= target_price)
+                else:
+                    cur_ask = best_ask_no if is_leg1_yes else best_ask_yes
+                    is_fill = (cur_ask is not None and cur_ask <= target_price)
+            else:
+                is_fill, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                    self.client, ctx.leg2_order_id, str(leg2.token), leg2.size, self.strategy_id
+                )
+
             if is_fill:
                 if leg2.side == "SELL":
                     leg1_is_taker = (self.leg1_order_type == "FOK")
