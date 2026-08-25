@@ -428,11 +428,45 @@ class ArbitrageBotFSM(BaseStrategy):
 
             now_ts = time.time()
             elapsed_since_leg1 = now_ts - (ctx.leg1_filled_time or now_ts)
+            is_leg1_yes = (str(leg1.token) == str(yes_token))
+            opp_token = no_token if is_leg1_yes else yes_token
+            opp_ask = best_ask_no if is_leg1_yes else best_ask_yes
+            opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
 
-            # ── 模式 A: 智能做 T 高抛 (Smart Flip) ──
+            # ── 模式 A: OCO 双出口同时并发挂单 (Dual Exit) ──
+            if self.exit_mode == "dual_exit":
+                ctx.exit_stage = "dual_active"
+                sell_price = PricingEngine.calculate_flip_sell_price(
+                    leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
+                    initial_margin=self.initial_margin, min_margin=self.breakeven_margin,
+                    decay_duration=self.flip_timeout_sec, leg1_is_taker=(self.leg1_order_type == "FOK")
+                )
+                pair_price = PricingEngine.calculate_hedged_pair_price(
+                    leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
+                    initial_margin=self.initial_margin, min_margin=self.breakeven_margin,
+                    decay_duration=self.flip_timeout_sec, leg1_is_taker=(self.leg1_order_type == "FOK")
+                )
+                safe_p_sell, _ = OrderExecutionService.sanitize_order_params(sell_price, sell_price * leg1.size)
+                safe_p_pair, safe_s_pair = OrderExecutionService.sanitize_order_params(pair_price, pair_price * leg1.size)
+                
+                # 申请买单额度
+                lock_amount = round(safe_p_pair * safe_s_pair, 2)
+                if self.risk_manager.acquire_trade_lock(self.strategy_id, market_id, lock_amount, is_live=self.is_live):
+                    order_sell = {"token_id": str(leg1.token), "price": safe_p_sell, "size": leg1.size, "side": "SELL", "order_type": "GTC"}
+                    order_buy = {"token_id": str(opp_token), "price": safe_p_pair, "size": safe_s_pair, "side": "BUY", "order_type": "GTC"}
+                    batch_res = await self.client.post_batch_orders_async([order_sell, order_buy])
+                    if batch_res and batch_res.get("status") != "ERROR":
+                        orders = batch_res.get("orders", [])
+                        ctx.dual_orders = orders
+                        self._set_trade(market_id, ctx.to_dict())
+                        fsm.transition_to(TradeState.PENDING_LEG2, orders=orders)
+                    else:
+                        self.risk_manager.release_trade_lock(self.strategy_id, market_id, lock_amount, is_live=self.is_live)
+                return
+
+            # ── 模式 B: 智能做 T 高抛 (Smart Flip) ──
             if self.exit_mode == "smart_flip" and elapsed_since_leg1 <= self.flip_timeout_sec:
                 ctx.exit_stage = "flip_active"
-                # 计算动态时间衰减的同向做 T 卖出价格
                 sell_price = PricingEngine.calculate_flip_sell_price(
                     leg1_cost=leg1.cost,
                     elapsed_seconds=elapsed_since_leg1,
@@ -451,12 +485,8 @@ class ArbitrageBotFSM(BaseStrategy):
                     self._set_trade(market_id, ctx.to_dict())
                 return
 
-            # ── 模式 B: 反向配对对冲 (Pair Hedging) ──
+            # ── 模式 C: 反向配对对冲 (Pair Hedging) ──
             ctx.exit_stage = "hedge_fallback"
-            is_leg1_yes = (str(leg1.token) == str(yes_token))
-            opp_token = no_token if is_leg1_yes else yes_token
-            opp_ask = best_ask_no if is_leg1_yes else best_ask_yes
-            opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
 
             # 动态计算二腿买入配对价
             target_leg2_price = PricingEngine.calculate_hedged_pair_price(
@@ -490,17 +520,71 @@ class ArbitrageBotFSM(BaseStrategy):
 
         # ── 3. PENDING_LEG2 状态出场订单成交确认 ───────────────
         elif fsm.current_state == TradeState.PENDING_LEG2:
+            leg1 = ctx.leg1
+            if not leg1:
+                return
+
+            is_leg1_yes = (str(leg1.token) == str(yes_token))
+            opp_token = no_token if is_leg1_yes else yes_token
+
+            # ── A. 处理 dual_exit 模式下的 OCO 双单成交 ───────────
+            if ctx.dual_orders and len(ctx.dual_orders) >= 2:
+                sell_info = next((o for o in ctx.dual_orders if o.get("side") == "SELL"), None)
+                buy_info = next((o for o in ctx.dual_orders if o.get("side") == "BUY"), None)
+                sell_id = sell_info.get("order_id") or sell_info.get("orderID") if sell_info else None
+                buy_id = buy_info.get("order_id") or buy_info.get("orderID") if buy_info else None
+
+                # 检查卖单是否成交
+                sell_filled = False
+                if sell_id:
+                    sell_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                        self.client, sell_id, str(leg1.token), leg1.size, self.strategy_id
+                    )
+                if sell_filled:
+                    # 卖单成交！立即取消买单并释放额度
+                    if buy_id:
+                        await self.client.cancel_order_async(buy_id)
+                    buy_price = float(buy_info.get("price", 0.0)) if buy_info else 0.0
+                    self.risk_manager.release_trade_lock(self.strategy_id, market_id, round(buy_price * leg1.size, 2), is_live=self.is_live)
+                    
+                    sell_price = float(sell_info.get("price", leg1.cost)) if sell_info else leg1.cost
+                    realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
+                        leg1_cost=leg1.cost, leg1_size=leg1.size,
+                        close_price=sell_price, leg1_is_taker=(self.leg1_order_type=="FOK"), close_is_taker=False
+                    )
+                    ctx.profit_usdc = realized_pnl
+                    ctx.realized_pnl = realized_pnl
+                    ctx.gross_profit_usdc = gross_pnl
+                    ctx.fee_usdc = fee
+                    ctx.settlement_type = "DUAL_EXIT_SELL_SETTLED"
+                    self._set_trade(market_id, ctx.to_dict())
+                    fsm.transition_to(TradeState.SETTLED, reason=f"OCO 做T卖出率先成交变现，净锁定 ${realized_pnl:.4f}")
+                    return
+
+                # 检查买单是否成交
+                buy_filled = False
+                if buy_id:
+                    buy_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                        self.client, buy_id, str(opp_token), leg1.size, self.strategy_id
+                    )
+                if buy_filled:
+                    # 买单成交！立即取消卖单
+                    if sell_id:
+                        await self.client.cancel_order_async(sell_id)
+                    fsm.transition_to(TradeState.LOCKED)
+                    return
+                return
+
+            # ── B. 处理单订单模式成交 ────────────────────────────
             leg2 = ctx.leg2
             if not leg2 or not ctx.leg2_order_id:
                 return
 
-            # 快速检查二腿挂单成交状态
             is_fill, _ = await OrderExecutionService.async_reconcile_phantom_fill(
                 self.client, ctx.leg2_order_id, str(leg2.token), leg2.size, self.strategy_id
             )
             if is_fill:
                 if leg2.side == "SELL":
-                    # 模式 A (Smart Flip): 做 T 卖出已成交，现金立即变现，直接进入 SETTLED
                     leg1_is_taker = (self.leg1_order_type == "FOK")
                     realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
                         leg1_cost=ctx.leg1.cost, leg1_size=ctx.leg1.size,
@@ -514,7 +598,6 @@ class ArbitrageBotFSM(BaseStrategy):
                     self._set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.SETTLED, reason=f"智能做T高抛成交变现，净锁定 ${realized_pnl:.4f}")
                 else:
-                    # 模式 B (Pair Hedging): 反向对冲买单已成交，进入 LOCKED
                     fsm.transition_to(TradeState.LOCKED)
 
     # =========================================================

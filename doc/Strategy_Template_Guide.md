@@ -36,7 +36,7 @@
 | `reentry_trigger` | `number` | `0.42` | **二腿反卷对冲触发阈值**。当二腿盘口价格低于此值时，触发动态阶梯跃迁抢回买一。 |
 | `leg1_order_type` | `string` | `"FOK"` / `"GTC"` | **首腿订单类型**。`"FOK"`: 市价立即吃单，未满即撤；`"GTC"`: 限价挂单等待被吃。 |
 | `leg2_order_type` | `string` | `"GTC"` | **二腿订单类型**。通常为 `"GTC"` 做市挂单，赚取流动性溢价。 |
-| `exit_mode` | `string` | `"smart_flip"` | **二腿智能出场模式**。`"smart_flip"`: 智能同向做T高抛优先，变现即释放资金；`"pair_only"`: 传统反向配对对冲。 |
+| `exit_mode` | `string` | `"dual_exit"` / `"smart_flip"` | **二腿智能出场模式**。<br>• `"dual_exit"`: **OCO 双出口并发模式**（同时挂出做T卖单与对冲买单，任意一边成交立即撤销另一边）；<br>• `"smart_flip"`: **智能做T优先模式**（优先做T卖出，超时或下行无缝切对冲）；<br>• `"pair_only"`: **传统纯对冲模式**（仅挂出反向买单）。 |
 | `initial_margin` | `number` | `0.025` | **初始做T期望毛利率**。例如 `0.025` 代表首选挂单追求 2.5% 利差高抛。 |
 | `breakeven_margin` | `number` | `0.002` | **保本安全毛利率**。时间衰减后的最低保本毛利门槛 (0.2%)。 |
 | `flip_timeout_sec` | `number` | `35` | **做T高抛最长等待时间 (秒)**。超时若买方未吃单，自动无缝切换至反向对冲买入。 |

@@ -77,3 +77,25 @@ def test_smart_flip_realized_pnl_calculation():
     assert round(gross_pnl, 2) == 0.60
     assert fee > 0  # 扣除了开仓 Taker 手续费
     assert realized_pnl > 0  # 净利润锁定为正
+
+
+def test_dual_exit_serialization():
+    """测试 dual_exit 模式与 dual_orders 序列化与还原"""
+    ctx = TradeContext(
+        market_id="0x_test_dual",
+        exit_mode="dual_exit",
+        exit_stage="dual_active",
+        dual_orders=[
+            {"token_id": "tok_yes", "price": 0.45, "size": 20.0, "side": "SELL", "orderID": "ord_1"},
+            {"token_id": "tok_no", "price": 0.54, "size": 20.0, "side": "BUY", "orderID": "ord_2"}
+        ]
+    )
+    d = ctx.to_dict()
+    assert d["exit_mode"] == "dual_exit"
+    assert len(d["dual_orders"]) == 2
+
+    restored = TradeContext.from_dict(d)
+    assert restored.exit_mode == "dual_exit"
+    assert len(restored.dual_orders) == 2
+    assert restored.dual_orders[0]["side"] == "SELL"
+    assert restored.dual_orders[1]["side"] == "BUY"
