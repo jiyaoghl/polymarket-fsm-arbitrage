@@ -488,10 +488,50 @@ class ArbitrageBotFSM(BaseStrategy):
                     if is_timed_out:
                         fsm = self.fsms.get(market_id)
                         if fsm and fsm.current_state in (TradeState.LEG1_ONLY, TradeState.PENDING_LEG2):
-                            success = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
-                            fsm.transition_to(TradeState.FAILED if not success else TradeState.SETTLED, reason="自适应 TTL 强平")
+                            success, close_price, close_size = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
+                            if success and close_price is not None and ctx.leg1:
+                                leg1_is_taker = (self.leg1_order_type == "FOK")
+                                realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
+                                    leg1_cost=ctx.leg1.cost, leg1_size=ctx.leg1.size,
+                                    close_price=close_price, leg1_is_taker=leg1_is_taker, close_is_taker=True
+                                )
+                                ctx.profit_usdc = realized_pnl
+                                ctx.realized_pnl = realized_pnl
+                                ctx.gross_profit_usdc = gross_pnl
+                                ctx.fee_usdc = fee
+                                ctx.settlement_type = "FORCE_CLOSED"
+                                self._set_trade(market_id, ctx.to_dict())
+                                fsm.transition_to(TradeState.SETTLED, reason=f"自适应 TTL 强平完成 (平仓价: {close_price}, PnL: ${realized_pnl:.4f})")
+                            else:
+                                # 二腿市价平仓失败 (如临期流动性枯竭或直接进入交割锁定)
+                                # 评估最终到期交割结算价格 (Settlement Price)
+                                leg1 = ctx.leg1
+                                if leg1 and leg1.token:
+                                    try:
+                                        p_info = self.client.get_market_price(leg1.token)
+                                        # 最终结算价优先取盘口最后有效价格，若无买盘则按 0.0 (全额归零) 兜底
+                                        settle_price = float(p_info.get("bid") or p_info.get("price") or 0.0)
+                                    except Exception:
+                                        settle_price = 0.0
+
+                                    leg1_is_taker = (self.leg1_order_type == "FOK")
+                                    settled_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_expiry_settled_pnl(
+                                        leg1_cost=leg1.cost, leg1_size=leg1.size,
+                                        settlement_price=settle_price, leg1_is_taker=leg1_is_taker
+                                    )
+                                    ctx.profit_usdc = settled_pnl
+                                    ctx.realized_pnl = settled_pnl
+                                    ctx.gross_profit_usdc = gross_pnl
+                                    ctx.fee_usdc = fee
+                                    ctx.settlement_price = settle_price
+                                    ctx.settlement_type = "EXPIRY_RESOLVED"
+                                    self._set_trade(market_id, ctx.to_dict())
+                                    fsm.transition_to(TradeState.SETTLED, reason=f"市价平仓失败，按到期结算价 {settle_price} 结算 (PnL: ${settled_pnl:.4f})")
+                                else:
+                                    fsm.transition_to(TradeState.FAILED, reason="自适应 TTL 平仓失败且无首腿持仓")
                             
             except Exception as e:
                 logger.critical(f"[策略FSM：{self.strategy_id}] 强平守护线程发生严重异常: {e}", exc_info=True)
                 risk_logger.push_risk_event(strategy=self.strategy_id, reason=f"强平守护异常: {e}", level="critical")
                 continue
+

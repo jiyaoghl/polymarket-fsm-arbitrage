@@ -33,11 +33,14 @@ class TradeRepository:
         try:
             trade_dict = context.to_dict()
             ev = float(trade_dict.get("profit_usdc", 0.0))
+            st_type = trade_dict.get("settlement_type") or "HEDGED_LOCKED"
             trade_json = json.dumps(trade_dict)
             
             db_ops.archive_trade(context.market_id, strategy_id, trade_json, ev, self.db_path)
             db_ops.delete_trade_cache(context.market_id, strategy_id, self.db_path)
-            logger.info(f"[仓储服务：{strategy_id}] 成功归档终态交易: {context.market_id}, EV: ${ev:.4f}")
+            
+            label = "套利锁盈EV" if st_type == "HEDGED_LOCKED" else f"结算盈亏({st_type})"
+            logger.info(f"[仓储服务：{strategy_id}] 成功归档终态交易: {context.market_id}, {label}: ${ev:.4f}")
         except Exception as e:
             logger.warning(f"[仓储服务：{strategy_id}] 归档交易异常 ({context.market_id}): {e}")
 

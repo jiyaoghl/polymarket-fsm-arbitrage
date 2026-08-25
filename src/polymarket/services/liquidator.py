@@ -85,16 +85,70 @@ class AdaptiveLiquidatorService:
         return is_timed_out, elapsed, current_ttl
 
     @staticmethod
+    def calculate_realized_pnl(
+        leg1_cost: float,
+        leg1_size: float,
+        close_price: float,
+        leg1_is_taker: bool = True,
+        close_is_taker: bool = True
+    ) -> Tuple[float, float, float]:
+        """
+        计算市价平仓后的已实现盈亏 (Realized PnL)。
+        
+        Returns:
+            (realized_pnl, gross_pnl, total_fee)
+        """
+        from polymarket import config
+        buy_notional = leg1_cost * leg1_size
+        sell_notional = close_price * leg1_size
+        gross_pnl = sell_notional - buy_notional
+
+        leg1_fee_rate = config.TAKER_FEE_RATE if leg1_is_taker else config.MAKER_FEE_RATE
+        close_fee_rate = config.TAKER_FEE_RATE if close_is_taker else config.MAKER_FEE_RATE
+
+        total_fee = (buy_notional * leg1_fee_rate) + (sell_notional * close_fee_rate)
+        realized_pnl = round(gross_pnl - total_fee, 4)
+        return realized_pnl, round(gross_pnl, 4), round(total_fee, 4)
+
+    @staticmethod
+    def calculate_expiry_settled_pnl(
+        leg1_cost: float,
+        leg1_size: float,
+        settlement_price: float,
+        leg1_is_taker: bool = True
+    ) -> Tuple[float, float, float]:
+        """
+        计算市价平仓失败直至到期后的最终交割结算盈亏 (Settled PnL)。
+        Polymarket 到期交割领奖无卖出手续费。
+        
+        Returns:
+            (settled_pnl, gross_pnl, entry_fee)
+        """
+        from polymarket import config
+        buy_notional = leg1_cost * leg1_size
+        settled_revenue = settlement_price * leg1_size
+        gross_pnl = settled_revenue - buy_notional
+
+        leg1_fee_rate = config.TAKER_FEE_RATE if leg1_is_taker else config.MAKER_FEE_RATE
+        entry_fee = buy_notional * leg1_fee_rate
+
+        settled_pnl = round(gross_pnl - entry_fee, 4)
+        return settled_pnl, round(gross_pnl, 4), round(entry_fee, 4)
+
+    @staticmethod
     def execute_force_close(
         client: PolyClient,
         context: TradeContext,
         strategy_id: str = "default"
-    ) -> bool:
+    ) -> Tuple[bool, Optional[float], float]:
         """
         执行强平平仓动作：
         1. 先撤销二腿挂单 (若存在)
         2. 发送首腿市价 FOK 平仓
         3. 若 FOK 快速确认未成交，立即以 GTC @ 0.99 挂单紧急兜底
+        
+        Returns:
+            (success, close_price_or_none, size)
         """
         market_id = context.market_id
         logger.warning(f"[强平引擎：{strategy_id}] 触发动态 TTL 超时强平！市场: {market_id}")
@@ -111,7 +165,7 @@ class AdaptiveLiquidatorService:
         leg1 = context.leg1
         if not leg1 or not leg1.token or leg1.size <= 0:
             logger.error(f"[强平引擎：{strategy_id}] 首腿持仓数据缺失，无法平仓: {leg1}")
-            return False
+            return False, None, 0.0
 
         token_id = leg1.token
         size = leg1.size
@@ -127,8 +181,9 @@ class AdaptiveLiquidatorService:
             
             fok_order = client.post_order(token_id, safe_price, size, close_side, "FOK")
             if fok_order and fok_order.get("status") not in ("ERROR", None):
-                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {fok_order.get('orderID')}")
-                return True
+                actual_price = float(fok_order.get("price") or safe_price)
+                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {fok_order.get('orderID')}, 平仓价: {actual_price}")
+                return True, actual_price, size
         except Exception as e:
             logger.warning(f"[强平引擎：{strategy_id}] 发送市价 FOK 平仓失败: {e}")
 
@@ -138,9 +193,9 @@ class AdaptiveLiquidatorService:
         try:
             gtc_order = client.post_order(token_id, emergency_price, size, close_side, "GTC")
             if gtc_order and gtc_order.get("status") not in ("ERROR", None):
-                logger.info(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底单已挂出: {gtc_order.get('orderID')}")
-                return True
+                logger.info(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底单已挂出: {gtc_order.get('orderID')}, 兜底价: {emergency_price}")
+                return True, emergency_price, size
         except Exception as e:
             logger.critical(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底挂单失败: {e}")
 
-        return False
+        return False, None, size

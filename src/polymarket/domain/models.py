@@ -63,6 +63,10 @@ class TradeContext:
     gross_profit_usdc: float = 0.0
     fee_usdc: float = 0.0
     
+    realized_pnl: Optional[float] = None
+    settlement_price: Optional[float] = None
+    settlement_type: Optional[str] = None  # HEDGED_LOCKED | FORCE_CLOSED | EXPIRY_RESOLVED | FAILED
+    
     dynamic_ttl: Optional[float] = None
     filter_reason: Optional[str] = None
     events: List[Dict[str, Any]] = field(default_factory=list)
@@ -100,6 +104,9 @@ class TradeContext:
             "profit_usdc": self.profit_usdc,
             "gross_profit_usdc": self.gross_profit_usdc,
             "fee_usdc": self.fee_usdc,
+            "realized_pnl": self.realized_pnl,
+            "settlement_price": self.settlement_price,
+            "settlement_type": self.settlement_type,
             "dynamic_ttl": self.dynamic_ttl,
             "filter_reason": self.filter_reason,
             "events": self.events
@@ -127,6 +134,9 @@ class TradeContext:
             profit_usdc=float(data.get("profit_usdc", 0.0)),
             gross_profit_usdc=float(data.get("gross_profit_usdc", 0.0)),
             fee_usdc=float(data.get("fee_usdc", 0.0)),
+            realized_pnl=float(data["realized_pnl"]) if data.get("realized_pnl") is not None else None,
+            settlement_price=float(data["settlement_price"]) if data.get("settlement_price") is not None else None,
+            settlement_type=data.get("settlement_type"),
             dynamic_ttl=data.get("dynamic_ttl"),
             filter_reason=data.get("filter_reason"),
             events=data.get("events", [])
