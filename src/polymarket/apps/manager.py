@@ -202,14 +202,12 @@ class StrategyManager:
 
     def _loop_discover_markets(self) -> None:
         """
-        按多周期 (5m, 15m, 1h) 与多资产 (BTC, ETH, SOL...) 滚动发现新盘口。
+        按 5 分钟窗口滚动发现多加密资产 (BTC, ETH, SOL...) 的 5min 新盘。
         """
-        from polymarket.config import SUPPORTED_ASSETS, SUPPORTED_TIMEFRAMES, TIMEFRAME_SECONDS
-        logger.info(
-            f"启动多周期与多资产市场滚动发现，支持资产: {SUPPORTED_ASSETS}，周期: {SUPPORTED_TIMEFRAMES}，共 {len(self.bots)} 个策略..."
-        )
+        from polymarket.config import SUPPORTED_ASSETS
+        logger.info(f"启动 5min 市场滚动发现，支持资产: {SUPPORTED_ASSETS}，共 {len(self.bots)} 个策略...")
 
-        dispatched_keys = set()
+        last_dispatched_ts = 0
 
         while True:
             if self.is_paused:
@@ -222,72 +220,67 @@ class StrategyManager:
                 continue
 
             now = int(time.time())
-            
-            # 定期清理过期的派发记录 (保留最近 2 小时)
-            if len(dispatched_keys) > 500:
-                dispatched_keys.clear()
+            next_ts = ((now // 300) + 1) * 300
+            sleep_sec = max(0, next_ts - now - 5)
 
-            markets_to_dispatch = []
+            if sleep_sec > 0:
+                logger.info(f"距离下期 5min 盘 (ts={next_ts}) 还有 {sleep_sec + 5}s，等待中...")
+                time.sleep(sleep_sec)
 
-            for tf in SUPPORTED_TIMEFRAMES:
-                interval = TIMEFRAME_SECONDS.get(tf, 300)
-                # 计算当前/即将开盘的窗口时间戳
-                next_ts = ((now // interval) + 1) * interval
-                time_to_open = next_ts - now
+            if next_ts == last_dispatched_ts:
+                time.sleep(5)
+                continue
 
-                # 在开盘前 15 秒内或刚开盘 30 秒内进行探测
-                if time_to_open > 15:
-                    continue
+            markets_found = []
+            for asset in SUPPORTED_ASSETS:
+                slug = f"{asset.lower()}-updown-5m-{next_ts}"
+                market = None
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        market = self._fetch_market_by_slug(slug)
+                        if market:
+                            market["__asset_type"] = asset.upper()
+                            break
+                    except Exception as e:
+                        logger.warning(f"获取 {slug} 失败 (attempt {attempt + 1}/{retries}): {e}")
+                    time.sleep(0.5)
 
-                for asset in SUPPORTED_ASSETS:
-                    dispatch_key = f"{asset.upper()}_{tf}_{next_ts}"
-                    if dispatch_key in dispatched_keys:
-                        continue
+                if market:
+                    markets_found.append(market)
+                    logger.info(
+                        f"⚡ 已定位 5min 市场 [{asset.upper()}]：{market['description']}，expiry={market['expiry']:.0f}，"
+                        f"YES={market['tokens']['YES'][:10]}... NO={market['tokens']['NO'][:10]}..."
+                    )
 
-                    slug = f"{asset.lower()}-updown-{tf}-{next_ts}"
-                    market = None
-                    retries = 2
-                    for attempt in range(retries):
+            if not markets_found:
+                logger.warning(f"本周期未定位到任何配置的 5min 市场，等待下期")
+                last_dispatched_ts = next_ts
+                continue
+
+            last_dispatched_ts = next_ts
+            self.current_markets = markets_found
+
+            for market in markets_found:
+                for bot in self.bots:
+                    def _safe_execute(b=bot, m=market):
                         try:
-                            market = self._fetch_market_by_slug(slug)
-                            if market:
-                                market["__asset_type"] = asset.upper()
-                                market["__timeframe"] = tf
-                                break
+                            b.execute_strategy(m)
                         except Exception as e:
-                            logger.warning(f"获取 {slug} 失败 (attempt {attempt + 1}/{retries}): {e}")
-                        time.sleep(0.5)
+                            logger.critical(f"[策略派发致命异常] 策略 {b.strategy_id} 执行 {m.get('id')} 崩溃: {e}", exc_info=True)
+                            from polymarket import risk_logger
+                            risk_logger.push_risk_event(
+                                market_id=m.get("id", "UNKNOWN"),
+                                asset=m.get("__asset_type", "UNKNOWN"),
+                                strategy=b.strategy_id,
+                                reason=f"策略执行崩溃: {e}",
+                                level="critical"
+                            )
 
-                    if market:
-                        dispatched_keys.add(dispatch_key)
-                        markets_to_dispatch.append(market)
-                        logger.info(
-                            f"⚡ [多资产/多周期] 成功定位市场 [{asset.upper()} {tf}]：{market['description']}，expiry={market['expiry']:.0f}，"
-                            f"YES={market['tokens']['YES'][:10]}... NO={market['tokens']['NO'][:10]}..."
-                        )
-
-            if markets_to_dispatch:
-                self.current_markets = markets_to_dispatch
-                for market in markets_to_dispatch:
-                    for bot in self.bots:
-                        def _safe_execute(b=bot, m=market):
-                            try:
-                                b.execute_strategy(m)
-                            except Exception as e:
-                                logger.critical(f"[策略派发致命异常] 策略 {b.strategy_id} 执行 {m.get('id')} 崩溃: {e}", exc_info=True)
-                                from polymarket import risk_logger
-                                risk_logger.push_risk_event(
-                                    market_id=m.get("id", "UNKNOWN"),
-                                    asset=m.get("__asset_type", "UNKNOWN"),
-                                    strategy=b.strategy_id,
-                                    reason=f"策略执行崩溃: {e}",
-                                    level="critical"
-                                )
-
-                        threading.Thread(
-                            target=_safe_execute,
-                            daemon=True,
-                        ).start()
+                    threading.Thread(
+                        target=_safe_execute,
+                        daemon=True,
+                    ).start()
 
             time.sleep(3)
 
