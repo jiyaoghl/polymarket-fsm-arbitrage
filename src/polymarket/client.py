@@ -198,7 +198,7 @@ class PolyClient:
             try:
                 self.http2_client.get(f"{self.host}/time")
                 self.http2_client.get(f"{self.gamma_host}/markets?limit=1")
-                logger.info("⚡ [HTTP/2] 连接池预热完成，CLOB + Gamma 多路复用通道已就绪！")
+                logger.info("[HTTP/2] 连接池预热完成，CLOB + Gamma 多路复用通道已就绪！")
             except Exception as e:
                 logger.debug(f"[HTTP/2] 预热探针完成: {e}")
 
@@ -793,7 +793,7 @@ class PolyClient:
         """安全关闭 HTTP/2 连接池。"""
         try:
             self.http2_client.close()
-            logger.info("⚡ [HTTP/2] 连接池已安全关闭")
+            logger.info("[HTTP/2] 连接池已安全关闭")
         except Exception:
             pass
 

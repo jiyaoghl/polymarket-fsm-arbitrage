@@ -362,8 +362,11 @@ def index() -> str:
     function statusPill(status) {
       const s = (status || "").toLowerCase();
       if (s === "locked") return '<span class="pill pill-locked">🔒 已锁仓</span>';
-      if (s === "stopped") return '<span class="pill pill-stopped">⏹ 已止损</span>';
+      if (s === "settled") return '<span class="pill pill-locked" style="background: rgba(16,185,129,0.2); color: #34d399;">✅ 已结算</span>';
+      if (s === "force_closed" || s === "stopped") return '<span class="pill pill-stopped">⚡ 已强平</span>';
       if (s === "leg1_only") return '<span class="pill pill-leg1_only">📈 首腿持仓</span>';
+      if (s === "pending" || s === "pending_leg1" || s === "pending_leg2" || s === "pending_both") return '<span class="pill pill-leg1_only" style="background: rgba(59,130,246,0.2); color: #60a5fa;">⏳ 发单中</span>';
+      if (s === "idle") return '<span class="pill pill-open" style="background: rgba(100,116,139,0.2); color: #94a3b8;">📡 监听中</span>';
       return '<span class="pill pill-open">' + (status || 'open') + '</span>';
     }
     
@@ -910,8 +913,11 @@ def api_status() -> DashboardStatusModel:
 
         from polymarket import db as _db
         from polymarket.config import DB_PATH
-        import json
-        historical_rows = _db.get_historical_trades(bot.strategy_id, limit=50, path=DB_PATH)
+        import json, os
+        db_target_path = DB_PATH
+        if not os.path.exists(db_target_path) and os.path.exists("data/trading.db"):
+            db_target_path = "data/trading.db"
+        historical_rows = _db.get_historical_trades(bot.strategy_id, limit=50, path=db_target_path)
         for row in historical_rows:
             hist_market_id = row["market_id"]
             # 去重：如果这个市场还在内存活跃列表里（还没被定时清理掉），就不重复从历史表里加载
