@@ -67,7 +67,7 @@ check_env() {
 
 # 3. 获取运行端口
 get_port() {
-    local port=8000
+    local port=8888
     if [ -f "$PROJECT_DIR/.env" ]; then
         local env_port
         env_port=$(grep -E "^PORT=" "$PROJECT_DIR/.env" | cut -d '=' -f2 | tr -d ' "\r\n' || true)

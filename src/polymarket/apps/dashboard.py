@@ -1002,5 +1002,8 @@ def api_status() -> DashboardStatusModel:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8888, reload=False, access_log=False)
+    import os
+    port = int(os.getenv("PORT", "8888"))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port, reload=False, access_log=False)
 
