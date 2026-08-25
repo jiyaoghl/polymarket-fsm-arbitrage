@@ -51,10 +51,19 @@ SIM_LATENCY_MIN_MS = int(os.getenv("SIM_LATENCY_MIN_MS", "100"))          # 模�
 SIM_LATENCY_MAX_MS = int(os.getenv("SIM_LATENCY_MAX_MS", "300"))          # 模拟最大网络延迟 ms
 SIM_SLIPPAGE_MAX = float(os.getenv("SIM_SLIPPAGE_MAX", "0.003"))          # 模拟最大滑点 0.3%
 
-# 震荡过滤配置 (Choppy Market Filter)
-SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH").split(",") if x.strip()]
-CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.30"))  # 通用默认振幅阈值 0.30%
-CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.20")) # 通用默认净变动阈值 0.20%
+# 资产与多周期配置 (Multi-Asset & Multi-Timeframe)
+SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH,SOL").split(",") if x.strip()]
+SUPPORTED_TIMEFRAMES = [x.strip() for x in os.getenv("SUPPORTED_TIMEFRAMES", "5m,15m").split(",") if x.strip()]
+
+TIMEFRAME_SECONDS = {
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "daily": 86400,
+}
+
+CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.35"))  # 通用默认振幅阈值 0.35%
+CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.25")) # 通用默认净变动阈值 0.25%
 
 # 分资产独立阈值配置（百分比 %）
 ASSET_CHOP_THRESHOLDS = {
@@ -65,6 +74,18 @@ ASSET_CHOP_THRESHOLDS = {
     "ETH": {
         "max_amplitude": float(os.getenv("ETH_CHOP_MAX_AMPLITUDE", "0.45")),
         "max_net_change": float(os.getenv("ETH_CHOP_MAX_NET_CHANGE", "0.30")),
+    },
+    "SOL": {
+        "max_amplitude": float(os.getenv("SOL_CHOP_MAX_AMPLITUDE", "0.55")),
+        "max_net_change": float(os.getenv("SOL_CHOP_MAX_NET_CHANGE", "0.35")),
+    },
+    "DOGE": {
+        "max_amplitude": float(os.getenv("DOGE_CHOP_MAX_AMPLITUDE", "0.65")),
+        "max_net_change": float(os.getenv("DOGE_CHOP_MAX_NET_CHANGE", "0.40")),
+    },
+    "XRP": {
+        "max_amplitude": float(os.getenv("XRP_CHOP_MAX_AMPLITUDE", "0.50")),
+        "max_net_change": float(os.getenv("XRP_CHOP_MAX_NET_CHANGE", "0.35")),
     },
 }
 # 资金与风控配置
