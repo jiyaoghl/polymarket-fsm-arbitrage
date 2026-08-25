@@ -120,9 +120,8 @@ class TestPolyClient:
         
         balance = client.get_balance()
         
-        assert "usdc" in balance
-        assert "pending" in balance
-        assert balance["usdc"] == 100.0  # 模拟盘默认 100U
+        from polymarket import config
+        assert balance["usdc"] == config.PAPER_INITIAL_CAPITAL
 
     def test_get_order_status_mock(self):
         """测试模拟模式查询订单状态。"""

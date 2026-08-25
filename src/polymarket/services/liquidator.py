@@ -140,16 +140,18 @@ class AdaptiveLiquidatorService:
         client: PolyClient,
         context: TradeContext,
         strategy_id: str = "default"
-    ) -> Tuple[bool, Optional[float], float]:
+    ) -> Tuple[bool, Optional[float], float, Optional[str]]:
         """
         执行强平平仓动作：
         1. 先撤销二腿挂单 (若存在)
-        2. 发送首腿市价 FOK 平仓
-        3. 若 FOK 快速确认未成交，立即以 GTC @ 0.99 挂单紧急兜底
+        2. 穿透买盘深度计算 VWAP 加权均价
+        3. 发送首腿市价 FOK 平仓
+        4. 若 FOK 快速确认未成交，立即以 GTC @ 0.01 挂单紧急兜底
         
         Returns:
-            (success, close_price_or_none, size)
+            (success, close_price_or_none, size, close_order_id_or_none)
         """
+        from polymarket.services.pricing import PricingEngine
         market_id = context.market_id
         logger.warning(f"[强平引擎：{strategy_id}] 触发动态 TTL 超时强平！市场: {market_id}")
 
@@ -165,37 +167,56 @@ class AdaptiveLiquidatorService:
         leg1 = context.leg1
         if not leg1 or not leg1.token or leg1.size <= 0:
             logger.error(f"[强平引擎：{strategy_id}] 首腿持仓数据缺失，无法平仓: {leg1}")
-            return False, None, 0.0
+            return False, None, 0.0, None
 
         token_id = leg1.token
         size = leg1.size
-        # 首腿是 BUY，平仓方向则为 SELL
+        # 首腿是 BUY，平仓方向必须为 SELL
         close_side = "SELL" if leg1.side == "BUY" else "BUY"
 
-        # 3. 尝试市价 FOK 平仓 (快速吃单离场)
+        # 3. 穿透订单簿买盘深度计算真实 VWAP
+        vwap_price = None
+        best_price = 0.01
         try:
-            price_info = client.get_market_price(token_id)
-            # 卖单取买一价的 95% 保证市价成交
-            best_price = price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99)
-            safe_price = round(max(float(best_price) * 0.95, 0.01), 4) if close_side == "SELL" else round(min(float(best_price) * 1.05, 0.99), 4)
+            orderbook = client.get_orderbook(token_id)
+            if orderbook and orderbook.get("bids"):
+                vwap_price = PricingEngine.calculate_bid_vwap(orderbook.get("bids", []), size)
             
+            if vwap_price:
+                best_price = vwap_price
+                logger.info(f"[强平引擎：{strategy_id}] 基于订单簿深度算出平仓 VWAP 均价: {vwap_price}")
+            else:
+                price_info = client.get_market_price(token_id)
+                best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+        except Exception as e:
+            logger.warning(f"[强平引擎：{strategy_id}] 拉取深度计算 VWAP 异常，使用保底盘口: {e}")
+            price_info = client.get_market_price(token_id)
+            best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+
+        # 4. 尝试市价 FOK 平仓 (快速吃单离场，保护限价下浮 2%)
+        safe_price = round(max(float(best_price) * 0.98, 0.001), 4) if close_side == "SELL" else round(min(float(best_price) * 1.02, 0.999), 4)
+        
+        try:
             fok_order = client.post_order(token_id, safe_price, size, close_side, "FOK")
             if fok_order and fok_order.get("status") not in ("ERROR", None):
-                actual_price = float(fok_order.get("price") or safe_price)
-                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {fok_order.get('orderID')}, 平仓价: {actual_price}")
-                return True, actual_price, size
+                # 模拟盘优先使用深度 VWAP 均价，实盘取撮合成交价
+                actual_price = float(vwap_price or fok_order.get("price") or safe_price)
+                order_id = str(fok_order.get("orderID") or fok_order.get("order_id") or "fok_close")
+                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {order_id}, 最终成交价(VWAP): {actual_price}")
+                return True, actual_price, size, order_id
         except Exception as e:
             logger.warning(f"[强平引擎：{strategy_id}] 发送市价 FOK 平仓失败: {e}")
 
-        # 4. GTC 紧急挂单兜底 (以极端让价确保被撮合)
-        emergency_price = 0.01 if close_side == "SELL" else 0.99
+        # 5. GTC 紧急挂单兜底 (以极端让价 0.01 确保被撮合)
+        emergency_price = 0.001 if close_side == "SELL" else 0.999
         logger.warning(f"[强平引擎：{strategy_id}] FOK 未能即时成交，启动 GTC @ {emergency_price} 紧急挂单兜底！")
         try:
             gtc_order = client.post_order(token_id, emergency_price, size, close_side, "GTC")
             if gtc_order and gtc_order.get("status") not in ("ERROR", None):
-                logger.info(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底单已挂出: {gtc_order.get('orderID')}, 兜底价: {emergency_price}")
-                return True, emergency_price, size
+                order_id = str(gtc_order.get("orderID") or gtc_order.get("order_id") or "gtc_close")
+                logger.info(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底单已挂出: {order_id}, 兜底价: {emergency_price}")
+                return True, emergency_price, size, order_id
         except Exception as e:
             logger.critical(f"[强平引擎：{strategy_id}] 紧急 GTC 兜底挂单失败: {e}")
 
-        return False, None, size
+        return False, None, size, None

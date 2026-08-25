@@ -13,23 +13,24 @@ def test_paper_default_exposure():
     rm.locked_orders.clear()
     rm.locked_is_live.clear()
     
-    assert rm.paper_max_exposure == 100.0
+    assert rm.paper_max_exposure == config.PAPER_INITIAL_CAPITAL
     
     # 申请 10U 模拟额度
     assert rm.acquire_trade_lock("paper_strat_1", "market_1", 10.0, is_live=False) is True
     assert rm.paper_used_exposure == 10.0
     
-    # 申请 85U 模拟额度 (累计 95U <= 100U)
-    assert rm.acquire_trade_lock("paper_strat_2", "market_2", 85.0, is_live=False) is True
-    assert rm.paper_used_exposure == 95.0
+    # 申请 (max - 15) 模拟额度
+    req_amt = max(0.0, config.PAPER_INITIAL_CAPITAL - 15.0)
+    assert rm.acquire_trade_lock("paper_strat_2", "market_2", req_amt, is_live=False) is True
+    assert rm.paper_used_exposure == 10.0 + req_amt
     
-    # 申请 10U 模拟额度 (累计 105U > 100U) -> 应该被拦截
+    # 申请 10U 模拟额度 (超出上限) -> 应该被拦截
     assert rm.acquire_trade_lock("paper_strat_3", "market_3", 10.0, is_live=False) is False
-    assert rm.paper_used_exposure == 95.0
+    assert rm.paper_used_exposure == 10.0 + req_amt
     
     # 释放 market_1
     rm.release_market_lock("paper_strat_1", "market_1", is_live=False)
-    assert rm.paper_used_exposure == 85.0
+    assert rm.paper_used_exposure == req_amt
     
     # 全量清理
     rm.release_market_lock("paper_strat_2", "market_2", is_live=False)
@@ -71,10 +72,10 @@ def test_live_exposure_from_chain_and_isolation():
 
 
 def test_poly_client_balance_and_batch_async():
-    """测试 PolyClient 模拟盘返回 100U，以及 post_batch_orders_async 异步方法"""
+    """测试 PolyClient 模拟盘返回 PAPER_INITIAL_CAPITAL，以及 post_batch_orders_async 异步方法"""
     client_paper = get_client(is_live=False)
     bal = client_paper.get_balance()
-    assert bal.get("usdc") == 100.0
+    assert bal.get("usdc") == config.PAPER_INITIAL_CAPITAL
     
     # 测试 post_batch_orders_async
     orders = [

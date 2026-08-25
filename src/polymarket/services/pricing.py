@@ -9,24 +9,29 @@ class PricingEngine:
     """
 
     @staticmethod
-    def calculate_vwap(orderbook_asks: List[Dict[str, Any]], target_shares: float) -> Optional[float]:
+    def calculate_vwap(orderbook_asks: List[Any], target_shares: float) -> Optional[float]:
         """
-        基于订单簿深度计算买入 target_shares 份数的加权平均成交价 (VWAP)。
+        基于订单簿深度计算买入 target_shares 份数的加权平均成交价 (Ask VWAP)。
         若深度不足，返回 None。
         """
         if not orderbook_asks or target_shares <= 0:
             return None
 
-        # 按价格升序排列
-        sorted_asks = sorted(orderbook_asks, key=lambda x: float(x.get("price", 999.0)))
+        # 统一解析格式: [price, size] 或 {"price": ..., "size": ...}
+        parsed_asks = []
+        for item in orderbook_asks:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                parsed_asks.append((float(item[0]), float(item[1])))
+            elif isinstance(item, dict):
+                parsed_asks.append((float(item.get("price", 0.0)), float(item.get("size", 0.0))))
+
+        # 卖单按价格升序排列 (从低到高吃)
+        sorted_asks = sorted(parsed_asks, key=lambda x: x[0])
         
         accum_shares = 0.0
         total_cost = 0.0
 
-        for ask in sorted_asks:
-            price = float(ask.get("price", 0.0))
-            size = float(ask.get("size", 0.0))
-            
+        for price, size in sorted_asks:
             if size <= 0:
                 continue
 
@@ -40,9 +45,50 @@ class PricingEngine:
                 accum_shares += size
 
         if accum_shares < target_shares:
-            return None  # 深度不足以吃满目标份数
+            return None
 
         return round(total_cost / target_shares, 4)
+
+    @staticmethod
+    def calculate_bid_vwap(orderbook_bids: List[Any], target_shares: float) -> Optional[float]:
+        """
+        基于订单簿买盘深度计算卖出平仓 target_shares 份数的加权平均成交价 (Bid VWAP)。
+        买单按价格降序排列 (从高到低吃买盘)。
+        若深度不足，返回 None。
+        """
+        if not orderbook_bids or target_shares <= 0:
+            return None
+
+        parsed_bids = []
+        for item in orderbook_bids:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                parsed_bids.append((float(item[0]), float(item[1])))
+            elif isinstance(item, dict):
+                parsed_bids.append((float(item.get("price", 0.0)), float(item.get("size", 0.0))))
+
+        # 买单按价格降序排列 (从高到低吃买单)
+        sorted_bids = sorted(parsed_bids, key=lambda x: x[0], reverse=True)
+
+        accum_shares = 0.0
+        total_revenue = 0.0
+
+        for price, size in sorted_bids:
+            if size <= 0:
+                continue
+
+            needed = target_shares - accum_shares
+            if size >= needed:
+                total_revenue += needed * price
+                accum_shares += needed
+                break
+            else:
+                total_revenue += size * price
+                accum_shares += size
+
+        if accum_shares < target_shares:
+            return None
+
+        return round(total_revenue / target_shares, 4)
 
     @staticmethod
     def calculate_net_ev(

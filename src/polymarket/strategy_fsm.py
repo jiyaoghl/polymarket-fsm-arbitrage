@@ -488,7 +488,7 @@ class ArbitrageBotFSM(BaseStrategy):
                     if is_timed_out:
                         fsm = self.fsms.get(market_id)
                         if fsm and fsm.current_state in (TradeState.LEG1_ONLY, TradeState.PENDING_LEG2):
-                            success, close_price, close_size = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
+                            success, close_price, close_size, close_order_id = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
                             if success and close_price is not None and ctx.leg1:
                                 leg1_is_taker = (self.leg1_order_type == "FOK")
                                 realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
@@ -500,8 +500,16 @@ class ArbitrageBotFSM(BaseStrategy):
                                 ctx.gross_profit_usdc = gross_pnl
                                 ctx.fee_usdc = fee
                                 ctx.settlement_type = "FORCE_CLOSED"
+                                # 明确将 leg2 标记为平仓卖出明细 (SELL)，消除误导性 BUY 挂单残留
+                                ctx.leg2 = LegPosition(
+                                    order_id=close_order_id or "force_close",
+                                    token=ctx.leg1.token,
+                                    side="SELL",
+                                    cost=close_price,
+                                    size=close_size
+                                )
                                 self._set_trade(market_id, ctx.to_dict())
-                                fsm.transition_to(TradeState.SETTLED, reason=f"自适应 TTL 强平完成 (平仓价: {close_price}, PnL: ${realized_pnl:.4f})")
+                                fsm.transition_to(TradeState.SETTLED, reason=f"自适应 TTL 强平完成 (平仓卖出价: {close_price}, PnL: ${realized_pnl:.4f})")
                             else:
                                 # 二腿市价平仓失败 (如临期流动性枯竭或直接进入交割锁定)
                                 # 评估最终到期交割结算价格 (Settlement Price)
@@ -525,6 +533,14 @@ class ArbitrageBotFSM(BaseStrategy):
                                     ctx.fee_usdc = fee
                                     ctx.settlement_price = settle_price
                                     ctx.settlement_type = "EXPIRY_RESOLVED"
+                                    # 到期结算将 leg2 明确更新为交割卖出明细
+                                    ctx.leg2 = LegPosition(
+                                        order_id="expiry_settle",
+                                        token=leg1.token,
+                                        side="SELL",
+                                        cost=settle_price,
+                                        size=leg1.size
+                                    )
                                     self._set_trade(market_id, ctx.to_dict())
                                     fsm.transition_to(TradeState.SETTLED, reason=f"市价平仓失败，按到期结算价 {settle_price} 结算 (PnL: ${settled_pnl:.4f})")
                                 else:

@@ -298,6 +298,20 @@ class PolyClient:
             logger.exception(f"精准发现市场异常：{e}")
             return []
 
+    def get_orderbook(self, token_id: str) -> Optional[Dict[str, Any]]:
+        """获取指定 Token 的完整订单簿深度 (bids, asks)。"""
+        for attempt in range(3):
+            try:
+                url = f"{self.host}/book?token_id={token_id}"
+                response = self.session.get(url, timeout=10)
+                response.raise_for_status()
+                return response.json() or {}
+            except Exception as e:
+                if attempt == 2:
+                    logger.warning(f"获取订单簿深度最终失败 token={token_id}: {e}")
+                time.sleep(0.2)
+        return None
+
     # ========= 行情/盘口 =========
     def get_market_price(self, token_id: str) -> Optional[Dict[str, float]]:
         """获取指定市场的买卖盘价格（最佳买一/卖一）。"""
