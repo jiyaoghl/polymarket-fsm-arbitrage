@@ -178,3 +178,63 @@ class PricingEngine:
             return None, None, f"NO 侧溢价过高 ({no_bid_price:.4f} > 买一 {best_bid_no:.4f} + 0.01)"
 
         return yes_bid_price, no_bid_price, None
+
+    @staticmethod
+    def calculate_decayed_margin(
+        elapsed_seconds: float,
+        initial_margin: float = 0.025,
+        min_margin: float = 0.002,
+        decay_duration: float = 30.0
+    ) -> float:
+        """
+        基于时间衰减计算当前时刻的动态目标利润率 (Time-Decayed Target Margin)。
+        """
+        if decay_duration <= 0 or elapsed_seconds <= 0:
+            return initial_margin
+        decay_ratio = min(max(elapsed_seconds / decay_duration, 0.0), 1.0)
+        current_margin = initial_margin - (decay_ratio * (initial_margin - min_margin))
+        return round(max(current_margin, min_margin), 4)
+
+    @staticmethod
+    def calculate_flip_sell_price(
+        leg1_cost: float,
+        elapsed_seconds: float = 0.0,
+        initial_margin: float = 0.025,
+        min_margin: float = 0.002,
+        decay_duration: float = 30.0,
+        leg1_is_taker: bool = True
+    ) -> float:
+        """
+        计算二腿同向做 T 高抛限价卖单价格 (Maker Sell Flip Price)。
+        公式: Sell Price = Leg1 Cost + Taker Fee + Decayed Margin
+        """
+        margin = PricingEngine.calculate_decayed_margin(elapsed_seconds, initial_margin, min_margin, decay_duration)
+        fee_rate = TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE
+        leg1_fee = leg1_cost * fee_rate
+        target_sell_price = leg1_cost + leg1_fee + margin
+        return round(min(max(target_sell_price, 0.001), 0.999), 4)
+
+    @staticmethod
+    def calculate_hedged_pair_price(
+        leg1_cost: float,
+        elapsed_seconds: float = 0.0,
+        initial_margin: float = 0.025,
+        min_margin: float = 0.002,
+        decay_duration: float = 30.0,
+        leg1_is_taker: bool = True,
+        leg2_is_taker: bool = False
+    ) -> float:
+        """
+        计算二腿反向配对限价买单价格 (Pair Hedging Buy Price)。
+        公式: Pair Price = 1.0 - Leg1 Cost - Total Fees - Decayed Margin
+        """
+        margin = PricingEngine.calculate_decayed_margin(elapsed_seconds, initial_margin, min_margin, decay_duration)
+        fee1 = leg1_cost * (TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE)
+        # 预估二腿费率
+        fee2_rate = TAKER_FEE_RATE if leg2_is_taker else MAKER_FEE_RATE
+        # 预估二腿成本基准
+        approx_leg2_cost = max(0.0, 1.0 - leg1_cost)
+        total_fees = fee1 + (approx_leg2_cost * fee2_rate)
+        
+        target_pair_price = 1.0 - leg1_cost - total_fees - margin
+        return round(min(max(target_pair_price, 0.001), 0.999), 4)

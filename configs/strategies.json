@@ -10,6 +10,10 @@
         "leg1_order_type": "FOK",
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
+        "exit_mode": "smart_flip",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
         "leg2_fallback_to_maker": true
     },
@@ -24,6 +28,10 @@
         "leg1_order_type": "FOK",
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
+        "exit_mode": "smart_flip",
+        "initial_margin": 0.025,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
         "leg2_fallback_to_maker": true
     },
@@ -38,6 +46,10 @@
         "leg1_order_type": "FOK",
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
+        "exit_mode": "smart_flip",
+        "initial_margin": 0.030,
+        "breakeven_margin": 0.002,
+        "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
         "leg2_fallback_to_maker": true
     },

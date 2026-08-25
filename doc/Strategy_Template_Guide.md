@@ -36,6 +36,10 @@
 | `reentry_trigger` | `number` | `0.42` | **二腿反卷对冲触发阈值**。当二腿盘口价格低于此值时，触发动态阶梯跃迁抢回买一。 |
 | `leg1_order_type` | `string` | `"FOK"` / `"GTC"` | **首腿订单类型**。`"FOK"`: 市价立即吃单，未满即撤；`"GTC"`: 限价挂单等待被吃。 |
 | `leg2_order_type` | `string` | `"GTC"` | **二腿订单类型**。通常为 `"GTC"` 做市挂单，赚取流动性溢价。 |
+| `exit_mode` | `string` | `"smart_flip"` | **二腿智能出场模式**。`"smart_flip"`: 智能同向做T高抛优先，变现即释放资金；`"pair_only"`: 传统反向配对对冲。 |
+| `initial_margin` | `number` | `0.025` | **初始做T期望毛利率**。例如 `0.025` 代表首选挂单追求 2.5% 利差高抛。 |
+| `breakeven_margin` | `number` | `0.002` | **保本安全毛利率**。时间衰减后的最低保本毛利门槛 (0.2%)。 |
+| `flip_timeout_sec` | `number` | `35` | **做T高抛最长等待时间 (秒)**。超时若买方未吃单，自动无缝切换至反向对冲买入。 |
 | `dual_bracket_entry` | `boolean` | `false` / `true` | **双边并发双挂开关**。仅在 `maker_maker` 模式下设为 `true`，通过批量接口原子级同时挂出 YES 与 NO。 |
 | `leg2_price_mode` | `string` | `"bid"` | **二腿定价参考**。`"bid"`: 参考买一价进行跟单做市；`"ask"`: 参考卖一价。 |
 | `leg2_cancel_before_expiry`| `number` | `30` | **到期前强制撤单时间 (秒)**。剩余时间小于该值且二腿未成交时自动撤单。 |

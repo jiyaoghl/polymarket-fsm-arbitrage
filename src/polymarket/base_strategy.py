@@ -92,6 +92,13 @@ class BaseStrategy:
         self.leg2_price_mode = strategy_config.get("leg2_price_mode", "bid")   # 二腿价格模式：ask(吃单价) / bid(挂单价)
         self.leg2_cancel_before_expiry = strategy_config.get("leg2_cancel_before_expiry", 30)  # 二腿挂单到期前取消时间
         self.leg2_fallback_to_maker = strategy_config.get("leg2_fallback_to_maker", True)  # 挂单取消后是否改为吃单
+        
+        # 二腿智能出场配置 (Smart Exit & Flip)
+        self.exit_mode = strategy_config.get("exit_mode", "smart_flip")  # smart_flip | pair_only
+        self.initial_margin = float(strategy_config.get("initial_margin", 0.025))  # 初始做T期望毛利 2.5%
+        self.breakeven_margin = float(strategy_config.get("breakeven_margin", 0.002))  # 保本安全毛利 0.2%
+        self.flip_timeout_sec = float(strategy_config.get("flip_timeout_sec", 35.0))  # 做T等待超时(秒)
+        
         from polymarket import config
         self.min_time_to_expiry_entry = strategy_config.get("min_time_to_expiry_entry", getattr(config, "MIN_TIME_TO_EXPIRY_ENTRY", 45)) # 临近交割禁止入场时间（秒）
         

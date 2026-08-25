@@ -69,6 +69,8 @@ class TradeContext:
     
     dynamic_ttl: Optional[float] = None
     filter_reason: Optional[str] = None
+    exit_mode: str = "smart_flip"  # smart_flip | pair_only
+    exit_stage: str = "init"       # init | flip_active | hedge_fallback | settled
     events: List[Dict[str, Any]] = field(default_factory=list)
 
     def add_event(self, state: str, description: str):
@@ -109,6 +111,8 @@ class TradeContext:
             "settlement_type": self.settlement_type,
             "dynamic_ttl": self.dynamic_ttl,
             "filter_reason": self.filter_reason,
+            "exit_mode": self.exit_mode,
+            "exit_stage": self.exit_stage,
             "events": self.events
         }
 
@@ -119,7 +123,7 @@ class TradeContext:
             market_id=data.get("market_id", ""),
             status=data.get("status", "idle"),
             asset=data.get("asset", ""),
-            start_time=data.get("start_time", time.time()),
+            start_time=float(data.get("start_time", time.time())),
             end_time=float(data.get("end_time", 0.0)),
             tokens=data.get("tokens", {}),
             leg1=LegPosition.from_dict(data.get("leg1")),
@@ -134,11 +138,13 @@ class TradeContext:
             profit_usdc=float(data.get("profit_usdc", 0.0)),
             gross_profit_usdc=float(data.get("gross_profit_usdc", 0.0)),
             fee_usdc=float(data.get("fee_usdc", 0.0)),
-            realized_pnl=float(data["realized_pnl"]) if data.get("realized_pnl") is not None else None,
-            settlement_price=float(data["settlement_price"]) if data.get("settlement_price") is not None else None,
+            realized_pnl=data.get("realized_pnl"),
+            settlement_price=data.get("settlement_price"),
             settlement_type=data.get("settlement_type"),
             dynamic_ttl=data.get("dynamic_ttl"),
             filter_reason=data.get("filter_reason"),
+            exit_mode=data.get("exit_mode", "smart_flip"),
+            exit_stage=data.get("exit_stage", "init"),
             events=data.get("events", [])
         )
         return ctx
