@@ -191,6 +191,13 @@ class TestRetryDecorator:
         assert call_count == 3
         assert "Permanent error" in str(exc_info.value)
 
+    @pytest.mark.anyio
+    async def test_cancel_order_async(self):
+        """测试异步撤单方法 cancel_order_async。"""
+        client = PolyClient(is_live=False)
+        result = await client.cancel_order_async("sim_test_order_123")
+        assert result is True
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

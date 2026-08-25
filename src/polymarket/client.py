@@ -5,6 +5,7 @@ import json
 import hmac
 import hashlib
 import threading
+import asyncio
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from eth_account import Account
@@ -717,6 +718,12 @@ class PolyClient:
         except Exception as e:
             logger.exception(f"取消订单失败：{e}")
             return False
+
+    async def cancel_order_async(self, order_id: str) -> bool:
+        """异步撤销订单 (OCO 互斥撤单高并发专用)。"""
+        if not self.is_live:
+            return self.cancel_order(order_id)
+        return await asyncio.to_thread(self.cancel_order, order_id)
 
     def get_balance(self) -> Dict[str, float]:
         """获取账户 USDC / pUSD 抵押品可用余额。"""
