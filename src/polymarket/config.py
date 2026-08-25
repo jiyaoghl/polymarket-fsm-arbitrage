@@ -132,8 +132,8 @@ DRAWDOWN_RED = float(os.getenv("DRAWDOWN_RED", "0.30"))         # 红牌：全�
 # Telegram 确认超时（秒）
 CONFIRM_TIMEOUT_SEC = int(os.getenv("CONFIRM_TIMEOUT_SEC", "60"))
 
-# 数据库路径（默认放 tmp/，避免污染仓库根）
-DB_PATH = os.getenv("DB_PATH", str(paths.tmp_dir() / "trading.db"))
+# 数据库路径（固化保存在持久化 data/ 目录，避免被临时目录清理丢失）
+DB_PATH = os.getenv("DB_PATH", str(paths.data_dir() / "trading.db"))
 
 # RiskGuard 检查间隔（秒）
 RISK_CHECK_INTERVAL = int(os.getenv("RISK_CHECK_INTERVAL", "10"))
