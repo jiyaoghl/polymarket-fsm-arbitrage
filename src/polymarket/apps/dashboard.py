@@ -1026,7 +1026,9 @@ def index() -> str:
 
 @app.get("/api/prices")
 async def api_prices():
-    """获取当前市场的实时价格。"""
+    """获取当前市场的实时价格（优先从 OrderbookMemoryGrid 纯内存 0 延迟提取）。"""
+    from polymarket.services.grid import OrderbookMemoryGrid
+    grid = OrderbookMemoryGrid()
     result = {"timestamp": time.time(), "markets": {}}
     for m in manager.current_markets:
         market_id = m.get("id")
@@ -1037,21 +1039,29 @@ async def api_prices():
         no_token = tokens.get("NO")
         
         m_result = {"yes": None, "no": None}
-        try:
-            if yes_token:
-                prices = await price_client.get_market_price_async(yes_token)
-                if prices:
-                    m_result["yes"] = prices
-        except Exception as e:
-            m_result["error_yes"] = str(e)
-            
-        try:
-            if no_token:
-                prices = await price_client.get_market_price_async(no_token)
-                if prices:
-                    m_result["no"] = prices
-        except Exception as e:
-            m_result["error_no"] = str(e)
+        if yes_token:
+            snap = grid.get_snapshot(yes_token)
+            if snap and snap.best_bid is not None and snap.best_ask is not None:
+                m_result["yes"] = {"bid": snap.best_bid, "ask": snap.best_ask}
+            else:
+                try:
+                    p = await price_client.get_market_price_async(yes_token)
+                    if p:
+                        m_result["yes"] = p
+                except Exception as e:
+                    m_result["error_yes"] = str(e)
+                    
+        if no_token:
+            snap = grid.get_snapshot(no_token)
+            if snap and snap.best_bid is not None and snap.best_ask is not None:
+                m_result["no"] = {"bid": snap.best_bid, "ask": snap.best_ask}
+            else:
+                try:
+                    p = await price_client.get_market_price_async(no_token)
+                    if p:
+                        m_result["no"] = p
+                except Exception as e:
+                    m_result["error_no"] = str(e)
             
         result["markets"][market_id] = m_result
     

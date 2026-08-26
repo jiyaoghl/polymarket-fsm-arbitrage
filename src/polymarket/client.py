@@ -189,6 +189,9 @@ class PolyClient:
     def get_market_price(self, token_id: str) -> Dict[str, float]:
         return self._gateway.get_market_price(token_id)
 
+    async def get_market_price_async(self, token_id: str) -> Dict[str, float]:
+        return await self._gateway.get_market_price_async(token_id)
+
     def get_orderbook(self, token_id: str) -> Dict[str, Any]:
         return self._gateway.get_orderbook(token_id)
 

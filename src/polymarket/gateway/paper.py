@@ -232,7 +232,17 @@ class PaperTradingGateway(ITradingGateway):
         return self._ledger.get_open_orders()
 
     def get_market_price(self, token_id: str) -> Dict[str, float]:
+        try:
+            from polymarket.services.grid import OrderbookMemoryGrid
+            snap = OrderbookMemoryGrid().get_snapshot(token_id)
+            if snap and snap.best_bid is not None and snap.best_ask is not None:
+                return {"bid": snap.best_bid, "ask": snap.best_ask}
+        except Exception:
+            pass
         return {"bid": 0.45, "ask": 0.55}
+
+    async def get_market_price_async(self, token_id: str) -> Dict[str, float]:
+        return self.get_market_price(token_id)
 
     def get_orderbook(self, token_id: str) -> Dict[str, Any]:
         return {"bids": [{"price": "0.45", "size": "100.0"}], "asks": [{"price": "0.55", "size": "100.0"}]}

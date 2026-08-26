@@ -356,7 +356,15 @@ class LiveClobV2Gateway(ITradingGateway):
             return []
 
     def get_market_price(self, token_id: str) -> Dict[str, float]:
-        """获取买卖一价"""
+        """获取买卖一价（优先从 OrderbookMemoryGrid 内存零锁读取，回退走 HTTP）"""
+        try:
+            from polymarket.services.grid import OrderbookMemoryGrid
+            snap = OrderbookMemoryGrid().get_snapshot(token_id)
+            if snap and snap.best_bid is not None and snap.best_ask is not None and not snap.is_stale(max_age_seconds=15.0):
+                return {"bid": snap.best_bid, "ask": snap.best_ask}
+        except Exception:
+            pass
+
         try:
             url = f"{self.host}/price?token_id={token_id}&side=buy"
             resp_buy = self.http2_client.get(url, timeout=5)
@@ -369,6 +377,28 @@ class LiveClobV2Gateway(ITradingGateway):
             return {"bid": buy_price, "ask": sell_price}
         except Exception as e:
             logger.warning(f"[LiveGateway] 获取盘口价格异常 ({token_id}): {e}")
+            return {"bid": 0.5, "ask": 0.5}
+
+    async def get_market_price_async(self, token_id: str) -> Dict[str, float]:
+        """异步获取买卖一价（优先从 OrderbookMemoryGrid 内存零锁读取）"""
+        try:
+            from polymarket.services.grid import OrderbookMemoryGrid
+            snap = OrderbookMemoryGrid().get_snapshot(token_id)
+            if snap and snap.best_bid is not None and snap.best_ask is not None and not snap.is_stale(max_age_seconds=15.0):
+                return {"bid": snap.best_bid, "ask": snap.best_ask}
+        except Exception:
+            pass
+
+        try:
+            resp_buy = await self.async_http2_client.get(f"{self.host}/price?token_id={token_id}&side=buy", timeout=5)
+            buy_price = float(resp_buy.json().get("price", 0.5)) if resp_buy.status_code == 200 else 0.5
+
+            resp_sell = await self.async_http2_client.get(f"{self.host}/price?token_id={token_id}&side=sell", timeout=5)
+            sell_price = float(resp_sell.json().get("price", 0.5)) if resp_sell.status_code == 200 else 0.5
+
+            return {"bid": buy_price, "ask": sell_price}
+        except Exception as e:
+            logger.warning(f"[LiveGateway] 异步获取盘口价格异常 ({token_id}): {e}")
             return {"bid": 0.5, "ask": 0.5}
 
     def get_orderbook(self, token_id: str) -> Dict[str, Any]:

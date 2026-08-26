@@ -111,6 +111,11 @@ class ITradingGateway(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def get_market_price_async(self, token_id: str) -> Dict[str, float]:
+        """异步获取指定 Token 的买一卖一价格"""
+        pass
+
+    @abc.abstractmethod
     def get_orderbook(self, token_id: str) -> Dict[str, Any]:
         """获取指定 Token 的深度订单簿"""
         pass
