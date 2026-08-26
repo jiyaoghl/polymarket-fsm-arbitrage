@@ -8,13 +8,14 @@ import websockets
 from polymarket.logger import logger
 from polymarket import config
 from polymarket.base_strategy import BaseStrategy
+from polymarket.runtime import AsyncRuntime
 
 USER_WS_URI = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 
 class UserOrderStreamer:
     """
     Polymarket 私有 WebSocket 用户订单与成交事件流 (User Channel)。
-    以全异步单例模式运行于独立的后台守护事件循环中。
+    运行于 AsyncRuntime 全局统一事件循环中。
     
     职责：
     1. 自动维护私有 WS 鉴权长连接与心跳保活。
@@ -30,7 +31,7 @@ class UserOrderStreamer:
             if not cls._instance:
                 cls._instance = super(UserOrderStreamer, cls).__new__(cls)
                 cls._instance._initialized = False
-            return cls._instance
+        return cls._instance
 
     def __init__(self, ws_uri: str = USER_WS_URI):
         with self._lock:
@@ -48,21 +49,18 @@ class UserOrderStreamer:
             self.is_authenticated = False
             self._auth_failed = False
             
-            # 后台守护事件循环
-            self.loop = asyncio.new_event_loop()
-            self.thread = threading.Thread(target=self._run_loop, daemon=True, name="UserOrderStreamer")
-            self.thread.start()
+            # 接入全局统一异步运行时
+            self.runtime = AsyncRuntime.get_instance()
+            self.loop = self.runtime.get_loop()
             
+            # 挂载常驻监听任务
+            self.runtime.spawn_task(self._ws_loop(), key="UserOrderStreamer_WS")
             self._initialized = True
-            logger.info("[UserStreamer] 私有订单事件流单例初始化完毕。")
+            logger.info("[UserStreamer] 私有订单事件流单例已挂载至全局 AsyncRuntime。")
 
     @classmethod
     def get_instance(cls) -> "UserOrderStreamer":
         return cls()
-
-    def _run_loop(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._ws_loop())
 
     async def _ws_loop(self):
         retry_delay = 1.0
@@ -159,7 +157,6 @@ class UserOrderStreamer:
 
     def _process_single_event(self, event: Dict[str, Any]):
         """解析单条订单推送事件并唤醒等待协程"""
-        # Polymarket 订单推送可能包含 order_id / id / orderID
         order_id = str(event.get("order_id") or event.get("id") or event.get("orderID") or "")
         status = str(event.get("status") or event.get("event_type") or "").upper()
         
@@ -191,7 +188,6 @@ class UserOrderStreamer:
                     "timestamp": time.time(),
                 }
                 event_obj = self._pending_fill_events[matched_id]
-                # 在事件循环中通知
                 self.loop.call_soon_threadsafe(event_obj.set)
 
     async def wait_for_order_fill(self, order_id: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:

@@ -1033,6 +1033,13 @@ def api_status() -> DashboardStatusModel:
     )
 
 
+@app.get("/api/metrics")
+def get_metrics() -> Dict[str, Any]:
+    """获取内部时序指标引擎的结构化 JSON 性能与交易数据。"""
+    from polymarket.metrics import metrics
+    return metrics.export_dashboard_json()
+
+
 if __name__ == "__main__":
     import uvicorn
     import os

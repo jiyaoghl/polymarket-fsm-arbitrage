@@ -1,16 +1,19 @@
 import asyncio
 import json
 import threading
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List, Set, Optional
 import websockets
 
 from polymarket.logger import logger
 from polymarket.base_strategy import BaseStrategy
+from polymarket.runtime import AsyncRuntime, BoundedDropOldestQueue
+from polymarket.services.grid import OrderbookMemoryGrid
 
 class MarketDataStreamer:
     """
     全异步单例数据总线 (Multiplexing Event Bus)。
-    全局只维护 1 条 WebSocket 连接。一次解析，分发给多个 FSM 的 asyncio 队列。
+    运行于 AsyncRuntime 全局统一事件循环中。
+    全局只维护 1 条 WebSocket 连接，单次解析后通过同 Loop 队列向各市场 FSM 极速分发。
     """
     _instance = None
     _lock = threading.Lock()
@@ -31,22 +34,20 @@ class MarketDataStreamer:
             self.active_assets: Set[str] = set()
             # 记录资产与所属市场: asset_id -> set(market_id)
             self.asset_to_markets: Dict[str, Set[str]] = {}
-            # subscribers: market_id -> list of (queue, loop)
-            self.subscribers: Dict[str, List[Dict[str, Any]]] = {}
+            # subscribers: market_id -> list of asyncio.Queue
+            self.subscribers: Dict[str, List[asyncio.Queue]] = {}
             
-            # 防抖定时器
-            self._resubscribe_timer = None
+            # 防抖重订阅 Handle
+            self._resubscribe_handle = None
             
-            # 后台守护事件循环
-            self.loop = asyncio.new_event_loop()
-            self.thread = threading.Thread(target=self._run_loop, daemon=True, name="MarketDataStreamer")
-            self.thread.start()
+            # 接入全局统一异步运行时
+            self.runtime = AsyncRuntime.get_instance()
+            self.loop = self.runtime.get_loop()
             
+            # 启动长驻 WS 监听协程任务
+            self.runtime.spawn_task(self._ws_loop(), key="MarketDataStreamer_WS")
             self._initialized = True
-
-    def _run_loop(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._ws_loop())
+            logger.info("[Streamer] 统一数据总线已在全局 AsyncRuntime 中挂载运行。")
 
     async def _ws_loop(self):
         retry_delay = 1.0
@@ -54,7 +55,6 @@ class MarketDataStreamer:
         while True:
             try:
                 from polymarket.config import HTTPS_PROXY
-                from polymarket.base_strategy import BaseStrategy
                 logger.info("[Streamer] 统一数据总线正在连接 WS...")
                 
                 if HTTPS_PROXY:
@@ -63,68 +63,67 @@ class MarketDataStreamer:
                     ws_conn = await websockets.connect(self.ws_uri)
                     
                 self.ws = ws_conn
-                if True:
-                    retry_delay = 1.0  # 连接成功，重置退避时间
-                    
-                    # 重新发送所有活跃的订阅
-                    with self._lock:
-                        assets = list(self.active_assets)
-                    if assets:
-                        await self._send_subscription(self.ws, assets)
-                        logger.info(f"[Streamer] 已恢复 {len(assets)} 个资产的订阅")
+                retry_delay = 1.0  # 连接成功，重置退避时间
+                
+                # 重新发送所有活跃资产订阅
+                with self._lock:
+                    assets = list(self.active_assets)
+                if assets:
+                    await self._send_subscription(self.ws, assets)
+                    logger.info(f"[Streamer] 已恢复 {len(assets)} 个资产的订阅")
 
-                    while True:
-                        try:
-                            msg = await asyncio.wait_for(self.ws.recv(), timeout=5)
-                        except asyncio.TimeoutError:
-                            if self.ws:
-                                try:
-                                    await self.ws.ping()
-                                except Exception:
-                                    logger.warning("[Streamer] WS 心跳失败，准备重连...")
-                                    break
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(self.ws.recv(), timeout=5)
+                    except asyncio.TimeoutError:
+                        if self.ws:
+                            try:
+                                await self.ws.ping()
+                            except Exception:
+                                logger.warning("[Streamer] WS 心跳失败，准备重连...")
+                                break
+                        continue
+                    except websockets.exceptions.ConnectionClosed as e:
+                        logger.warning(f"[Streamer] 远端关闭 ({e.code}): {e.reason}")
+                        break
+                        
+                    # 核心解析：全局只做一次
+                    try:
+                        if msg in ("OK", "PONG", ""):
                             continue
-                        except websockets.exceptions.ConnectionClosed as e:
-                            logger.warning(f"[Streamer] 远端关闭 ({e.code}): {e.reason}")
-                            break
-                            
-                        # 核心解析：全局只做一次
-                        try:
-                            if msg == "OK":
-                                continue
-                            if msg == "INVALID OPERATION":
-                                logger.warning("[Streamer] 远端返回了 INVALID OPERATION，忽略该消息")
-                                continue
-                            data = json.loads(msg)
-                            prices = BaseStrategy._parse_ws_prices_full(data)
-                            if not prices:
-                                await asyncio.sleep(0)
-                                continue
-                        except Exception as e:
-                            # 如果确实是解析异常，把原始消息打出来排查
-                            logger.error(f"[Streamer] 解析异常 msg={msg[:100]}: {e}")
+                        if msg == "INVALID OPERATION":
+                            logger.warning("[Streamer] 远端返回了 INVALID OPERATION，忽略该消息")
+                            continue
+                        data = json.loads(msg)
+                        # 更新全局共享盘口内存网格
+                        OrderbookMemoryGrid.get_instance().update_from_ws(data)
+                        prices = BaseStrategy._parse_ws_prices_full(data)
+                        if not prices:
                             await asyncio.sleep(0)
                             continue
-
-                        bundle = {"data": data, "prices": prices}
-
-                        # 分发给相关的市场队列
-                        dispatched_markets = set()
-                        with self._lock:
-                            for asset_id in prices.keys():
-                                markets = self.asset_to_markets.get(asset_id, set())
-                                dispatched_markets.update(markets)
-                                
-                            for market_id in dispatched_markets:
-                                subs = self.subscribers.get(market_id, [])
-                                for sub in subs:
-                                    # 安全地跨线程投递 (fire and forget)
-                                    try:
-                                        asyncio.run_coroutine_threadsafe(sub["queue"].put(bundle), sub["loop"])
-                                    except Exception as e:
-                                        logger.warning(f"[Streamer] 跨线程推送队列异常 ({market_id}): {e}")
-
+                    except Exception as e:
+                        logger.error(f"[Streamer] 解析异常 msg={msg[:100]}: {e}")
                         await asyncio.sleep(0)
+                        continue
+
+                    bundle = {"data": data, "prices": prices}
+
+                    # 同 Loop 微秒级直接投递给相关市场队列
+                    dispatched_markets = set()
+                    with self._lock:
+                        for asset_id in prices.keys():
+                            markets = self.asset_to_markets.get(asset_id, set())
+                            dispatched_markets.update(markets)
+                            
+                        for market_id in dispatched_markets:
+                            queues = self.subscribers.get(market_id, [])
+                            for q in queues:
+                                try:
+                                    q.put_nowait(bundle)
+                                except Exception as e:
+                                    logger.warning(f"[Streamer] 推送队列异常 ({market_id}): {e}")
+
+                    await asyncio.sleep(0)
 
             except Exception as e:
                 logger.error(f"[Streamer] 异常崩溃: {e}")
@@ -140,7 +139,7 @@ class MarketDataStreamer:
             retry_delay = min(retry_delay * 2, max_delay)  # 指数退避
 
     async def _send_subscription(self, ws: websockets.WebSocketClientProtocol, assets: List[str]):
-        """发送订阅/重置命令，Polymarket 会全量覆盖"""
+        """发送订阅命令"""
         if not assets:
             logger.info("[Streamer] 活跃资产列表为空，跳过向远端发送空订阅。")
             return
@@ -157,22 +156,26 @@ class MarketDataStreamer:
             logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
     def _schedule_resubscribe(self):
-        """防抖定时器：延迟 0.5s 发送聚合订阅，防止瞬间爆发导致 INVALID OPERATION 拒接"""
-        if self._resubscribe_timer is not None:
-            self._resubscribe_timer.cancel()
+        """防抖定时器：延迟 0.5s 发送聚合订阅，防止瞬间密集请求触发 INVALID OPERATION"""
+        if self._resubscribe_handle is not None:
+            self._resubscribe_handle.cancel()
             
         def _do_send():
             if self.ws:
-                asyncio.run_coroutine_threadsafe(
-                    self._send_subscription(self.ws, list(self.active_assets)), 
-                    self.loop
+                self.runtime.spawn_task(
+                    self._send_subscription(self.ws, list(self.active_assets)),
+                    key="Streamer_Resubscribe"
                 )
         
-        # 使用 threading.Timer 在 0.5s 后执行
-        self._resubscribe_timer = threading.Timer(0.5, _do_send)
-        self._resubscribe_timer.start()
+        self._resubscribe_handle = self.loop.call_later(0.5, _do_send)
 
-    def subscribe(self, market_id: str, assets: List[str], caller_queue: asyncio.Queue, caller_loop: asyncio.AbstractEventLoop):
+    def subscribe(
+        self,
+        market_id: str,
+        assets: List[str],
+        caller_queue: asyncio.Queue,
+        caller_loop: Optional[asyncio.AbstractEventLoop] = None
+    ):
         """策略端调用，注册一个队列"""
         with self._lock:
             # 加入资产映射
@@ -185,21 +188,21 @@ class MarketDataStreamer:
             # 加入订阅者
             if market_id not in self.subscribers:
                 self.subscribers[market_id] = []
-            self.subscribers[market_id].append({"queue": caller_queue, "loop": caller_loop})
+            if caller_queue not in self.subscribers[market_id]:
+                self.subscribers[market_id].append(caller_queue)
             
-            # 无论远端是 append 还是 overwrite 模式，直接全量发送 active_assets 最为稳妥
-            # 【BugFix】引入防抖，防止极短时间内多次触发导致 API 被 rate limit (INVALID OPERATION)
             if self.ws:
                 self._schedule_resubscribe()
-                
+
     def unsubscribe(self, market_id: str, caller_queue: asyncio.Queue):
         """策略端注销"""
         with self._lock:
             subs = self.subscribers.get(market_id, [])
-            # 过滤掉退出的队列
-            self.subscribers[market_id] = [s for s in subs if s["queue"] is not caller_queue]
+            self.subscribers[market_id] = [q for q in subs if q is not caller_queue]
             
             if not self.subscribers[market_id]:
+                # 移除该市场的空订阅列表
+                del self.subscribers[market_id]
                 # 当前市场的所有策略都退出了，清理 asset_to_markets 映射
                 assets_to_remove = set()
                 for asset, markets in list(self.asset_to_markets.items()):
@@ -212,6 +215,5 @@ class MarketDataStreamer:
                 # 从 active_assets 中彻底移除这些没有任何市场关心的 token
                 if assets_to_remove:
                     self.active_assets.difference_update(assets_to_remove)
-                    # 重新发送最新的活跃资产列表给远端（Polymarket 重新订阅会全量覆盖）
                     if self.ws:
                         self._schedule_resubscribe()

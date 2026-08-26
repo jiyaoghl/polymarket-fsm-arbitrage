@@ -1,0 +1,172 @@
+from typing import Dict, Any
+
+from polymarket.domain.fsm import TradeFSM, TradeState
+from polymarket.domain.models import TradeContext, LegPosition
+from polymarket.services.pricing import PricingEngine
+from polymarket.services.execution import OrderExecutionService
+from polymarket.services.liquidator import AdaptiveLiquidatorService
+from polymarket.services.handlers.base import BaseTickHandler
+from polymarket.services.handlers.context import StrategyParams, StrategyDependencies, TickBundle, TickFilterLogger
+
+class PendingLeg2TickHandler(BaseTickHandler):
+    """
+    PENDING_LEG2 状态处理器 (Pending Leg2 State Handler)。
+    
+    职责：
+    1. OCO (dual_exit) 双单成交裁决：
+       - 卖单成交 -> 取消买单并释放额度，流转 SETTLED；
+       - 买单成交 -> 取消卖单，锁定无风险对冲，流转 LOCKED；
+    2. 单订单出场确认：
+       - 做 T 限价卖单成交 -> 核算已实现收益并流转 SETTLED；
+       - 配对限价买单成交 -> 达成对冲锁仓并流转 LOCKED。
+    """
+
+    async def handle(
+        self,
+        market: Dict[str, Any],
+        fsm: TradeFSM,
+        ctx: TradeContext,
+        tick: TickBundle,
+        params: StrategyParams,
+        deps: StrategyDependencies,
+        filter_logger: TickFilterLogger
+    ) -> None:
+        leg1 = ctx.leg1
+        if not leg1:
+            return
+
+        market_id = market["id"]
+        yes_token = tick.yes_token
+        no_token = tick.no_token
+        best_ask_yes = tick.best_ask_yes
+        best_bid_yes = tick.best_bid_yes
+        best_ask_no = tick.best_ask_no
+        best_bid_no = tick.best_bid_no
+
+        is_leg1_yes = (str(leg1.token) == str(yes_token))
+        opp_token = no_token if is_leg1_yes else yes_token
+
+        # ── A. 处理 dual_exit 模式下的 OCO 双单成交 ───────────
+        if ctx.dual_orders and len(ctx.dual_orders) >= 2:
+            sell_info = next((o for o in ctx.dual_orders if o.get("side") == "SELL"), None)
+            buy_info = next((o for o in ctx.dual_orders if o.get("side") == "BUY"), None)
+            sell_id = sell_info.get("order_id") or sell_info.get("orderID") if sell_info else None
+            buy_id = buy_info.get("order_id") or buy_info.get("orderID") if buy_info else None
+
+            # 检查卖单是否成交
+            sell_filled = False
+            if sell_info:
+                sell_target_price = float(sell_info.get("price", 0.0))
+                cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                if not params.is_live:
+                    # 模拟盘：只有当买一价达到或超过做T卖单挂单价时才判定成交
+                    sell_filled = (cur_bid is not None and cur_bid >= sell_target_price)
+                elif sell_id:
+                    sell_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                        deps.client, sell_id, str(leg1.token), leg1.size, params.strategy_id
+                    )
+
+            if sell_filled:
+                # 卖单成交！立即取消买单并释放额度
+                if buy_id:
+                    await deps.client.cancel_order_async(buy_id)
+                buy_price = float(buy_info.get("price", 0.0)) if buy_info else 0.0
+                deps.risk_manager.release_trade_lock(params.strategy_id, market_id, round(buy_price * leg1.size, 2), is_live=params.is_live)
+                
+                sell_price = float(sell_info.get("price", leg1.cost)) if sell_info else leg1.cost
+                realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
+                    leg1_cost=leg1.cost, leg1_size=leg1.size,
+                    close_price=sell_price, leg1_is_taker=(params.leg1_order_type == "FOK"), close_is_taker=False
+                )
+                ctx.profit_usdc = realized_pnl
+                ctx.realized_pnl = realized_pnl
+                ctx.gross_profit_usdc = gross_pnl
+                ctx.fee_usdc = fee
+                ctx.settlement_type = "DUAL_EXIT_SELL_SETTLED"
+                ctx.leg2 = LegPosition(
+                    token=str(leg1.token),
+                    side="SELL",
+                    cost=sell_price,
+                    size=leg1.size,
+                    order_id=sell_id or "sim_sell"
+                )
+                deps.set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.SETTLED, reason=f"OCO 做T卖出率先成交变现，净锁定 ${realized_pnl:.4f}")
+                return
+
+            # 检查买单是否成交
+            buy_filled = False
+            if buy_info:
+                buy_target_price = float(buy_info.get("price", 0.0))
+                cur_ask = best_ask_no if is_leg1_yes else best_ask_yes
+                if not params.is_live:
+                    # 模拟盘：只有当卖一价达到或低于对冲买单挂单价时才判定成交
+                    buy_filled = (cur_ask is not None and cur_ask <= buy_target_price)
+                elif buy_id:
+                    buy_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                        deps.client, buy_id, str(opp_token), leg1.size, params.strategy_id
+                    )
+
+            if buy_filled:
+                # 买单成交！立即取消卖单
+                if sell_id:
+                    await deps.client.cancel_order_async(sell_id)
+                buy_price = float(buy_info.get("price", 0.5)) if buy_info else 0.5
+                ctx.leg2 = LegPosition(
+                    token=str(opp_token),
+                    side="BUY",
+                    cost=buy_price,
+                    size=leg1.size,
+                    order_id=buy_id or "sim_leg2"
+                )
+                deps.set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.LOCKED)
+                return
+            return
+
+        # ── B. 处理单订单模式成交 ────────────────────────────
+        leg2 = ctx.leg2
+        if not leg2 or not ctx.leg2_order_id:
+            return
+
+        is_fill = False
+        if not params.is_live:
+            target_price = leg2.cost
+            if leg2.side == "SELL":
+                cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                is_fill = (cur_bid is not None and cur_bid >= target_price)
+            else:
+                cur_ask = best_ask_no if is_leg1_yes else best_ask_yes
+                is_fill = (cur_ask is not None and cur_ask <= target_price)
+        else:
+            is_fill, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+                deps.client, ctx.leg2_order_id, str(leg2.token), leg2.size, params.strategy_id
+            )
+
+        if is_fill:
+            if leg2.side == "SELL":
+                leg1_is_taker = (params.leg1_order_type == "FOK")
+                realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
+                    leg1_cost=ctx.leg1.cost, leg1_size=ctx.leg1.size,
+                    close_price=leg2.cost, leg1_is_taker=leg1_is_taker, close_is_taker=False
+                )
+                ctx.profit_usdc = realized_pnl
+                ctx.realized_pnl = realized_pnl
+                ctx.gross_profit_usdc = gross_pnl
+                ctx.fee_usdc = fee
+                ctx.settlement_type = "SMART_FLIP_SETTLED"
+                deps.set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.SETTLED, reason=f"智能做T高抛成交变现，净锁定 ${realized_pnl:.4f}")
+            else:
+                gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
+                    leg1_cost=ctx.leg1.cost, leg1_size=ctx.leg1.size,
+                    leg2_cost=ctx.leg2.cost, leg2_size=ctx.leg2.size,
+                    leg1_order_type=params.leg1_order_type, leg2_order_type=params.leg2_order_type
+                )
+                ctx.profit_usdc = net_ev
+                ctx.realized_pnl = net_ev
+                ctx.gross_profit_usdc = gross_ev
+                ctx.fee_usdc = fee
+                ctx.settlement_type = "HEDGED_LOCKED"
+                deps.set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.LOCKED)

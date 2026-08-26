@@ -263,24 +263,18 @@ class StrategyManager:
 
             for market in markets_found:
                 for bot in self.bots:
-                    def _safe_execute(b=bot, m=market):
-                        try:
-                            b.execute_strategy(m)
-                        except Exception as e:
-                            logger.critical(f"[策略派发致命异常] 策略 {b.strategy_id} 执行 {m.get('id')} 崩溃: {e}", exc_info=True)
-                            from polymarket import risk_logger
-                            risk_logger.push_risk_event(
-                                market_id=m.get("id", "UNKNOWN"),
-                                asset=m.get("__asset_type", "UNKNOWN"),
-                                strategy=b.strategy_id,
-                                reason=f"策略执行崩溃: {e}",
-                                level="critical"
-                            )
-
-                    threading.Thread(
-                        target=_safe_execute,
-                        daemon=True,
-                    ).start()
+                    try:
+                        bot.execute_strategy(market)
+                    except Exception as e:
+                        logger.critical(f"[策略派发致命异常] 策略 {bot.strategy_id} 执行 {market.get('id')} 崩溃: {e}", exc_info=True)
+                        from polymarket import risk_logger
+                        risk_logger.push_risk_event(
+                            market_id=market.get("id", "UNKNOWN"),
+                            asset=market.get("__asset_type", "UNKNOWN"),
+                            strategy=bot.strategy_id,
+                            reason=f"策略执行崩溃: {e}",
+                            level="critical"
+                        )
 
             time.sleep(3)
 

@@ -174,24 +174,38 @@ class AdaptiveLiquidatorService:
         # 首腿是 BUY，平仓方向必须为 SELL
         close_side = "SELL" if leg1.side == "BUY" else "BUY"
 
-        # 3. 穿透订单簿买盘深度计算真实 VWAP
+        # 3. 穿透订单簿买盘深度计算真实 VWAP (优先使用本地 OrderbookMemoryGrid 0 网络 I/O，缺失时降级 REST)
+        from polymarket.services.grid import OrderbookMemoryGrid
         vwap_price = None
         best_price = 0.01
+
+        # 3.1 尝试本地内存网格 (耗时 <0.05ms)
         try:
-            orderbook = client.get_orderbook(token_id)
-            if orderbook and orderbook.get("bids"):
-                vwap_price = PricingEngine.calculate_bid_vwap(orderbook.get("bids", []), size)
-            
-            if vwap_price:
-                best_price = vwap_price
-                logger.info(f"[强平引擎：{strategy_id}] 基于订单簿深度算出平仓 VWAP 均价: {vwap_price}")
-            else:
+            local_vwap = OrderbookMemoryGrid.get_instance().calculate_bid_vwap_local(token_id, size, max_staleness=10.0)
+            if local_vwap:
+                vwap_price = local_vwap
+                best_price = local_vwap
+                logger.info(f"[强平引擎：{strategy_id}] 基于本地共享盘口网格 (0 网络 I/O) 算出平仓 VWAP 均价: {vwap_price}")
+        except Exception as e:
+            logger.debug(f"[强平引擎：{strategy_id}] 本地网格穿透异常: {e}")
+
+        # 3.2 本地未命中时安全降级至 REST API
+        if not vwap_price:
+            try:
+                orderbook = client.get_orderbook(token_id)
+                if orderbook and orderbook.get("bids"):
+                    vwap_price = PricingEngine.calculate_bid_vwap(orderbook.get("bids", []), size)
+                
+                if vwap_price:
+                    best_price = vwap_price
+                    logger.info(f"[强平引擎：{strategy_id}] 基于 REST 订单簿深度算出平仓 VWAP 均价: {vwap_price}")
+                else:
+                    price_info = client.get_market_price(token_id)
+                    best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+            except Exception as e:
+                logger.warning(f"[强平引擎：{strategy_id}] 拉取深度计算 VWAP 异常，使用保底盘口: {e}")
                 price_info = client.get_market_price(token_id)
                 best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
-        except Exception as e:
-            logger.warning(f"[强平引擎：{strategy_id}] 拉取深度计算 VWAP 异常，使用保底盘口: {e}")
-            price_info = client.get_market_price(token_id)
-            best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
 
         # 4. 尝试市价 FOK 平仓 (快速吃单离场，保护限价下浮 2%)
         safe_price = round(max(float(best_price) * 0.98, 0.001), 4) if close_side == "SELL" else round(min(float(best_price) * 1.02, 0.999), 4)
