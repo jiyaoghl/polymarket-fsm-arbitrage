@@ -1399,8 +1399,10 @@ def remote_update() -> Dict[str, Any]:
     远程敏捷更新与热重载接口 (Remote Dynamic Update & Reload)。
     支持免 SSH 登录，远程自动触发 VPS 执行 git pull 与平滑重启。
     """
+    import os
     import subprocess
     import threading
+    import logging
 
     def _async_update():
         time.sleep(1.0)
@@ -1418,8 +1420,7 @@ def remote_update() -> Dict[str, Any]:
                     start_new_session=True
                 )
         except Exception as err:
-            from polymarket.logging_config import logger
-            logger.error(f"[RemoteOps] 触发远程热更失败: {err}")
+            logging.getLogger("poly_bot").error(f"[RemoteOps] 触发远程热更失败: {err}")
 
     threading.Thread(target=_async_update, daemon=True).start()
 
@@ -1434,8 +1435,10 @@ def remote_update() -> Dict[str, Any]:
 @app.post("/api/ops/restart")
 def remote_restart() -> Dict[str, Any]:
     """远程平滑重启接口。"""
+    import os
     import subprocess
     import threading
+    import logging
 
     def _async_restart():
         time.sleep(1.0)
@@ -1448,8 +1451,7 @@ def remote_restart() -> Dict[str, Any]:
                     start_new_session=True
                 )
         except Exception as err:
-            from polymarket.logging_config import logger
-            logger.error(f"[RemoteOps] 触发远程重启失败: {err}")
+            logging.getLogger("poly_bot").error(f"[RemoteOps] 触发远程重启失败: {err}")
 
     threading.Thread(target=_async_restart, daemon=True).start()
 
