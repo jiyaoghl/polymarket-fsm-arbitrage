@@ -38,9 +38,16 @@ class LiveClobV2Gateway(ITradingGateway):
         self._gamma_host = gamma_host
         self._http_lock = threading.RLock()
 
-        # 初始化 HTTP/2 客户端
+        # 初始化 HTTP/2 客户端与异步客户端
         proxy_url = HTTPS_PROXY or HTTP_PROXY
         self.http2_client = httpx.Client(
+            http2=True,
+            timeout=10.0,
+            proxy=proxy_url if proxy_url else None,
+            verify=True,
+            trust_env=False if proxy_url else True
+        )
+        self.async_http2_client = httpx.AsyncClient(
             http2=True,
             timeout=10.0,
             proxy=proxy_url if proxy_url else None,
@@ -360,7 +367,7 @@ class LiveClobV2Gateway(ITradingGateway):
         try:
             from polymarket.services.grid import OrderbookMemoryGrid
             snap = OrderbookMemoryGrid().get_snapshot(token_id)
-            if snap and snap.best_bid is not None and snap.best_ask is not None and not snap.is_stale(max_age_seconds=15.0):
+            if snap and snap.best_bid is not None and snap.best_ask is not None:
                 return {"bid": snap.best_bid, "ask": snap.best_ask}
         except Exception:
             pass
@@ -384,7 +391,7 @@ class LiveClobV2Gateway(ITradingGateway):
         try:
             from polymarket.services.grid import OrderbookMemoryGrid
             snap = OrderbookMemoryGrid().get_snapshot(token_id)
-            if snap and snap.best_bid is not None and snap.best_ask is not None and not snap.is_stale(max_age_seconds=15.0):
+            if snap and snap.best_bid is not None and snap.best_ask is not None:
                 return {"bid": snap.best_bid, "ask": snap.best_ask}
         except Exception:
             pass
@@ -473,6 +480,15 @@ class LiveClobV2Gateway(ITradingGateway):
     def close(self) -> None:
         try:
             self.http2_client.close()
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.async_http2_client.aclose())
+                else:
+                    loop.run_until_complete(self.async_http2_client.aclose())
+            except Exception:
+                pass
             logger.info("[LiveGateway] HTTP/2 连接池已安全释放")
         except Exception:
             pass
