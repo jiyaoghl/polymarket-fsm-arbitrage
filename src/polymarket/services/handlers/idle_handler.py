@@ -67,8 +67,18 @@ class IdleTickHandler(BaseTickHandler):
                 )
                 return
 
+            # [盘口成熟度防御] 双边买一必须均 >= 0.35，防止在开盘前 3 秒流动性真空期盲目挂单
+            if tick.best_bid_yes < 0.35 or tick.best_bid_no < 0.35:
+                filter_logger.intercept(
+                    market_id, asset_type,
+                    f"盘口流动性尚未成熟 (YES买一 {tick.best_bid_yes:.4f} / NO买一 {tick.best_bid_no:.4f} < 0.35)",
+                    ctx, deps
+                )
+                return
+
             yes_p, no_p, err = PricingEngine.calculate_dual_bracket_prices(
-                tick.best_bid_yes, tick.best_bid_no, params.entry_max_price, params.entry_min_price
+                tick.best_bid_yes, tick.best_bid_no, params.entry_max_price, params.entry_min_price,
+                min_profit_margin=params.initial_margin or 0.015
             )
             if err:
                 filter_logger.intercept(market_id, asset_type, err, ctx, deps)
@@ -76,6 +86,7 @@ class IdleTickHandler(BaseTickHandler):
 
             is_prof, net_ev, p_msg = PricingEngine.verify_hedged_profitability(
                 yes_p, params.amount, no_p, params.amount,
+                min_profit_margin=params.initial_margin or 0.015,
                 leg1_order_type="GTC", leg2_order_type="GTC"
             )
             if not is_prof:
@@ -101,14 +112,21 @@ class IdleTickHandler(BaseTickHandler):
                 deps.risk_manager.release_market_lock(params.strategy_id, market_id, is_live=params.is_live)
             return
 
-        # 4. [模式 B] Taker-Maker 吃单开首腿
-        min_ask, target_token, target_side = (
-            (tick.best_ask_yes, tick.yes_token, "YES")
-            if tick.best_ask_yes <= tick.best_ask_no
-            else (tick.best_ask_no, tick.no_token, "NO")
+        # 4. [模式 B] Taker-Maker 全盘口净 EV 驱动吃单开首腿
+        is_opp, target_side, entry_price, expected_ev, opp_reason = PricingEngine.evaluate_taker_ev_opportunity(
+            best_ask_yes=tick.best_ask_yes,
+            best_bid_yes=tick.best_bid_yes,
+            best_ask_no=tick.best_ask_no,
+            best_bid_no=tick.best_bid_no,
+            entry_max_price=params.entry_max_price,
+            entry_min_price=params.entry_min_price,
+            min_profit_margin=params.initial_margin or 0.010,
+            leg1_amount=params.amount
         )
-        if min_ask <= params.entry_max_price and min_ask >= params.entry_min_price:
-            safe_p, safe_s = OrderExecutionService.sanitize_order_params(min_ask, params.amount)
+
+        if is_opp and target_side and entry_price:
+            target_token = tick.yes_token if target_side == "YES" else tick.no_token
+            safe_p, safe_s = OrderExecutionService.sanitize_order_params(entry_price, params.amount)
             lock_amount = round(safe_p * safe_s, 2)
             
             if not deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live):

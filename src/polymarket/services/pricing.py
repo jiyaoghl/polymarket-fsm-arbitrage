@@ -265,3 +265,79 @@ class PricingEngine:
         
         target_pair_price = 1.0 - leg1_cost - total_fees - margin
         return round(min(max(target_pair_price, 0.001), 0.999), 4)
+
+    @staticmethod
+    def evaluate_taker_ev_opportunity(
+        best_ask_yes: float,
+        best_bid_yes: Optional[float],
+        best_ask_no: float,
+        best_bid_no: Optional[float],
+        entry_max_price: float = 0.50,
+        entry_min_price: float = 0.05,
+        min_profit_margin: float = 0.010,
+        leg1_amount: float = 10.0
+    ) -> Tuple[bool, Optional[str], Optional[float], Optional[float], str]:
+        """
+        全盘口净 EV 驱动的 Taker 开首腿套利机会评估 (纯无状态数学函数)。
+        
+        核算流程：
+        1. 路径 A (吃 YES + 挂 NO 对冲)：
+           - 首腿 Taker 吃 YES @ best_ask_yes；
+           - 二腿 Maker 挂 NO @ min(best_bid_no + 0.001, 1.0 - best_ask_yes - fees - margin)；
+           - 严格计算 Net EV 与净利润率。
+        2. 路径 B (吃 NO + 挂 YES 对冲)：
+           - 首腿 Taker 吃 NO @ best_ask_no；
+           - 二腿 Maker 挂 YES @ min(best_bid_yes + 0.001, 1.0 - best_ask_no - fees - margin)；
+           - 严格计算 Net EV 与净利润率。
+        3. 单边超跌保底分支 (min_ask <= entry_max_price)。
+        
+        Returns:
+            (is_opportunity, target_side, entry_price, expected_net_ev, reason_msg)
+        """
+        best_opp: Tuple[bool, Optional[str], Optional[float], Optional[float], str] = (False, None, None, None, "未发现达标利差")
+        max_net_margin = -999.0
+
+        # --- 路径 A: 吃 YES ---
+        if best_ask_yes is not None and best_ask_yes >= entry_min_price and best_ask_yes <= 0.95:
+            # 预估二腿挂单买 NO 的价格 (以 NO 买一为参考，若无则以保利倒推)
+            no_hedge_ref = best_bid_no if (best_bid_no is not None and best_bid_no > 0) else (1.0 - best_ask_yes - min_profit_margin)
+            no_hedge_p = round(max(min(no_hedge_ref, 1.0 - best_ask_yes - 0.005), 0.01), 4)
+            
+            gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
+                leg1_cost=best_ask_yes, leg1_size=leg1_amount,
+                leg2_cost=no_hedge_p, leg2_size=leg1_amount,
+                leg1_order_type="FOK", leg2_order_type="GTC"
+            )
+            margin = net_ev / leg1_amount if leg1_amount > 0 else 0.0
+            
+            if margin >= min_profit_margin and margin > max_net_margin:
+                max_net_margin = margin
+                best_opp = (True, "YES", best_ask_yes, net_ev, f"YES侧EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃YES@{best_ask_yes:.4f} 挂NO@{no_hedge_p:.4f})")
+
+        # --- 路径 B: 吃 NO ---
+        if best_ask_no is not None and best_ask_no >= entry_min_price and best_ask_no <= 0.95:
+            yes_hedge_ref = best_bid_yes if (best_bid_yes is not None and best_bid_yes > 0) else (1.0 - best_ask_no - min_profit_margin)
+            yes_hedge_p = round(max(min(yes_hedge_ref, 1.0 - best_ask_no - 0.005), 0.01), 4)
+            
+            gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
+                leg1_cost=best_ask_no, leg1_size=leg1_amount,
+                leg2_cost=yes_hedge_p, leg2_size=leg1_amount,
+                leg1_order_type="FOK", leg2_order_type="GTC"
+            )
+            margin = net_ev / leg1_amount if leg1_amount > 0 else 0.0
+            
+            if margin >= min_profit_margin and margin > max_net_margin:
+                max_net_margin = margin
+                best_opp = (True, "NO", best_ask_no, net_ev, f"NO侧EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃NO@{best_ask_no:.4f} 挂YES@{yes_hedge_p:.4f})")
+
+        # --- 保底分支: 单边深度超跌 (min_ask <= entry_max_price 且 entry_max_price <= 0.45) ---
+        if not best_opp[0]:
+            min_ask, min_side = (
+                (best_ask_yes, "YES")
+                if (best_ask_yes is not None and (best_ask_no is None or best_ask_yes <= best_ask_no))
+                else (best_ask_no, "NO")
+            )
+            if min_ask is not None and min_ask <= entry_max_price and min_ask >= entry_min_price:
+                best_opp = (True, min_side, min_ask, 0.0, f"单边超跌达标: 吃{min_side}@{min_ask:.4f} <= 门槛{entry_max_price:.4f}")
+
+        return best_opp
