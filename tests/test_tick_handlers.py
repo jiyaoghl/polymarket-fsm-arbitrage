@@ -26,6 +26,7 @@ def create_mock_dependencies():
     
     risk_manager = MagicMock()
     risk_manager.acquire_trade_lock.return_value = True
+    risk_manager.is_market_occupied.return_value = (False, None)
     
     repository = MagicMock()
     

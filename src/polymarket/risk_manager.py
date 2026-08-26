@@ -43,6 +43,8 @@ class RiskManager:
         self.locked_orders: Dict[str, float] = {}
         # 记录锁定项对应的模式（True: 实盘, False: 模拟盘）
         self.locked_is_live: Dict[str, bool] = {}
+        # 记录已被策略锁定的活跃市场 (market_id -> strategy_id)，防止多策略内部互踩
+        self.active_market_occupants: Dict[str, str] = {}
         
         # 统计面板指标
         self.total_intercepted_count = 0
@@ -56,6 +58,17 @@ class RiskManager:
             f"[风控中心] RiskManager 初始化完毕 | 模拟资金池: ${self.paper_max_exposure:.2f} | "
             f"实盘初始敞口: ${self.live_max_exposure:.2f}"
         )
+
+    def is_market_occupied(self, market_id: str, strategy_id: str) -> tuple[bool, Optional[str]]:
+        """
+        检查指定市场是否已被其他策略锁定/占用 (单市场排他锁)。
+        若被其他策略占用返回 (True, occupant_strategy_id)；若未占用或已被本策略占用返回 (False, None)。
+        """
+        with self.lock:
+            occupant = self.active_market_occupants.get(market_id)
+            if occupant is not None and occupant != strategy_id:
+                return True, occupant
+            return False, None
 
     @property
     def max_exposure(self) -> float:
@@ -128,6 +141,7 @@ class RiskManager:
                     self.live_used_exposure += amount
                     self.locked_orders[lock_key] = self.locked_orders.get(lock_key, 0.0) + amount
                     self.locked_is_live[lock_key] = True
+                    self.active_market_occupants[market_id] = strategy_id
                     logger.info(
                         f"[风控中心] [实盘] {lock_key} 成功申请额度 ${amount:.2f}。"
                         f"当前实盘使用: ${self.live_used_exposure:.2f}/${self.live_max_exposure:.2f}"
@@ -147,6 +161,7 @@ class RiskManager:
                     self.paper_used_exposure += amount
                     self.locked_orders[lock_key] = self.locked_orders.get(lock_key, 0.0) + amount
                     self.locked_is_live[lock_key] = False
+                    self.active_market_occupants[market_id] = strategy_id
                     logger.info(
                         f"[风控中心] [模拟盘] {lock_key} 成功申请额度 ${amount:.2f}。"
                         f"当前模拟使用: ${self.paper_used_exposure:.2f}/${self.paper_max_exposure:.2f}"
@@ -212,6 +227,10 @@ class RiskManager:
                 is_live = self.locked_is_live.pop(lock_key, False)
             else:
                 self.locked_is_live.pop(lock_key, None)
+
+            # 释放单市场跨策略排他锁
+            if self.active_market_occupants.get(market_id) == strategy_id:
+                self.active_market_occupants.pop(market_id, None)
 
             if current_locked > 0:
                 if is_live:

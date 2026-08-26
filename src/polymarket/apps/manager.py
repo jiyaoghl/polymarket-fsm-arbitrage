@@ -73,6 +73,9 @@ class StrategyManager:
             self.bots = []
             is_any_live = False
             for cfg in configs:
+                if cfg.get("is_active") is False:
+                    logger.info(f"策略已停用，跳过加载：{cfg.get('name')} (ID: {cfg.get('strategy_id')})")
+                    continue
                 bot = ArbitrageBot(cfg)
                 self.bots.append(bot)
                 if cfg.get("is_live"):

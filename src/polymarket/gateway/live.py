@@ -66,6 +66,10 @@ class LiveClobV2Gateway(ITradingGateway):
             except Exception as e:
                 logger.warning(f"[LiveGateway] 钱包私钥加载异常: {e}")
 
+        # 初始化链上智能合约赎回服务
+        from polymarket.services.onchain_redeemer import OnChainRedeemer
+        self._onchain_redeemer = OnChainRedeemer(private_key=pk_to_use)
+
         if warm_up:
             self._warm_up_connections()
 
@@ -421,21 +425,18 @@ class LiveClobV2Gateway(ITradingGateway):
             return {"bids": [], "asks": []}
 
     def redeem(self, market_id: str) -> Dict[str, Any]:
-        """已到期市场领奖结算"""
+        """已到期市场链上智能合约结算与抵押品赎回"""
         try:
             with metrics.timer(metrics.order_latency_seconds, labels={"gateway": "live", "action": "redeem"}):
-                result = self._post_signed("/redeem", {"condition_id": market_id})
-                logger.info(f"[LiveGateway] Redeem 成功：market={market_id}, payout={result.get('payout', 0)}")
-                return {
-                    "market_id": market_id,
-                    "status": "SUCCESS",
-                    "payout": float(result.get("payout", 0)),
-                }
+                if hasattr(self, "_onchain_redeemer") and self._onchain_redeemer:
+                    result = self._onchain_redeemer.redeem_positions(condition_id=market_id)
+                    logger.info(f"[LiveGateway] 链上 Redeem 结算完成：market={market_id}, status={result.get('status')}")
+                    return result
+                
+                logger.warning(f"[LiveGateway] 未初始化 OnChainRedeemer，跳过赎回: {market_id}")
+                return {"market_id": market_id, "status": "SKIPPED", "reason": "No redeemer"}
         except Exception as e:
-            logger.warning(f"[LiveGateway] Redeem 失败 ({market_id}): {e}")
-            return {"market_id": market_id, "status": "ERROR", "error": str(e), "payout": 0.0}
-        except Exception as e:
-            logger.warning(f"[LiveGateway] Redeem 失败 ({market_id}): {e}")
+            logger.exception(f"[LiveGateway] Redeem 异常 ({market_id}): {e}")
             return {"market_id": market_id, "status": "ERROR", "error": str(e), "payout": 0.0}
 
     async def redeem_async(self, market_id: str) -> Dict[str, Any]:

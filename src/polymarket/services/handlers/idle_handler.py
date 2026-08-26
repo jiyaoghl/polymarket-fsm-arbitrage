@@ -41,7 +41,20 @@ class IdleTickHandler(BaseTickHandler):
             )
             return
 
-        # 2. 买卖价差过大拦截 (流动性真空)
+        # 2. 单市场跨策略排他锁检查 (Market-Level Concurrency Lock)
+        if hasattr(deps.risk_manager, "is_market_occupied"):
+            res = deps.risk_manager.is_market_occupied(market_id, params.strategy_id)
+            if isinstance(res, (tuple, list)) and len(res) == 2:
+                is_occ, occ_strat = res
+                if is_occ:
+                    filter_logger.intercept(
+                        market_id, asset_type,
+                        f"市场已被策略 [{occ_strat}] 锁定占用 (单市场排他)",
+                        ctx, deps
+                    )
+                    return
+
+        # 3. 买卖价差过大拦截 (流动性真空)
         if tick.best_bid_yes and (tick.best_ask_yes - tick.best_bid_yes) > 0.05:
             filter_logger.intercept(
                 market_id, asset_type,
