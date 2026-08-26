@@ -156,18 +156,27 @@ class MarketDataStreamer:
             logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
     def _schedule_resubscribe(self):
-        """防抖定时器：延迟 0.5s 发送聚合订阅，防止瞬间密集请求触发 INVALID OPERATION"""
-        if self._resubscribe_handle is not None:
-            self._resubscribe_handle.cancel()
+        """防抖定时器：跨线程安全调度，延迟 0.5s 发送聚合订阅，防止瞬间密集请求触发 INVALID OPERATION"""
+        def _arm_timer():
+            if self._resubscribe_handle is not None:
+                try:
+                    self._resubscribe_handle.cancel()
+                except Exception:
+                    pass
             
-        def _do_send():
-            if self.ws:
-                self.runtime.spawn_task(
-                    self._send_subscription(self.ws, list(self.active_assets)),
-                    key="Streamer_Resubscribe"
-                )
-        
-        self._resubscribe_handle = self.loop.call_later(0.5, _do_send)
+            def _do_send():
+                if self.ws:
+                    self.runtime.spawn_task(
+                        self._send_subscription(self.ws, list(self.active_assets)),
+                        key="Streamer_Resubscribe"
+                    )
+            
+            self._resubscribe_handle = self.loop.call_later(0.5, _do_send)
+
+        try:
+            self.loop.call_soon_threadsafe(_arm_timer)
+        except Exception as e:
+            logger.warning(f"[Streamer] 跨线程调度订阅异常: {e}")
 
     def subscribe(
         self,

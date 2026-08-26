@@ -575,6 +575,17 @@ def index() -> str:
           const mPrice = marketsPrices[m.id];
           if (!mPrice) return;
           
+          // 更新现货波动率徽标
+          const assetStatus = (data.assets && m.asset) ? data.assets[m.asset] : null;
+          const elSpot = document.getElementById('spot-badge-' + m.id);
+          if (elSpot && assetStatus && assetStatus.timestamp > 0) {
+              const isChoppy = assetStatus.is_choppy;
+              const amp = assetStatus.amplitude ? assetStatus.amplitude.toFixed(2) : '0.00';
+              const net = assetStatus.net_change ? (assetStatus.net_change > 0 ? '+' : '') + assetStatus.net_change.toFixed(2) : '0.00';
+              const stateText = isChoppy ? '震荡盘整' : '单边波动';
+              elSpot.innerHTML = `<span class="indicator-dot dot-green" style="width: 6px; height: 6px;"></span> 币安现货: 振幅 ${amp}% (${net}%) [${stateText}] | <span style="color:#38bdf8;">WS流活跃</span>`;
+          }
+
           if (mPrice.yes) {
             const yesAsk = mPrice.yes.ask?.toFixed(4) || '--';
             const yesBid = mPrice.yes.bid?.toFixed(4) || '--';
@@ -655,9 +666,14 @@ def index() -> str:
               markets.forEach((m, idx) => {
                   html += `
                   <div class="market-block" id="market-block-${m.id}" style="padding-bottom: 16px; border-bottom: ${idx === markets.length - 1 ? 'none' : '1px dashed rgba(255,255,255,0.1)'}">
-                    <div style="font-weight: 600; font-size: 13px; color: #a78bfa; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                      <span style="background: rgba(167, 139, 250, 0.2); padding: 2px 6px; border-radius: 4px; font-size: 10px;">${m.asset || 'N/A'}</span>
-                      ${m.description || '--'}
+                    <div style="font-weight: 600; font-size: 13px; color: #a78bfa; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="background: rgba(167, 139, 250, 0.2); padding: 2px 6px; border-radius: 4px; font-size: 10px;">${m.asset || 'N/A'}</span>
+                        ${m.description || '--'}
+                      </div>
+                      <div id="spot-badge-${m.id}" style="font-size: 11px; font-weight: normal; color: #94a3b8; display: flex; align-items: center; gap: 6px;">
+                        <span class="indicator-dot dot-green" style="width: 6px; height: 6px;"></span> 管道已就绪
+                      </div>
                     </div>
                     <div class="price-grid">
                       <div class="glass-card price-card" id="yes-card-${m.id}">
@@ -1028,8 +1044,11 @@ def index() -> str:
 async def api_prices():
     """获取当前市场的实时价格（优先从 OrderbookMemoryGrid 纯内存 0 延迟提取）。"""
     from polymarket.services.grid import OrderbookMemoryGrid
+    from polymarket.kline_analyzer import get_asset_status
     grid = OrderbookMemoryGrid()
-    result = {"timestamp": time.time(), "markets": {}}
+    now_ts = time.time()
+    result = {"timestamp": now_ts, "markets": {}, "assets": {}}
+    
     for m in manager.current_markets:
         market_id = m.get("id")
         if not market_id:
@@ -1037,12 +1056,21 @@ async def api_prices():
         tokens = m.get("tokens", {})
         yes_token = tokens.get("YES")
         no_token = tokens.get("NO")
+        asset = m.get("__asset_type", "BTC")
         
-        m_result = {"yes": None, "no": None}
+        if asset not in result["assets"]:
+            status = get_asset_status(asset)
+            result["assets"][asset] = status
+        
+        m_result = {"yes": None, "no": None, "asset": asset}
         if yes_token:
             snap = grid.get_snapshot(yes_token)
             if snap and snap.best_bid is not None and snap.best_ask is not None:
-                m_result["yes"] = {"bid": snap.best_bid, "ask": snap.best_ask}
+                m_result["yes"] = {
+                    "bid": snap.best_bid, 
+                    "ask": snap.best_ask,
+                    "age_ms": round((now_ts - snap.last_update_ts) * 1000, 1)
+                }
             else:
                 try:
                     p = await price_client.get_market_price_async(yes_token)
@@ -1054,7 +1082,11 @@ async def api_prices():
         if no_token:
             snap = grid.get_snapshot(no_token)
             if snap and snap.best_bid is not None and snap.best_ask is not None:
-                m_result["no"] = {"bid": snap.best_bid, "ask": snap.best_ask}
+                m_result["no"] = {
+                    "bid": snap.best_bid, 
+                    "ask": snap.best_ask,
+                    "age_ms": round((now_ts - snap.last_update_ts) * 1000, 1)
+                }
             else:
                 try:
                     p = await price_client.get_market_price_async(no_token)
