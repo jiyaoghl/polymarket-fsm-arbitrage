@@ -1246,6 +1246,94 @@ def get_metrics() -> Dict[str, Any]:
     return metrics.export_dashboard_json()
 
 
+@app.get("/api/logs/tail")
+def get_logs_tail(lines: int = 100, source: str = "trade") -> Dict[str, Any]:
+    """安全读取 VPS 服务端最新的日志切片，支持远程一键排查。"""
+    import os
+    from polymarket.config import paths
+    
+    max_lines = min(max(lines, 10), 1000)
+    target_file = "trade.log"
+    if source == "nohup":
+        target_file = "nohup.log"
+    elif source == "error":
+        target_file = "trade_error.log"
+        
+    log_path = paths.logs_dir() / target_file
+    if not log_path.exists():
+        # 兼容 vps-logs 目录
+        alt_path = paths.project_root() / "vps-logs" / target_file
+        if alt_path.exists():
+            log_path = alt_path
+
+    if not log_path.exists():
+        return {"status": "error", "message": f"Log file not found: {target_file}", "lines": []}
+
+    try:
+        # 使用 deque 快速读取最后 N 行，内存极其安全
+        from collections import deque
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            tail_lines = list(deque(f, maxlen=max_lines))
+        return {
+            "status": "ok",
+            "source": target_file,
+            "line_count": len(tail_lines),
+            "lines": [line.rstrip("\r\n") for line in tail_lines]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "lines": []}
+
+
+@app.get("/api/diagnostics")
+def get_diagnostics() -> Dict[str, Any]:
+    """导出 VPS 全量结构化诊断报告，用于本地一键快速分析与策略调优。"""
+    from polymarket.metrics import metrics
+    from polymarket.risk_manager import RiskManager
+    from polymarket.kline_analyzer import get_asset_status
+    from polymarket.config import SUPPORTED_ASSETS
+    from polymarket.risk_logger import get_recent_risk_events
+    import sqlite3
+    import json
+    from polymarket.config import DB_PATH
+    
+    # 1. 抓取近期归档交易 (50 笔)
+    recent_history = []
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            c = conn.cursor()
+            c.execute("SELECT market_id, strategy_id, ev, archived_at, trade_json FROM historical_trades ORDER BY archived_at DESC LIMIT 50")
+            for mid, sid, ev, arch_time, t_json in c.fetchall():
+                try:
+                    t_data = json.loads(t_json)
+                except Exception:
+                    t_data = {}
+                recent_history.append({
+                    "market_id": mid,
+                    "strategy_id": sid,
+                    "ev": ev,
+                    "archived_at": arch_time,
+                    "status": t_data.get("status"),
+                    "profit_usdc": t_data.get("profit_usdc"),
+                    "gross_profit_usdc": t_data.get("gross_profit_usdc"),
+                    "fee_usdc": t_data.get("fee_usdc"),
+                    "dynamic_ttl": t_data.get("dynamic_ttl"),
+                    "settlement_type": t_data.get("settlement_type"),
+                    "leg1": t_data.get("leg1"),
+                    "leg2": t_data.get("leg2")
+                })
+    except Exception as e:
+        recent_history = [{"error": str(e)}]
+
+    return {
+        "timestamp": time.time(),
+        "risk_metrics": RiskManager().get_status(),
+        "asset_status": {a: get_asset_status(a) for a in SUPPORTED_ASSETS},
+        "risk_events": get_recent_risk_events(),
+        "performance_metrics": metrics.export_dashboard_json(),
+        "recent_historical_trades": recent_history
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     import os
