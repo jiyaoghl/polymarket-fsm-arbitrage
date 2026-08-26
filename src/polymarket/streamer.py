@@ -96,8 +96,16 @@ class MarketDataStreamer:
                             continue
                         data = json.loads(msg)
                         # 更新全局共享盘口内存网格
-                        OrderbookMemoryGrid.get_instance().update_from_ws(data)
+                        updated_tokens = OrderbookMemoryGrid.get_instance().update_from_ws(data)
                         prices = BaseStrategy._parse_ws_prices_full(data)
+                        
+                        if not prices and updated_tokens:
+                            prices = {}
+                            for tid in updated_tokens:
+                                snap = OrderbookMemoryGrid.get_instance().get_snapshot(tid)
+                                if snap and snap.best_bid is not None and snap.best_ask is not None:
+                                    prices[tid] = {"ask": snap.best_ask, "bid": snap.best_bid}
+
                         if not prices:
                             await asyncio.sleep(0)
                             continue

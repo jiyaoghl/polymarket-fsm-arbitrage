@@ -222,12 +222,31 @@ class BaseStrategy:
     def _parse_ws_prices_full(data) -> Dict[str, Dict[str, float]]:
         """
         从 Polymarket WS 消息中提取所有 asset 的 best_ask 和 best_bid。
+        全面兼容 book 快照与 price_change 增量广播。
 
         Returns:
             {asset_id: {"ask": best_ask, "bid": best_bid}} 映射
         """
         results: Dict[str, Dict[str, float]] = {}
 
+        # 1. 优先解析 price_change 增量事件
+        if isinstance(data, dict) and data.get("event_type") == "price_change":
+            for pc in data.get("price_changes", []):
+                aid = str(pc.get("asset_id") or "")
+                if not aid:
+                    continue
+                try:
+                    raw_ask = pc.get("best_ask")
+                    raw_bid = pc.get("best_bid")
+                    ask = float(raw_ask) if raw_ask is not None else 1.0
+                    bid = float(raw_bid) if raw_bid is not None else 0.0
+                    results[aid] = {"ask": ask, "bid": bid}
+                except (ValueError, TypeError):
+                    continue
+            if results:
+                return results
+
+        # 2. 解析 book 快照与普通消息
         items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
 
         for item in items:
