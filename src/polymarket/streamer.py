@@ -234,3 +234,21 @@ class MarketDataStreamer:
                     self.active_assets.difference_update(assets_to_remove)
                     if self.ws:
                         self._schedule_resubscribe()
+
+    def purge_expired_markets(self, active_market_ids: Set[str]):
+        """主动清理已到期/已不在活跃列表中的市场和资产，防止陈旧 Token 引发 INVALID OPERATION 订阅被拒。"""
+        with self._lock:
+            stale_markets = set(self.subscribers.keys()) - set(active_market_ids)
+            for sm in stale_markets:
+                self.subscribers.pop(sm, None)
+
+            new_asset_to_markets = {}
+            for asset, markets in self.asset_to_markets.items():
+                alive_markets = markets.intersection(active_market_ids)
+                if alive_markets:
+                    new_asset_to_markets[asset] = alive_markets
+            self.asset_to_markets = new_asset_to_markets
+            self.active_assets = set(self.asset_to_markets.keys())
+            
+            if self.ws:
+                self._schedule_resubscribe()

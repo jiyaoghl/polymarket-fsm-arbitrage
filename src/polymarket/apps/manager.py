@@ -261,6 +261,14 @@ class StrategyManager:
             last_dispatched_ts = next_ts
             self.current_markets = markets_found
 
+            # 主动通知数据总线清理上一期已到期 Token，防止包含过期资产引发 INVALID OPERATION 订阅被拒
+            try:
+                from polymarket.streamer import MarketDataStreamer
+                active_m_ids = {m["id"] for m in markets_found if m.get("id")}
+                MarketDataStreamer.get_instance().purge_expired_markets(active_m_ids)
+            except Exception as e:
+                logger.warning(f"[Manager] 清理数据总线陈旧市场异常: {e}")
+
             for market in markets_found:
                 for bot in self.bots:
                     try:
