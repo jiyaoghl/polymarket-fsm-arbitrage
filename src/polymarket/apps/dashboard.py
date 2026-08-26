@@ -575,29 +575,33 @@ def index() -> str:
           const mPrice = marketsPrices[m.id];
           if (!mPrice) return;
           
-          // 更新现货波动率徽标
+          // 更新现货价格与波动率徽标
           const assetStatus = (data.assets && m.asset) ? data.assets[m.asset] : null;
           const elSpot = document.getElementById('spot-badge-' + m.id);
           if (elSpot && assetStatus && assetStatus.timestamp > 0) {
               const isChoppy = assetStatus.is_choppy;
+              const priceStr = assetStatus.latest_price ? '$' + Number(assetStatus.latest_price).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '--';
               const amp = assetStatus.amplitude ? assetStatus.amplitude.toFixed(2) : '0.00';
               const net = assetStatus.net_change ? (assetStatus.net_change > 0 ? '+' : '') + assetStatus.net_change.toFixed(2) : '0.00';
-              const stateText = isChoppy ? '震荡盘整' : '单边波动';
-              elSpot.innerHTML = `<span class="indicator-dot dot-green" style="width: 6px; height: 6px;"></span> 币安现货: 振幅 ${amp}% (${net}%) [${stateText}] | <span style="color:#38bdf8;">WS流活跃</span>`;
+              const stateText = isChoppy ? '震荡' : '单边';
+              elSpot.innerHTML = `<span class="indicator-dot dot-green" style="width: 6px; height: 6px;"></span> 币安现货: <strong style="color:#fbbf24;">${priceStr}</strong> (振幅 ${amp}% | ${net}%) [${stateText}]`;
           }
 
           if (mPrice.yes) {
             const yesAsk = mPrice.yes.ask?.toFixed(4) || '--';
             const yesBid = mPrice.yes.bid?.toFixed(4) || '--';
+            const yesAskSize = mPrice.yes.ask_size ? ` <small style="color:#64748b; font-size:10px;">(${Number(mPrice.yes.ask_size).toFixed(0)})</small>` : '';
+            const yesBidSize = mPrice.yes.bid_size ? ` <small style="color:#64748b; font-size:10px;">(${Number(mPrice.yes.bid_size).toFixed(0)})</small>` : '';
             
             const yesKey = m.id + '-yes';
-            if (lastPrices[yesKey] !== yesAsk + yesBid) {
+            const currentSig = `${yesAsk}_${mPrice.yes.ask_size}_${yesBid}_${mPrice.yes.bid_size}`;
+            if (lastPrices[yesKey] && lastPrices[yesKey] !== currentSig) {
                 triggerFlash('yes-card-' + m.id);
-                lastPrices[yesKey] = yesAsk + yesBid;
             }
+            lastPrices[yesKey] = currentSig;
             
             const elPrice = document.getElementById('yes-price-' + m.id);
-            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${yesAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${yesBid}</span>`;
+            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${yesAsk}${yesAskSize}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${yesBid}${yesBidSize}</span>`;
             
             const spread = mPrice.yes.ask && mPrice.yes.bid ? ((mPrice.yes.ask - mPrice.yes.bid) * 100).toFixed(2) : '--';
             const elSpread = document.getElementById('yes-spread-' + m.id);
@@ -607,15 +611,18 @@ def index() -> str:
           if (mPrice.no) {
             const noAsk = mPrice.no.ask?.toFixed(4) || '--';
             const noBid = mPrice.no.bid?.toFixed(4) || '--';
+            const noAskSize = mPrice.no.ask_size ? ` <small style="color:#64748b; font-size:10px;">(${Number(mPrice.no.ask_size).toFixed(0)})</small>` : '';
+            const noBidSize = mPrice.no.bid_size ? ` <small style="color:#64748b; font-size:10px;">(${Number(mPrice.no.bid_size).toFixed(0)})</small>` : '';
             
             const noKey = m.id + '-no';
-            if (lastPrices[noKey] !== noAsk + noBid) {
+            const currentSig = `${noAsk}_${mPrice.no.ask_size}_${noBid}_${mPrice.no.bid_size}`;
+            if (lastPrices[noKey] && lastPrices[noKey] !== currentSig) {
                 triggerFlash('no-card-' + m.id);
-                lastPrices[noKey] = noAsk + noBid;
             }
+            lastPrices[noKey] = currentSig;
             
             const elPrice = document.getElementById('no-price-' + m.id);
-            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${noAsk}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${noBid}</span>`;
+            if(elPrice) elPrice.innerHTML = `<span class="ask">Ask: ${noAsk}${noAskSize}</span> <span style="margin:0 4px; color:#475569">|</span> <span class="bid">Bid: ${noBid}${noBidSize}</span>`;
             
             const spread = mPrice.no.ask && mPrice.no.bid ? ((mPrice.no.ask - mPrice.no.bid) * 100).toFixed(2) : '--';
             const elSpread = document.getElementById('no-spread-' + m.id);
@@ -1066,9 +1073,14 @@ async def api_prices():
         if yes_token:
             snap = grid.get_snapshot(yes_token)
             if snap and snap.best_bid is not None and snap.best_ask is not None:
+                bid_size = snap.bids[0][1] if snap.bids else 0.0
+                ask_size = snap.asks[0][1] if snap.asks else 0.0
                 m_result["yes"] = {
                     "bid": snap.best_bid, 
                     "ask": snap.best_ask,
+                    "bid_size": bid_size,
+                    "ask_size": ask_size,
+                    "spread": snap.spread,
                     "age_ms": round((now_ts - snap.last_update_ts) * 1000, 1)
                 }
             else:
@@ -1082,9 +1094,14 @@ async def api_prices():
         if no_token:
             snap = grid.get_snapshot(no_token)
             if snap and snap.best_bid is not None and snap.best_ask is not None:
+                bid_size = snap.bids[0][1] if snap.bids else 0.0
+                ask_size = snap.asks[0][1] if snap.asks else 0.0
                 m_result["no"] = {
                     "bid": snap.best_bid, 
                     "ask": snap.best_ask,
+                    "bid_size": bid_size,
+                    "ask_size": ask_size,
+                    "spread": snap.spread,
                     "age_ms": round((now_ts - snap.last_update_ts) * 1000, 1)
                 }
             else:

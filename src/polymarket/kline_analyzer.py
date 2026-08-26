@@ -93,6 +93,7 @@ def is_asset_choppy(asset: str, limit: int = 10) -> bool:
             "is_choppy": is_choppy,
             "amplitude": amplitude,
             "net_change": net_change,
+            "latest_price": closes[-1] if closes else 0.0,
             "error": "",
             "timestamp": time.time()
         }
