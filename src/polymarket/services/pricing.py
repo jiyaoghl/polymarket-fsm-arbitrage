@@ -157,24 +157,51 @@ class PricingEngine:
     def calculate_dual_bracket_prices(
         best_bid_yes: float,
         best_bid_no: float,
-        entry_max_price: float,
+        entry_max_price: float = 0.50,
         entry_min_price: float = 0.05,
         min_profit_margin: float = 0.015
     ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
         """
-        计算 Maker-Maker 双挂互补定价。
-        YES 挂买一前沿 (+0.001)，NO 挂互补保利买价 (1.0 - YES - margin)。
+        计算 Maker-Maker 双挂做市定价（对称贴盘双挂机制）。
+        1. 优先以 YES 与 NO 双边买一各 +0.001 挂单做市；
+        2. 校验双边总成本 (yes_bid + no_bid) <= 1.0 - min_profit_margin 保证纯利；
+        3. 若盘口利差较薄，以低价侧为基准，高价侧按保利推算挂单，严格控制在 (买一 + 0.01) 内；
+        4. 杜绝单边强行压低导致的另一侧高位溢价接盘风险。
         
         Returns:
             (yes_bid_price, no_bid_price, filter_reason)
         """
-        yes_bid_price = round(min(best_bid_yes + 0.001, entry_max_price), 4)
-        no_bid_price = round(1.0 - yes_bid_price - min_profit_margin, 4)
+        if best_bid_yes <= 0 or best_bid_no <= 0:
+            return None, None, "盘口买一价格无效 (<=0)"
+
+        # 尝试双边贴买一 +0.001
+        target_yes = round(best_bid_yes + 0.001, 4)
+        target_no = round(best_bid_no + 0.001, 4)
+
+        # 校验双边直接贴盘的总成本
+        total_cost = round(target_yes + target_no, 4)
+        max_cost_allowed = round(1.0 - min_profit_margin, 4)
+
+        if total_cost <= max_cost_allowed:
+            # 盘口利差充裕：双边均以买一 +0.001 贴盘挂单，最大化提升两腿被吃概率并锁定超额利润
+            yes_bid_price = target_yes
+            no_bid_price = target_no
+        else:
+            # 盘口利差较薄：以不超过 entry_max_price 的一侧为锚点，另一侧按保利推算
+            if best_bid_yes <= best_bid_no:
+                yes_bid_price = round(min(target_yes, entry_max_price), 4)
+                no_bid_price = round(1.0 - yes_bid_price - min_profit_margin, 4)
+            else:
+                no_bid_price = round(min(target_no, entry_max_price), 4)
+                yes_bid_price = round(1.0 - no_bid_price - min_profit_margin, 4)
 
         if yes_bid_price < entry_min_price or no_bid_price < entry_min_price:
             return None, None, f"双挂价格偏斜: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} < {entry_min_price}"
 
-        if no_bid_price > (best_bid_no + 0.01):
+        # 溢价防爆盾：两边挂单均不得高出当前买一 0.010 以上（防止市价高位被动接盘）
+        if yes_bid_price > (best_bid_yes + 0.010):
+            return None, None, f"YES 侧溢价过高 ({yes_bid_price:.4f} > 买一 {best_bid_yes:.4f} + 0.01)"
+        if no_bid_price > (best_bid_no + 0.010):
             return None, None, f"NO 侧溢价过高 ({no_bid_price:.4f} > 买一 {best_bid_no:.4f} + 0.01)"
 
         return yes_bid_price, no_bid_price, None
