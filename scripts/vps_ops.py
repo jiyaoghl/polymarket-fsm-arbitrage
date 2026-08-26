@@ -62,6 +62,19 @@ def fetch_api(endpoint: str, timeout: int = 5) -> Optional[Dict[str, Any]]:
         return None
 
 
+def post_api(endpoint: str, timeout: int = 10, json_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    url = f"{DEFAULT_VPS_HOST.rstrip('/')}{endpoint}"
+    try:
+        r = requests.post(url, json=json_data or {}, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
+        return None
+
+
 def cmd_status(args):
     """一键获取 VPS 实时大盘、活跃仓位、各策略盈亏与延迟"""
     print_banner("VPS 实时运行与量化大盘状态")
@@ -235,17 +248,50 @@ def cmd_analyze(args):
         print(f"    单笔净亏: {RED}${float(t.get('profit_usdc', 0)):.4f}{RESET} (手续费: ${float(t.get('fee_usdc', 0)):.4f}, 动态TTL: {t.get('dynamic_ttl')}s)")
 
 
+def trigger_vps_update():
+    """向 VPS 下发远程动态热更指令并轮询健康状态"""
+    print(f"\n{BOLD}[4/4] 远程动态触发 VPS 热重载与自动更新...{RESET}")
+    res = post_api("/api/ops/update")
+    if not res or res.get("status") != "ok":
+        print(f"{YELLOW}[!] 远程热更端点调用未返回成功 (可能需手动执行一次 bash vps.sh update 激活新API)。{RESET}")
+        return
+
+    print(f"{GREEN}[+] {res.get('message', '热更指令已下发！')}{RESET}")
+    print(f"[*] 正在等待 VPS 自动重启与服务就绪 (预计 5~10 秒)...")
+    
+    # 轮询健康检查
+    success = False
+    for i in range(1, 11):
+        time.sleep(1.5)
+        print(f"  - 探测 VPS 服务状态 (尝试 {i}/10)...", end="\r")
+        status_data = fetch_api("/api/status", timeout=3)
+        if status_data and "server_time" in status_data:
+            success = True
+            print(f"\n{GREEN}[+] 🚀 VPS 服务已成功完成平滑重启与热重载！{RESET}")
+            break
+
+    if not success:
+        print(f"\n{YELLOW}[!] 轮询超时，VPS 可能仍在构建依赖中，可稍后运行 python scripts/vps_ops.py status 检查。{RESET}")
+
+
+def cmd_update(args):
+    """单独远程触发 VPS 拉取最新代码并热重载"""
+    print_banner("VPS 远程动态更新与热重载")
+    trigger_vps_update()
+    cmd_status(args)
+
+
 def cmd_release(args):
-    """一键自动化发布: 本地回归测试 -> Git Commit -> Git Push"""
+    """一键自动化发布: 本地回归测试 -> Git Commit -> Git Push -> 远程 VPS 自动热更"""
     msg = args.message
     if not msg:
         print(f"{RED}[-] 请提供 commit message，例如: python scripts/vps_ops.py release \"feat: 优化参数\"{RESET}")
         sys.exit(1)
 
-    print_banner(f"一键测试与发布流水线 (Release: {msg})")
+    print_banner(f"一键测试、发布与动态热更流水线 (Release: {msg})")
 
     # 1. 运行本地自动化测试
-    print(f"\n{BOLD}[1/3] 运行本地回归测试套件...{RESET}")
+    print(f"\n{BOLD}[1/4] 运行本地回归测试套件...{RESET}")
     ret = subprocess.run([sys.executable, "-m", "pytest", "tests/"], capture_output=False)
     if ret.returncode != 0:
         print(f"{RED}[-] 测试用例未全部通过，已中止发布！请修复后再试。{RESET}")
@@ -253,16 +299,22 @@ def cmd_release(args):
     print(f"{GREEN}[+] 自动化测试 100% 绿灯通过！{RESET}")
 
     # 2. Git Commit
-    print(f"\n{BOLD}[2/3] 暂存并提交代码...{RESET}")
+    print(f"\n{BOLD}[2/4] 暂存并提交代码...{RESET}")
     subprocess.run(["git", "add", "."], check=True)
     ret_commit = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
     print(ret_commit.stdout)
 
     # 3. Git Push
-    print(f"\n{BOLD}[3/3] 推送到远程仓库 origin/main...{RESET}")
+    print(f"\n{BOLD}[3/4] 推送到远程仓库 origin/main...{RESET}")
     subprocess.run(["git", "push", "origin", "main"], check=True)
-    print(f"\n{GREEN}[+] 发布成功！代码已同步至远程仓库。{RESET}")
-    print(f"{BOLD}👉 请在 VPS 终端执行一键热更: {YELLOW}bash vps.sh update{RESET}\n")
+    print(f"{GREEN}[+] 代码已成功推送到远程仓库！{RESET}")
+
+    # 4. 远程触发 VPS 自动热重载 (除非显式指定 --no-deploy)
+    if not getattr(args, "no_deploy", False):
+        trigger_vps_update()
+        cmd_status(args)
+    else:
+        print(f"{YELLOW}[*] 已跳过远程自动部署 (--no-deploy)。{RESET}")
 
 
 def main():
@@ -284,9 +336,14 @@ def main():
     p_analyze = subparsers.add_parser("analyze", help="深度量化诊断与胜率归因分析")
     p_analyze.set_defaults(func=cmd_analyze)
 
+    # update / reload
+    p_update = subparsers.add_parser("update", help="远程直接触发 VPS 执行动态更新与热重载 (免登录)")
+    p_update.set_defaults(func=cmd_update)
+
     # release
-    p_release = subparsers.add_parser("release", help="一键运行单测并提交推送发布")
+    p_release = subparsers.add_parser("release", help="一键运行单测 -> 提交 -> 推送 -> 远程动态热更")
     p_release.add_argument("message", type=str, help="Git 提交信息 (全中文)")
+    p_release.add_argument("--no-deploy", action="store_true", help="仅推送仓库，不触发远程 VPS 热更")
     p_release.set_defaults(func=cmd_release)
 
     args = parser.parse_args()

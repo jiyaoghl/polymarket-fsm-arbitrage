@@ -1393,6 +1393,74 @@ def get_diagnostics() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/ops/update")
+def remote_update() -> Dict[str, Any]:
+    """
+    远程敏捷更新与热重载接口 (Remote Dynamic Update & Reload)。
+    支持免 SSH 登录，远程自动触发 VPS 执行 git pull 与平滑重启。
+    """
+    import subprocess
+    import threading
+
+    def _async_update():
+        time.sleep(1.0)
+        try:
+            if os.name != "nt":
+                subprocess.Popen(
+                    ["bash", "vps.sh", "update"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            else:
+                subprocess.Popen(
+                    ["python", "-m", "polymarket.apps.dashboard"],
+                    start_new_session=True
+                )
+        except Exception as err:
+            from polymarket.logging_config import logger
+            logger.error(f"[RemoteOps] 触发远程热更失败: {err}")
+
+    threading.Thread(target=_async_update, daemon=True).start()
+
+    return {
+        "status": "ok",
+        "action": "update",
+        "message": "已成功下发远程热更指令！VPS 正在拉取最新代码并自动平滑重载...",
+        "timestamp": time.time()
+    }
+
+
+@app.post("/api/ops/restart")
+def remote_restart() -> Dict[str, Any]:
+    """远程平滑重启接口。"""
+    import subprocess
+    import threading
+
+    def _async_restart():
+        time.sleep(1.0)
+        try:
+            if os.name != "nt":
+                subprocess.Popen(
+                    ["bash", "vps.sh", "restart"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+        except Exception as err:
+            from polymarket.logging_config import logger
+            logger.error(f"[RemoteOps] 触发远程重启失败: {err}")
+
+    threading.Thread(target=_async_restart, daemon=True).start()
+
+    return {
+        "status": "ok",
+        "action": "restart",
+        "message": "已成功下发远程重启指令！VPS 正在重新加载服务...",
+        "timestamp": time.time()
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     import os
