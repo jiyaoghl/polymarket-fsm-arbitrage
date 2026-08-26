@@ -140,11 +140,12 @@ def index() -> str:
     .section-market { grid-column: span 5; }
     .section-defense { grid-column: span 7; }
     .section-strategy { grid-column: span 12; }
+    .section-metrics { grid-column: span 12; }
     .section-terminal { grid-column: span 6; display: flex; flex-direction: column; }
     .section-risk { grid-column: span 6; display: flex; flex-direction: column; }
     
     @media (max-width: 1200px) {
-        .section-market, .section-defense, .section-strategy, .section-terminal, .section-risk { grid-column: span 12; }
+        .section-market, .section-defense, .section-strategy, .section-metrics, .section-terminal, .section-risk { grid-column: span 12; }
     }
     
     h2 { font-size: 16px; font-weight: 600; margin: 0 0 16px 0; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 12px; letter-spacing: 0.5px; }
@@ -237,6 +238,24 @@ def index() -> str:
     .state-settled { color: #34d399; background: rgba(4,120,87,0.3); }
     .state-failed { color: #f87171; background: rgba(153,27,27,0.3); }
     .terminal .msg { color: #e2e8f0; word-break: break-all; }
+    
+    /* 时序监控面板样式 */
+    .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 8px; }
+    @media (max-width: 1200px) { .metrics-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 700px) { .metrics-grid { grid-template-columns: 1fr; } }
+    .metric-box { display: flex; flex-direction: column; justify-content: space-between; }
+    .metric-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .metric-header .title { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value-main { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; color: #34d399; }
+    .metric-value-main small { font-size: 12px; font-weight: 500; color: #94a3b8; margin-left: 2px; }
+    .metric-sub-label { font-size: 10px; color: #64748b; margin-top: 4px; }
+    .metric-details { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11px; color: #94a3b8; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); }
+    .metric-details b { font-variant-numeric: tabular-nums; color: #cbd5e1; font-weight: 600; }
+    
+    .indicator-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot-green { background: #34d399; box-shadow: 0 0 8px rgba(52, 211, 153, 0.6); }
+    .dot-yellow { background: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
+    .dot-red { background: #f87171; box-shadow: 0 0 8px rgba(248, 113, 113, 0.6); }
   </style>
 </head>
 <body>
@@ -324,6 +343,84 @@ def index() -> str:
       </div>
       
       <div id="strategies"></div>
+    </section>
+    
+    <!-- 第三行: 全链路指标与执行质量监控 -->
+    <section class="section-metrics">
+      <h2>⚡ 全链路性能与量化执行监控 (Metrics & Latency Monitor) <span class="badge" id="metrics-status-badge">实时正常</span></h2>
+      
+      <div class="metrics-grid">
+        <!-- 卡片1: 下单往返延迟 (Order Latency) -->
+        <div class="glass-card metric-box">
+          <div class="metric-header">
+            <span class="title">📡 下单 HTTP 往返耗时 (Order Latency)</span>
+            <span class="indicator-dot dot-green" id="order-latency-dot"></span>
+          </div>
+          <div class="metric-body">
+            <div class="metric-value-main" id="order-p50">-- <small>ms</small></div>
+            <div class="metric-sub-label">P50 中位数延迟 (P99 离群监控)</div>
+          </div>
+          <div class="metric-details">
+            <div><span>平均 (Avg):</span> <b id="order-avg">--</b></div>
+            <div><span>P90 延迟:</span> <b id="order-p90">--</b></div>
+            <div><span>P99 极端:</span> <b id="order-p99">--</b></div>
+            <div><span>采样笔数:</span> <b id="order-samples">0 笔</b></div>
+          </div>
+        </div>
+
+        <!-- 卡片2: Tick 状态机分发延迟 (Tick Processing) -->
+        <div class="glass-card metric-box">
+          <div class="metric-header">
+            <span class="title">⚡ 内存网格 Tick 分发 (Tick Latency)</span>
+            <span class="indicator-dot dot-green" id="tick-latency-dot"></span>
+          </div>
+          <div class="metric-body">
+            <div class="metric-value-main" id="tick-p50">-- <small>ms</small></div>
+            <div class="metric-sub-label">P50 状态机流转 (零锁快照)</div>
+          </div>
+          <div class="metric-details">
+            <div><span>平均 (Avg):</span> <b id="tick-avg">--</b></div>
+            <div><span>P90 耗时:</span> <b id="tick-p90">--</b></div>
+            <div><span>P99 峰值:</span> <b id="tick-p99">--</b></div>
+            <div><span>采样帧数:</span> <b id="tick-samples">0 帧</b></div>
+          </div>
+        </div>
+
+        <!-- 卡片3: 订单与成交统计 (Orders & Fills) -->
+        <div class="glass-card metric-box">
+          <div class="metric-header">
+            <span class="title">📊 订单与成交统计 (Orders & Fills)</span>
+          </div>
+          <div class="metric-body">
+            <div class="metric-value-main" style="color: #60a5fa;" id="metric-total-orders">0 <small>笔</small></div>
+            <div class="metric-sub-label">系统全生命周期发单计数</div>
+          </div>
+          <div class="metric-details">
+            <div><span>实盘订单:</span> <b id="metric-live-orders" style="color: #34d399;">0</b></div>
+            <div><span>模拟订单:</span> <b id="metric-paper-orders" style="color: #94a3b8;">0</b></div>
+            <div><span>锁仓成功:</span> <b id="metric-locked-count" style="color: #60a5fa;">0</b></div>
+            <div><span>强平止损:</span> <b id="metric-failed-count" style="color: #f87171;">0</b></div>
+          </div>
+        </div>
+
+        <!-- 卡片4: 系统健康与 API 频控 (API Errors & Health) -->
+        <div class="glass-card metric-box">
+          <div class="metric-header">
+            <span class="title">🛡️ API 频控与异常防护 (Health & Rate Limits)</span>
+            <span class="indicator-dot dot-green" id="api-health-dot"></span>
+          </div>
+          <div class="metric-body">
+            <div class="metric-value-main" style="color: #34d399;" id="metric-api-errors">0 <small>次</small></div>
+            <div class="metric-sub-label">API 异常 / 429 限流自愈</div>
+          </div>
+          <div class="metric-details">
+            <div><span>429 限流:</span> <b id="metric-429-count">0</b></div>
+            <div><span>401 重签:</span> <b id="metric-401-count">0</b></div>
+            <div><span>5xx 故障:</span> <b id="metric-5xx-count">0</b></div>
+            <div><span>健康状态:</span> <b style="color:#34d399;" id="metric-health-text">100% 优良</b></div>
+          </div>
+        </div>
+      </div>
     </section>
     
     <section class="section-terminal">
@@ -807,11 +904,120 @@ def index() -> str:
       }
     }
 
+    // 更新量化时序指标
+    async function updateMetrics() {
+      try {
+        const res = await fetch('/api/metrics');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        // 1. 下单往返延迟 (Order Latency)
+        const orderHist = (data.histograms && data.histograms.poly_order_latency_seconds && data.histograms.poly_order_latency_seconds[0]) 
+          ? data.histograms.poly_order_latency_seconds[0].summary 
+          : { p50: 0, p90: 0, p99: 0, avg: 0, count: 0 };
+        
+        const orderP50Ms = (orderHist.p50 * 1000).toFixed(1);
+        const orderAvgMs = (orderHist.avg * 1000).toFixed(1);
+        const orderP90Ms = (orderHist.p90 * 1000).toFixed(1);
+        const orderP99Ms = (orderHist.p99 * 1000).toFixed(1);
+        
+        document.getElementById('order-p50').innerHTML = `${orderP50Ms} <small>ms</small>`;
+        document.getElementById('order-avg').textContent = `${orderAvgMs}ms`;
+        document.getElementById('order-p90').textContent = `${orderP90Ms}ms`;
+        document.getElementById('order-p99').textContent = `${orderP99Ms}ms`;
+        document.getElementById('order-samples').textContent = `${orderHist.count} 笔`;
+        
+        const orderDot = document.getElementById('order-latency-dot');
+        if (orderHist.p50 > 0.3) {
+          orderDot.className = 'indicator-dot dot-red';
+        } else if (orderHist.p50 > 0.15) {
+          orderDot.className = 'indicator-dot dot-yellow';
+        } else {
+          orderDot.className = 'indicator-dot dot-green';
+        }
+        
+        // 2. Tick 处理耗时 (Tick Processing Latency)
+        const tickHist = (data.histograms && data.histograms.poly_tick_process_latency_seconds && data.histograms.poly_tick_process_latency_seconds[0]) 
+          ? data.histograms.poly_tick_process_latency_seconds[0].summary 
+          : { p50: 0, p90: 0, p99: 0, avg: 0, count: 0 };
+          
+        const tickP50Ms = (tickHist.p50 * 1000).toFixed(2);
+        const tickAvgMs = (tickHist.avg * 1000).toFixed(2);
+        const tickP90Ms = (tickHist.p90 * 1000).toFixed(2);
+        const tickP99Ms = (tickHist.p99 * 1000).toFixed(2);
+        
+        document.getElementById('tick-p50').innerHTML = `${tickP50Ms} <small>ms</small>`;
+        document.getElementById('tick-avg').textContent = `${tickAvgMs}ms`;
+        document.getElementById('tick-p90').textContent = `${tickP90Ms}ms`;
+        document.getElementById('tick-p99').textContent = `${tickP99Ms}ms`;
+        document.getElementById('tick-samples').textContent = `${tickHist.count} 帧`;
+        
+        // 3. 订单与成交计数
+        let totalOrders = 0, liveOrders = 0, paperOrders = 0;
+        if (data.counters && data.counters.poly_orders_total) {
+          data.counters.poly_orders_total.forEach(item => {
+            const v = item.value || 0;
+            totalOrders += v;
+            const strat = item.labels && item.labels.strategy;
+            if (strat && strat.includes('live')) liveOrders += v;
+            else paperOrders += v;
+          });
+        }
+        document.getElementById('metric-total-orders').innerHTML = `${totalOrders} <small>笔</small>`;
+        document.getElementById('metric-live-orders').textContent = liveOrders;
+        document.getElementById('metric-paper-orders').textContent = paperOrders;
+        
+        let lockedCount = 0, failedCount = 0;
+        if (data.counters && data.counters.poly_trades_locked_total) {
+          data.counters.poly_trades_locked_total.forEach(i => lockedCount += (i.value || 0));
+        }
+        if (data.counters && data.counters.poly_liquidations_total) {
+          data.counters.poly_liquidations_total.forEach(i => failedCount += (i.value || 0));
+        }
+        document.getElementById('metric-locked-count').textContent = lockedCount;
+        document.getElementById('metric-failed-count').textContent = failedCount;
+        
+        // 4. API 异常与频控拦截
+        let totalErrors = 0, c429 = 0, c401 = 0, c5xx = 0;
+        if (data.counters && data.counters.poly_api_errors_total) {
+          data.counters.poly_api_errors_total.forEach(item => {
+            const v = item.value || 0;
+            totalErrors += v;
+            const code = item.labels && item.labels.code;
+            if (code === '429') c429 += v;
+            else if (code === '401') c401 += v;
+            else if (code && code.startsWith('5')) c5xx += v;
+          });
+        }
+        document.getElementById('metric-api-errors').innerHTML = `${totalErrors} <small>次</small>`;
+        document.getElementById('metric-429-count').textContent = c429;
+        document.getElementById('metric-401-count').textContent = c401;
+        document.getElementById('metric-5xx-count').textContent = c5xx;
+        
+        const apiDot = document.getElementById('api-health-dot');
+        const healthText = document.getElementById('metric-health-text');
+        if (c429 > 0 || c5xx > 0) {
+          apiDot.className = 'indicator-dot dot-yellow';
+          healthText.textContent = '有轻微频控';
+          healthText.style.color = '#fbbf24';
+        } else {
+          apiDot.className = 'indicator-dot dot-green';
+          healthText.textContent = '100% 优良';
+          healthText.style.color = '#34d399';
+        }
+        
+      } catch (err) {
+        console.debug('Metrics update error:', err);
+      }
+    }
+
     // 启动
     refresh();
     updatePrices();
+    updateMetrics();
     setInterval(refresh, 2000);
-    setInterval(updatePrices, 1000);  // 价格每秒更新
+    setInterval(updatePrices, 1000);   // 价格每秒更新
+    setInterval(updateMetrics, 2000);  // 时序指标每2秒更新
   </script>
 </body>
 </html>
