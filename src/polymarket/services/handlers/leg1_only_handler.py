@@ -47,18 +47,21 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         opp_token = no_token if is_leg1_yes else yes_token
         opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
 
+        # 动态自适应做 T 周期 (由 K 线波动率自适应初始化)
+        flip_timeout = float(ctx.dynamic_flip_timeout or params.flip_timeout_sec or 35.0)
+
         # ── 模式 A: OCO 双出口同时并发挂单 (Dual Exit) ──
         if params.exit_mode == "dual_exit":
             ctx.exit_stage = "dual_active"
             sell_price = PricingEngine.calculate_flip_sell_price(
                 leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
                 initial_margin=params.initial_margin, min_margin=params.breakeven_margin,
-                decay_duration=params.flip_timeout_sec, leg1_is_taker=(params.leg1_order_type == "FOK")
+                decay_duration=flip_timeout, leg1_is_taker=(params.leg1_order_type == "FOK")
             )
             pair_price = PricingEngine.calculate_hedged_pair_price(
                 leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
                 initial_margin=params.initial_margin, min_margin=params.breakeven_margin,
-                decay_duration=params.flip_timeout_sec, leg1_is_taker=(params.leg1_order_type == "FOK")
+                decay_duration=flip_timeout, leg1_is_taker=(params.leg1_order_type == "FOK")
             )
             safe_p_sell, _ = OrderExecutionService.sanitize_order_params(sell_price, sell_price * leg1.size)
             safe_p_pair, safe_s_pair = OrderExecutionService.sanitize_order_params(pair_price, pair_price * leg1.size)
@@ -79,14 +82,14 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             return
 
         # ── 模式 B: 智能做 T 高抛 (Smart Flip) ──
-        if params.exit_mode == "smart_flip" and elapsed_since_leg1 <= params.flip_timeout_sec:
+        if params.exit_mode == "smart_flip" and elapsed_since_leg1 <= flip_timeout:
             ctx.exit_stage = "flip_active"
             sell_price = PricingEngine.calculate_flip_sell_price(
                 leg1_cost=leg1.cost,
                 elapsed_seconds=elapsed_since_leg1,
                 initial_margin=params.initial_margin,
                 min_margin=params.breakeven_margin,
-                decay_duration=params.flip_timeout_sec,
+                decay_duration=flip_timeout,
                 leg1_is_taker=(params.leg1_order_type == "FOK")
             )
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(sell_price, sell_price * leg1.size)
@@ -105,7 +108,7 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         # 动态计算二腿买入配对价
         target_leg2_price = PricingEngine.calculate_hedged_pair_price(
             leg1_cost=leg1.cost,
-            elapsed_seconds=max(0.0, elapsed_since_leg1 - params.flip_timeout_sec),
+            elapsed_seconds=max(0.0, elapsed_since_leg1 - flip_timeout),
             initial_margin=params.initial_margin,
             min_margin=params.breakeven_margin,
             decay_duration=30.0,

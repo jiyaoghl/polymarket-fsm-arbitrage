@@ -263,6 +263,31 @@ class PricingEngine:
         return yes_bid_price, no_bid_price, None
 
     @staticmethod
+    def calculate_adaptive_flip_duration(
+        base_duration: float = 35.0,
+        asset_amplitude: float = 0.0,
+        max_amplitude_threshold: float = 0.30
+    ) -> float:
+        """
+        基于实时 K 线振幅动态计算本轮自适应做 T 让价周期 (秒)。
+        - 超平稳横盘期 (ratio <= 0.35): 适度延长至 45s~50s 赚取更厚利差；
+        - 微波动加剧期 (ratio >= 0.70): 压缩至 18s~25s 加速幂律降价脱手保本；
+        - 标准震荡期: 保持 base_duration。
+        """
+        if max_amplitude_threshold <= 0 or asset_amplitude <= 0:
+            return round(base_duration, 1)
+
+        ratio = asset_amplitude / max_amplitude_threshold
+        if ratio <= 0.35:
+            scale = 1.0 + ((0.35 - ratio) / 0.35) * 0.428  # 1.0 -> 1.428 (35s -> 50s)
+            return round(min(base_duration * scale, 50.0), 1)
+        elif ratio >= 0.70:
+            compression = min(max((ratio - 0.70) / 0.30, 0.0), 1.0)
+            return round(base_duration - (compression * (base_duration - 18.0)), 1)
+        else:
+            return round(base_duration, 1)
+
+    @staticmethod
     def calculate_decayed_margin(
         elapsed_seconds: float,
         initial_margin: float = 0.025,

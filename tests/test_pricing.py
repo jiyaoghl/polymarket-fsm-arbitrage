@@ -144,3 +144,23 @@ def test_anti_pennying_best_ask_clamping():
     assert yes_p == 0.402
     assert reason is None
 
+def test_calculate_adaptive_flip_duration():
+    # 1. 超平稳期 (ratio <= 0.35) -> 适度拉长至 45s~50s
+    dur_calm = PricingEngine.calculate_adaptive_flip_duration(
+        base_duration=35.0, asset_amplitude=0.05, max_amplitude_threshold=0.30
+    )
+    assert dur_calm >= 40.0
+
+    # 2. 微波动期 (ratio >= 0.70) -> 压缩至 18s~25s
+    dur_volatile = PricingEngine.calculate_adaptive_flip_duration(
+        base_duration=35.0, asset_amplitude=0.28, max_amplitude_threshold=0.30
+    )
+    assert dur_volatile <= 25.0
+
+    # 3. 标准震荡期 -> 维持 35s
+    dur_std = PricingEngine.calculate_adaptive_flip_duration(
+        base_duration=35.0, asset_amplitude=0.15, max_amplitude_threshold=0.30
+    )
+    assert dur_std == 35.0
+
+

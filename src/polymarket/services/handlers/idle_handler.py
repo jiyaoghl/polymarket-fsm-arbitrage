@@ -161,6 +161,23 @@ class IdleTickHandler(BaseTickHandler):
                     )
                     return
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(entry_price, params.amount)
+
+            # [多档位穿透式 VWAP 深度吃单] 若卖一深度不足但多档均价满足 entry_max_price，采用加权 VWAP 发单防踏空
+            if target_snap and not target_snap.is_stale(10.0):
+                vwap_ask = OrderbookMemoryGrid.get_instance().calculate_ask_vwap_local(str(target_token), safe_s)
+                if vwap_ask and vwap_ask <= params.entry_max_price:
+                    safe_p, _ = OrderExecutionService.sanitize_order_params(vwap_ask, params.amount)
+
+            # [波动率自适应做 T 周期] 联动 K 线波幅初始化动态脱手窗口
+            from polymarket.kline_analyzer import get_asset_status
+            from polymarket.config import ASSET_CHOP_THRESHOLDS, CRYPTO_CHOP_MAX_AMPLITUDE
+            asset_status = get_asset_status(asset_type)
+            asset_amp = float(asset_status.get("amplitude", 0.0))
+            max_amp = float(ASSET_CHOP_THRESHOLDS.get(asset_type.upper(), {}).get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE))
+            ctx.dynamic_flip_timeout = PricingEngine.calculate_adaptive_flip_duration(
+                base_duration=params.flip_timeout_sec, asset_amplitude=asset_amp, max_amplitude_threshold=max_amp
+            )
+
             lock_amount = round(safe_p * safe_s, 2)
             
             if not deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live):
