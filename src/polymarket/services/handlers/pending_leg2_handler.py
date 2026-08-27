@@ -119,6 +119,19 @@ class PendingLeg2TickHandler(BaseTickHandler):
                     size=leg1.size,
                     order_id=buy_id or "sim_leg2"
                 )
+
+                # 精确核算对冲锁仓真实 Net EV 损益
+                gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
+                    leg1_cost=leg1.cost, leg1_size=leg1.size,
+                    leg2_cost=buy_price, leg2_size=leg1.size,
+                    leg1_order_type=params.leg1_order_type, leg2_order_type="GTC"
+                )
+                ctx.profit_usdc = net_ev
+                ctx.realized_pnl = net_ev
+                ctx.gross_profit_usdc = gross_ev
+                ctx.fee_usdc = fee
+                ctx.settlement_type = "HEDGED_LOCKED"
+
                 deps.set_trade(market_id, ctx.to_dict())
                 fsm.transition_to(TradeState.LOCKED)
                 return

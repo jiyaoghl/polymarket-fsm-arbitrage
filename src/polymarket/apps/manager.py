@@ -260,8 +260,13 @@ class StrategyManager:
                     )
 
             if not markets_found:
-                logger.warning(f"本周期未定位到任何配置的 5min 市场，等待下期")
-                last_dispatched_ts = next_ts
+                # 若已开盘超过 60s 仍未上线市场，判定本期异常并跳过
+                if now > next_ts + 60:
+                    logger.warning(f"本周期 (ts={next_ts}) 超过 60s 仍未定位到任何市场，跳过本期等待下期。")
+                    last_dispatched_ts = next_ts
+                else:
+                    logger.debug(f"本周期 (ts={next_ts}) 暂未上线 5min 市场，2s 后重试探测...")
+                    time.sleep(2)
                 continue
 
             last_dispatched_ts = next_ts

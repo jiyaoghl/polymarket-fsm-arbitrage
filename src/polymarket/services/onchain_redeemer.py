@@ -172,6 +172,7 @@ class OnChainRedeemer:
                 nonce = w3.eth.get_transaction_count(account_address)
                 gas_price = w3.eth.gas_price
 
+                safe_gas_price = max(int(gas_price * 1.25), 35_000_000_000)
                 tx = contract.functions.redeemPositions(
                     Web3.to_checksum_address(collat),
                     parent_col,
@@ -181,7 +182,7 @@ class OnChainRedeemer:
                     "from": account_address,
                     "nonce": nonce,
                     "gas": 250000,
-                    "gasPrice": int(gas_price * 1.2),
+                    "gasPrice": safe_gas_price,
                     "chainId": 137,
                 })
 
