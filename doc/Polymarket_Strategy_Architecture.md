@@ -80,36 +80,37 @@ flowchart TD
    │
    ├─► 双挂做市 (Maker-Maker) ─► [PENDING_BOTH_LEGS] ──► 双边均成交 ──► [LOCKED 零暴露完美套利]
    │                                  │
-   │                                  ├─► 单边先成交 ──► [PENDING_LEG2 等待二腿 + 启动 90s TTL]
+   │                                  ├─► 单边先成交 ──► 立即撤反向单 ──► [LEG1_ONLY 触发 OCO 双向自适应变现]
    │                                  │
    │                                  └─► 临期未成交 (≤30s) ──► 原子撤单 + 释放锁 ──► [FAILED 安全退出]
    │
    ├─► 单腿吃单 (Taker-Maker) ─► [PENDING_LEG1] ─► 成交 ──► [LEG1_ONLY 单腿敞口]
    │                                                       │
    │   ┌───────────────────────────────────────────────────┘
-   │   ├─► 满足对冲阈值 (Net EV > 0) ─► [PENDING_LEG2] ─► 成交 ─► [LOCKED 锁仓套利]
-   │   │                                  │
-   │   │                                  ├─► 盘口上移 ─► [Maker 动态钉盘撤改单]
-   │   │                                  └─► 超时/未成交 ─► 智能降级/吃单强平
+   │   ├─► dual_exit 并发双挂 ─► [PENDING_LEG2] ─► 任意一边成交 ─► 撤销另一单 ─► [LOCKED / SETTLED]
+   │   │   • 同向做T卖单 (GTC SELL, 35s 幂律平滑加速让价脱手)
+   │   │   • 反向对冲买单 (GTC BUY, 深网低价锁定无风险对冲)
    │   │
-   │   └─► 超过动态自适应 TTL ─► 先撤二腿挂单 ─► FOK+GTC双重兜底平仓 ─► [FAILED 止损退出]
+   │   └─► 超过动态自适应 TTL ─► 全量撤在途挂单 ─► FOK+GTC 双重兜底平仓 ─► [FAILED 止损退出]
    │
-   └─► 盘口到期 ─► [SETTLED 自动结算 Redeem]
+   └─► 盘口到期 ─► [Polygon 链上 35Gwei 自动赎回 Redeem] ─► [SETTLED 终态并无条件归还风控额度]
 ```
 
 ### 4.1 `IdleTickHandler` (开仓过滤与分流)
-- 执行价差、K线波动率、OBI 极端压迫与入场价上限过滤；
-- 支持 **Dual-GTC Bracket 原子并发双挂** 或 **单边 FOK 吃单**。
+- **Top 5 档 OBI 深度失衡守门**：穿透计算买卖盘压迫度 $OBI = \frac{V_{\text{bid}} - V_{\text{ask}}}{V_{\text{bid}} + V_{\text{ask}}}$，设置 $\sum Shares \ge 30.0$ 防早盘误杀，当 $OBI < -0.40$（卖压泰山压顶）时主动拦截入场；
+- **Anti-Pennying 做市防穿透**：挂单施加 $\min(\text{RawTarget}, \text{BestAsk} - 0.001)$ 上限，杜绝意外成为 Taker 吃单。
 
 ### 4.2 `PendingBothLegsTickHandler` (双挂做市推进)
-- 跟踪双挂单成交状态；双边同时成交直接进入 `LOCKED`；单边成交转入 `PENDING_LEG2` 并启动自适应 TTL 强平监控；临期未成交原子撤单退出。
+- 双边同时成交直接进入 `LOCKED` 锁仓；
+- **单边成交自适应脱手**：单腿被吃立即异步撤销反向挂单，精准沉淀 `ctx.leg1` 并流转至 `LEG1_ONLY` 态，自动触发 OCO 双向自适应变现。
 
-### 4.3 `Leg1OnlyTickHandler` (单边持仓与二腿做市)
+### 4.3 `Leg1OnlyTickHandler` (单边持仓与 35s 连续幂律让价)
 - 首腿成交后，**严格对齐实际成交份数 (Shares Alignment)**；
-- 下发二腿限价做市挂单，转入 `PENDING_LEG2`。
+- 下发 `dual_exit` OCO 订单，并在 35s 内通过连续幂律函数 $\text{Margin}(t) = \text{InitialMargin} - (t/T)^{1.8} \times (\text{InitialMargin} - \text{MinMargin})$ 实现前期稳润、后期加速脱手，强锁 $\text{Net EV} \ge 0$。
 
-### 4.4 `PendingLeg2TickHandler` (反卷盯盘)
-- 启动 **Anti-Pennying 智能防卷**：被压单后装死 1.5~3.5s 过滤假动作，期满以 0.002~0.004 阶梯式跃迁抢回买一。
+### 4.4 `PendingLeg2TickHandler` (二腿 OCO 变现与真实损益核算)
+- 监听做 T 卖单与配对买单成交流；
+- 任意一边成交后立即撤销另一侧订单；在二腿买单成交时接入 `PricingEngine.calculate_net_ev` 核算扣除真实手续费后的净收益，标记 `HEDGED_LOCKED` 杜绝账本失真。
 
 ---
 

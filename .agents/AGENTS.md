@@ -66,10 +66,10 @@
 ## 6. 链上智能合约自动结算 (On-Chain CTF Auto-Redeem)
 - **Polygon CTF 官方合约原生自动赎回**：
   - 自动结算废除向 CLOB 发送 REST 请求的失效路径，统一由 `OnChainRedeemer` 直接向 Polygon 主网 `ConditionalTokens` 官方合约（`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`）调用 `redeemPositions`。
-- **多 RPC 节点故障转移 (Multi-RPC Fallback)**：
-  - 链上通信严禁依赖单一 RPC，必须构建候选列表（`[RPC_URL, polygon-rpc.com, 1rpc.io/matic, tenderly, ankr]`）并在遇到 403 或超时时自动无缝轮换。
-- **真实损益闭环**：
-  - 强平或结算后必须精确核算扣除双边手续费后的真实损益 `realized_pnl`，严禁在账本中记录 `$0.0000` 造成失真。
+- **多 RPC 节点故障转移与 35 Gwei 保底**：
+  - 链上通信严禁依赖单一 RPC，必须构建候选列表（`[RPC_URL, polygon-rpc.com, 1rpc.io/matic, tenderly, ankr]`）并在遇到 403 或超时时自动无缝轮换；发交易施加 `max(int(gas_price * 1.25), 35_000_000_000)` 最低 Gas 保底防广播拦截。
+- **真实损益闭环与额度归还**：
+  - 强平、做 T 或锁仓结算后必须精确核算扣除双方真实手续费后的净损益 `realized_pnl` / `profit_usdc`，严禁在账本中记录 `$0.0000` 造成失真；赎回后必须无条件流转 `SETTLED` 并 100% 归还风控预扣额度。
 
 ---
 
@@ -87,7 +87,7 @@
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
 - **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 130+ 项全量单元测试与离线推理。
+  - 本地严禁跑主网连网脚本，依赖本地 135+ 项全量单元测试与离线推理。
   - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
