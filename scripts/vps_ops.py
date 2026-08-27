@@ -31,7 +31,7 @@ except ImportError:
     sys.exit(1)
 
 # 默认 VPS 地址，支持环境变量覆盖
-DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://43.153.154.5:8888")
+DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://43.163.193.38:8888")
 
 # ANSI 终端色彩
 GREEN = "\033[92m"
@@ -292,7 +292,7 @@ def cmd_release(args):
 
     # 1. 运行本地自动化测试
     print(f"\n{BOLD}[1/4] 运行本地回归测试套件...{RESET}")
-    ret = subprocess.run([sys.executable, "-m", "pytest", "tests/"], capture_output=False)
+    ret = subprocess.run([sys.executable, "-m", "pytest", "-s", "tests/"], capture_output=False)
     if ret.returncode != 0:
         print(f"{RED}[-] 测试用例未全部通过，已中止发布！请修复后再试。{RESET}")
         sys.exit(1)

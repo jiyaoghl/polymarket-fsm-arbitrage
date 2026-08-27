@@ -43,9 +43,14 @@ class PendingBothLegsTickHandler(BaseTickHandler):
         best_bid_no = tick.best_bid_no
         now_ts = tick.now_ts
 
-        # 提取 YES 与 NO 挂单详情
-        yes_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(yes_token)), orders[0])
-        no_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(no_token)), orders[1])
+        # 提取 YES 与 NO 挂单详情 (优先按 Token 匹配，缺失时严格按双挂索引分配，杜绝双腿误绑同一订单)
+        yes_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(yes_token)), None)
+        no_order_info = next((o for o in orders if str(o.get("token_id") or o.get("token")) == str(no_token)), None)
+
+        if yes_order_info is None and len(orders) >= 1:
+            yes_order_info = orders[0]
+        if no_order_info is None:
+            no_order_info = orders[1] if len(orders) >= 2 else orders[0]
 
         yes_price = float(yes_order_info.get("price") or 0.0)
         yes_size = float(yes_order_info.get("size") or yes_order_info.get("amount") or 0.0)

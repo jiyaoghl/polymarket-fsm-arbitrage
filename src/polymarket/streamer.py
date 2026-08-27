@@ -18,6 +18,14 @@ class MarketDataStreamer:
     _instance = None
     _lock = threading.Lock()
 
+    @classmethod
+    def get_instance(cls, ws_uri: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market") -> "MarketDataStreamer":
+        """获取或创建全局单例数据总线实例。"""
+        with cls._lock:
+            if not cls._instance:
+                cls._instance = cls(ws_uri=ws_uri)
+        return cls._instance
+
     def __new__(cls, *args, **kwargs):
         with cls._lock:
             if not cls._instance:
