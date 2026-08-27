@@ -16,15 +16,12 @@ class MarketDataStreamer:
     全局只维护 1 条 WebSocket 连接，单次解析后通过同 Loop 队列向各市场 FSM 极速分发。
     """
     _instance = None
-    _lock = threading.Lock()
+    _lock = threading.RLock()
 
     @classmethod
     def get_instance(cls, ws_uri: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market") -> "MarketDataStreamer":
         """获取或创建全局单例数据总线实例。"""
-        with cls._lock:
-            if not cls._instance:
-                cls._instance = cls(ws_uri=ws_uri)
-        return cls._instance
+        return cls(ws_uri=ws_uri)
 
     def __new__(cls, *args, **kwargs):
         with cls._lock:
