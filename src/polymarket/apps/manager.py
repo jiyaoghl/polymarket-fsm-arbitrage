@@ -323,6 +323,13 @@ class StrategyManager:
                     if res.get("status") != "SIMULATED":
                         logger.info(f"市场 {m_id} redeem 结果：{res}")
                     redeemed.add(m_id)
+
+                    # 赎回完成：联动通知所有策略流转至 SETTLED 终态并释放风控额度
+                    for bot in self.bots:
+                        try:
+                            bot.settle_market(m_id)
+                        except Exception as b_err:
+                            logger.warning(f"策略 {bot.strategy_id} 结算市场 {m_id} 异常: {b_err}")
                 except Exception as e:
                     logger.warning(f"redeem {m_id} 失败：{e}")
 

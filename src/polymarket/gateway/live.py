@@ -242,8 +242,9 @@ class LiveClobV2Gateway(ITradingGateway):
         try:
             batch_payload = []
             for o in orders:
+                amt_val = o.get("amount") if o.get("amount") is not None else o.get("size", 10.0)
                 safe_price, safe_size = CLOBProtocolCodec.sanitize_order_params(
-                    float(o["price"]), float(o["amount"])
+                    float(o["price"]), float(amt_val)
                 )
                 order_type_val = str(o.get("order_type", "GTC")).upper()
                 signed = CLOBProtocolCodec.create_v2_signed_order(

@@ -155,13 +155,22 @@ class AdaptiveLiquidatorService:
         market_id = context.market_id
         logger.warning(f"[强平引擎：{strategy_id}] 触发动态 TTL 超时强平！市场: {market_id}")
 
-        # 1. 撤销二腿挂单
+        # 1. 撤销所有在途二腿与 OCO 挂单 (防止平仓后原买单被动成交产生孤儿仓位)
+        orders_to_cancel = set()
         if context.leg2_order_id:
+            orders_to_cancel.add(str(context.leg2_order_id))
+        if context.dual_orders:
+            for o in context.dual_orders:
+                oid = o.get("order_id") or o.get("orderID")
+                if oid:
+                    orders_to_cancel.add(str(oid))
+
+        for oid in orders_to_cancel:
             try:
-                client.cancel_order(context.leg2_order_id)
-                logger.info(f"[强平引擎：{strategy_id}] 已撤销未成交的二腿挂单: {context.leg2_order_id}")
+                client.cancel_order(oid)
+                logger.info(f"[强平引擎：{strategy_id}] 已撤销在途挂单: {oid}")
             except Exception as e:
-                logger.warning(f"[强平引擎：{strategy_id}] 撤销二腿挂单异常: {e}")
+                logger.warning(f"[强平引擎：{strategy_id}] 撤销在途挂单 {oid} 异常 (不阻断平仓): {e}")
 
         # 2. 获取首腿持仓明细
         leg1 = context.leg1

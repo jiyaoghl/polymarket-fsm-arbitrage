@@ -270,6 +270,37 @@ class ArbitrageBotFSM(BaseStrategy):
         if self.is_live:
             self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 
+    def settle_market(self, market_id: str) -> None:
+        """
+        显式结算指定市场并释放风控额度（通常由 Manager 在链上赎回后调用）。
+        具备强幂等性与 finally 强制释放保底。
+        """
+        trade = self._get_trade(market_id)
+        if not trade:
+            return
+
+        cur_status = trade.get("status")
+        # 若已经处于终态则仅做额度确认释放
+        if cur_status == TradeState.SETTLED.value:
+            self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
+            return
+
+        try:
+            fsm = self.fsms.get(market_id)
+            if fsm and fsm.current_state not in (TradeState.SETTLED, TradeState.FAILED):
+                fsm.transition_to(TradeState.SETTLED, reason="链上已到期赎回清盘")
+            else:
+                self._update_trade_status(market_id, TradeState.SETTLED.value)
+                self._add_trade_event(market_id, TradeState.SETTLED.value, "链上已到期赎回清盘。")
+        except Exception as e:
+            logger.warning(f"[策略FSM：{self.strategy_id}] 市场 {market_id} 结算流转异常: {e}")
+            self._update_trade_status(market_id, TradeState.SETTLED.value)
+        finally:
+            # 无论 FSM 状态如何，无条件强制归还风控额度
+            self.risk_manager.release_market_lock(self.strategy_id, market_id, is_live=self.is_live)
+            if self.is_live:
+                self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
+
     def on_failed(self, fsm: TradeFSM, **kwargs):
         reason = kwargs.get('reason', '未知')
         msg = f"操作失败或中断，原因：{reason}"

@@ -16,20 +16,28 @@ def get_asset_status(asset: str) -> dict:
         "error": "未初始化"
     })
 
-def is_asset_choppy(asset: str, limit: int = 10) -> bool:
+def is_asset_choppy(asset: str, limit: int = 10, cache_ttl: float = 10.0) -> bool:
     """
     判断指定的 asset (如 BTC, ETH) 当前是否处于震荡横盘期。
     
     规则：
-    1. 获取近 limit 分钟的 1m K 线。
-    2. 计算最高价和最低价的振幅，如果超过对应资产的 max_amplitude，认定为单边行情。
-    3. 计算收盘价和开盘价的净位移，如果超过对应资产的 max_net_change，认定为单边行情。
+    1. 优先读取 10s 内的内存缓存，避免多策略高频重复发起网络请求阻塞主线程。
+    2. 获取近 limit 分钟的 1m K 线。
+    3. 计算最高价和最低价的振幅，如果超过对应资产的 max_amplitude，认定为单边行情。
+    4. 计算收盘价和开盘价的净位移，如果超过对应资产的 max_net_change，认定为单边行情。
     
     返回：
     True: 处于震荡横盘期，可以安全执行双开双平套利。
     False: 处于单边波动期，建议空仓观望避免打损。
     """
     asset_upper = asset.upper()
+    now_ts = time.time()
+
+    # 1. 优先读取短期内存缓存 (10s 内复用，避免多策略同一秒连续打 15 次 HTTP 阻塞)
+    cached = _asset_status.get(asset_upper)
+    if cached and (now_ts - cached.get("timestamp", 0) < cache_ttl) and not cached.get("error"):
+        return cached.get("is_choppy", True)
+
     url = f"https://api.binance.com/api/v3/klines?symbol={asset_upper}USDT&interval=1m&limit={limit}"
     
     proxies = {}
