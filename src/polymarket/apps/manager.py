@@ -76,14 +76,17 @@ class StrategyManager:
                 if cfg.get("is_active") is False:
                     logger.info(f"策略已停用，跳过加载：{cfg.get('name')} (ID: {cfg.get('strategy_id')})")
                     continue
-                bot = ArbitrageBot(cfg)
-                self.bots.append(bot)
-                if cfg.get("is_live"):
-                    is_any_live = True
-                logger.info(
-                    f"成功加载策略：{cfg.get('name')} "
-                    f"(ID: {cfg.get('strategy_id')}, 实盘：{cfg.get('is_live')})"
-                )
+                try:
+                    bot = ArbitrageBot(cfg)
+                    self.bots.append(bot)
+                    if cfg.get("is_live"):
+                        is_any_live = True
+                    logger.info(
+                        f"成功加载策略：{cfg.get('name')} "
+                        f"(ID: {cfg.get('strategy_id')}, 实盘：{cfg.get('is_live')})"
+                    )
+                except Exception as be:
+                    logger.critical(f"加载策略实例 {cfg.get('strategy_id')} 失败: {be}", exc_info=True)
 
             # 根据策略是否包含实盘实例，动态绑定 redeem 客户端
             self.redeem_client = get_client(is_live=is_any_live)

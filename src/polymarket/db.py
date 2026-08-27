@@ -1,20 +1,62 @@
 
 
+import os
+import shutil
+import time
 import sqlite3
 from contextlib import contextmanager
 from typing import Optional
 from polymarket.config import DB_PATH as _DB_PATH
+from polymarket.logger import logger
+
+def _recover_corrupted_db(path: str) -> None:
+    """当 SQLite 数据库损坏时，自动备份并重建干净的数据库。"""
+    try:
+        if os.path.exists(path):
+            bak_path = f"{path}.corrupted_{int(time.time())}.bak"
+            shutil.move(path, bak_path)
+            for ext in ["-wal", "-shm"]:
+                wal_f = f"{path}{ext}"
+                if os.path.exists(wal_f):
+                    try:
+                        os.remove(wal_f)
+                    except Exception:
+                        pass
+            logger.warning(f"[DB] 检测到损坏的 SQLite 数据库，已自动备份至 {bak_path} 并重新初始化。")
+    except Exception as e:
+        logger.error(f"[DB] 自动恢复损坏数据库失败: {e}")
 
 # ================= DB 基础操作 =================
 @contextmanager
 def get_conn(path: str = _DB_PATH):
-    conn = sqlite3.connect(path, timeout=10)
-    # [P1 修复] 开启 WAL 模式，允许并发读写，避免多线程争锁导致 database is locked
-    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        conn = sqlite3.connect(path, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.DatabaseError as e:
+        if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+            _recover_corrupted_db(path)
+            init_db(path)
+            conn = sqlite3.connect(path, timeout=10)
+            conn.execute("PRAGMA journal_mode=WAL")
+        else:
+            raise e
+
     try:
         yield conn
+    except sqlite3.DatabaseError as e:
+        if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _recover_corrupted_db(path)
+            init_db(path)
+        raise e
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def init_db(path: str = _DB_PATH) -> None:
