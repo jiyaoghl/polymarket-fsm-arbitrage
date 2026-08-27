@@ -90,8 +90,14 @@ class IdleTickHandler(BaseTickHandler):
                 return
 
             yes_p, no_p, err = PricingEngine.calculate_dual_bracket_prices(
-                tick.best_bid_yes, tick.best_bid_no, params.entry_max_price, params.entry_min_price,
-                min_profit_margin=params.initial_margin or 0.015
+                best_bid_yes=tick.best_bid_yes,
+                best_bid_no=tick.best_bid_no,
+                entry_max_price=params.entry_max_price,
+                entry_min_price=params.entry_min_price,
+                min_profit_margin=params.initial_margin or 0.015,
+                best_ask_yes=tick.best_ask_yes,
+                best_ask_no=tick.best_ask_no,
+                anti_penny_step=0.001
             )
             if err:
                 filter_logger.intercept(market_id, asset_type, err, ctx, deps)
@@ -139,6 +145,21 @@ class IdleTickHandler(BaseTickHandler):
 
         if is_opp and target_side and entry_price:
             target_token = tick.yes_token if target_side == "YES" else tick.no_token
+
+            # [OBI 深度失衡守门防御] 过滤单边卖盘严重压迫行情 (仅在深度充足时触发)
+            from polymarket.services.grid import OrderbookMemoryGrid
+            target_snap = OrderbookMemoryGrid.get_instance().get_snapshot(str(target_token))
+            if target_snap and not target_snap.is_stale(10.0):
+                obi_val, tot_depth, is_valid_depth = PricingEngine.calculate_obi(
+                    list(target_snap.bids), list(target_snap.asks), top_n_levels=5, min_total_shares=30.0
+                )
+                if is_valid_depth and obi_val < -0.40:
+                    filter_logger.intercept(
+                        market_id, asset_type,
+                        f"OBI 卖盘深度严重压迫 (OBI={obi_val:.2f} < -0.40, 总深度={tot_depth:.1f}份)，拦截吃单",
+                        ctx, deps
+                    )
+                    return
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(entry_price, params.amount)
             lock_amount = round(safe_p * safe_s, 2)
             

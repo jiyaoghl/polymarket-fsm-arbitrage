@@ -283,6 +283,22 @@ class OrderbookMemoryGrid:
 
         return PricingEngine.calculate_vwap(list(snap.asks), target_shares)
 
+    def get_obi(self, token_id: str, max_staleness: float = 10.0) -> float:
+        """获取指定 Token 的订单簿失衡度 OBI ([-1.0, 1.0])，陈旧或无数据返回 0.0"""
+        snap = self.get_snapshot(str(token_id))
+        if not snap or snap.is_stale(max_staleness):
+            return 0.0
+        return snap.obi
+
+    def get_depth_volume(self, token_id: str, max_staleness: float = 10.0) -> Tuple[float, float]:
+        """获取指定 Token 的前 N 档总买盘份数与总卖盘份数 (total_bid_shares, total_ask_shares)"""
+        snap = self.get_snapshot(str(token_id))
+        if not snap or snap.is_stale(max_staleness):
+            return 0.0, 0.0
+        tot_bid = sum(s for _, s in snap.bids)
+        tot_ask = sum(s for _, s in snap.asks)
+        return round(tot_bid, 2), round(tot_ask, 2)
+
     def purge_stale_tokens(self, ttl_seconds: float = 900.0) -> int:
         """清理超过 ttl_seconds 未更新的过期 Token 盘口快照"""
         now_ts = time.time()

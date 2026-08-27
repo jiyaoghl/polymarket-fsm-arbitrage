@@ -154,19 +154,64 @@ class PricingEngine:
         return True, net_ev, f"锁利达标：Net EV ${net_ev:.4f} (Margin: {net_margin:.2%})"
 
     @staticmethod
+    def calculate_obi(
+        bids: List[Any],
+        asks: List[Any],
+        top_n_levels: int = 5,
+        min_total_shares: float = 30.0
+    ) -> Tuple[float, float, bool]:
+        """
+        计算前 N 档订单簿深度不平衡度 (Orderbook Imbalance)。
+        
+        Formula:
+            OBI = (Total Bid Size - Total Ask Size) / (Total Bid Size + Total Ask Size)
+            
+        Returns:
+            (obi_value, total_depth_shares, is_valid_depth)
+            - obi_value: 范围 [-1.0, 1.0]。>0 表示买盘强，<0 表示卖盘压迫
+            - total_depth_shares: 前 N 档买卖总份额
+            - is_valid_depth: 总份额是否达到有效性门槛 (>= min_total_shares)
+        """
+        if not bids and not asks:
+            return 0.0, 0.0, False
+
+        def _extract_sizes(levels: List[Any], n: int) -> float:
+            tot = 0.0
+            for item in levels[:n]:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    tot += float(item[1])
+                elif isinstance(item, dict):
+                    tot += float(item.get("size", 0.0))
+            return tot
+
+        bid_vol = _extract_sizes(bids, top_n_levels)
+        ask_vol = _extract_sizes(asks, top_n_levels)
+        total_vol = bid_vol + ask_vol
+
+        if total_vol <= 0:
+            return 0.0, 0.0, False
+
+        obi = round((bid_vol - ask_vol) / total_vol, 4)
+        is_valid = total_vol >= min_total_shares
+        return obi, round(total_vol, 2), is_valid
+
+    @staticmethod
     def calculate_dual_bracket_prices(
         best_bid_yes: float,
         best_bid_no: float,
         entry_max_price: float = 0.50,
         entry_min_price: float = 0.05,
-        min_profit_margin: float = 0.015
+        min_profit_margin: float = 0.015,
+        best_ask_yes: Optional[float] = None,
+        best_ask_no: Optional[float] = None,
+        anti_penny_step: float = 0.001
     ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
         """
-        计算 Maker-Maker 双挂做市定价（对称贴盘双挂机制）。
-        1. 优先以 YES 与 NO 双边买一各 +0.001 挂单做市；
-        2. 校验双边总成本 (yes_bid + no_bid) <= 1.0 - min_profit_margin 保证纯利；
-        3. 若盘口利差较薄，以低价侧为基准，高价侧按保利推算挂单，严格控制在 (买一 + 0.01) 内；
-        4. 杜绝单边强行压低导致的另一侧高位溢价接盘风险。
+        计算 Maker-Maker 双挂做市定价（对称贴盘 + Anti-Pennying 防穿透做市机制）。
+        1. 基于动态阶梯 step 贴盘做市；
+        2. 严格施加 safe_price <= best_ask - 0.001 防穿透保护，绝不意外成为 Taker 吃单；
+        3. 校验双边总成本 (yes_bid + no_bid) <= 1.0 - min_profit_margin 保证纯利；
+        4. 溢价防爆盾：两边挂单均不得高出买一 0.010 以上。
         
         Returns:
             (yes_bid_price, no_bid_price, filter_reason)
@@ -174,16 +219,27 @@ class PricingEngine:
         if best_bid_yes <= 0 or best_bid_no <= 0:
             return None, None, "盘口买一价格无效 (<=0)"
 
-        # 尝试双边贴买一 +0.001
-        target_yes = round(best_bid_yes + 0.001, 4)
-        target_no = round(best_bid_no + 0.001, 4)
+        step = max(anti_penny_step, 0.001)
+
+        # 尝试双边贴买一 + step，并施加卖一防穿透保护
+        raw_yes = best_bid_yes + step
+        if best_ask_yes is not None and best_ask_yes > best_bid_yes:
+            target_yes = round(min(raw_yes, best_ask_yes - 0.001), 4)
+        else:
+            target_yes = round(raw_yes, 4)
+
+        raw_no = best_bid_no + step
+        if best_ask_no is not None and best_ask_no > best_bid_no:
+            target_no = round(min(raw_no, best_ask_no - 0.001), 4)
+        else:
+            target_no = round(raw_no, 4)
 
         # 校验双边直接贴盘的总成本
         total_cost = round(target_yes + target_no, 4)
         max_cost_allowed = round(1.0 - min_profit_margin, 4)
 
         if total_cost <= max_cost_allowed:
-            # 盘口利差充裕：双边均以买一 +0.001 贴盘挂单，最大化提升两腿被吃概率并锁定超额利润
+            # 盘口利差充裕：双边均以防穿透阶梯贴盘挂单，最大化提升两腿被吃概率并锁定超额利润
             yes_bid_price = target_yes
             no_bid_price = target_no
         else:
@@ -211,15 +267,25 @@ class PricingEngine:
         elapsed_seconds: float,
         initial_margin: float = 0.025,
         min_margin: float = 0.002,
-        decay_duration: float = 30.0
+        decay_duration: float = 30.0,
+        convex_power: float = 1.8
     ) -> float:
         """
-        基于时间衰减计算当前时刻的动态目标利润率 (Time-Decayed Target Margin)。
+        基于幂律连续平滑衰减计算当前时刻的动态目标利润率 (Power-Law Convex Decayed Margin)。
+        
+        Formula:
+            ratio = (elapsed / decay_duration) ^ convex_power
+            current_margin = initial_margin - ratio * (initial_margin - min_margin)
+            
+        特性：
+        - 前期 (t < 50% T) 斜率平缓，充分获取最大做 T / 锁利利润；
+        - 后期 (t >= 50% T) 凸性加速度连续平滑让价，快速促成二腿成交，杜绝超时打损。
         """
         if decay_duration <= 0 or elapsed_seconds <= 0:
             return initial_margin
         decay_ratio = min(max(elapsed_seconds / decay_duration, 0.0), 1.0)
-        current_margin = initial_margin - (decay_ratio * (initial_margin - min_margin))
+        convex_ratio = decay_ratio ** convex_power
+        current_margin = initial_margin - (convex_ratio * (initial_margin - min_margin))
         return round(max(current_margin, min_margin), 4)
 
     @staticmethod

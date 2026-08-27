@@ -91,3 +91,56 @@ def test_calculate_dual_bracket_prices_overflow():
     assert no_p is None
     assert "溢价过高" in reason
 
+def test_calculate_obi():
+    # 1. 深度充足且买盘占优
+    bids = [(0.45, 60.0), (0.44, 40.0)]
+    asks = [(0.46, 20.0), (0.47, 30.0)]
+    obi, tot, valid = PricingEngine.calculate_obi(bids, asks, top_n_levels=5, min_total_shares=30.0)
+    # bid_vol = 100, ask_vol = 50, total = 150, obi = (100-50)/150 = 0.3333
+    assert valid is True
+    assert tot == 150.0
+    assert obi == 0.3333
+
+    # 2. 卖盘严重压迫
+    bids_thin = [(0.45, 10.0), (0.44, 10.0)]
+    asks_heavy = [(0.46, 80.0), (0.47, 50.0)]
+    obi, tot, valid = PricingEngine.calculate_obi(bids_thin, asks_heavy, top_n_levels=5, min_total_shares=30.0)
+    # bid_vol = 20, ask_vol = 130, total = 150, obi = (20-130)/150 = -0.7333
+    assert valid is True
+    assert obi < -0.40
+
+    # 3. 深度不足 (冷启动)
+    bids_sparse = [(0.45, 5.0)]
+    asks_sparse = [(0.46, 10.0)]
+    obi, tot, valid = PricingEngine.calculate_obi(bids_sparse, asks_sparse, top_n_levels=5, min_total_shares=30.0)
+    assert valid is False
+    assert tot == 15.0
+
+def test_calculate_decayed_margin_power_law():
+    # 初始 0.025，保底 0.002，窗口 30s
+    # t = 0s -> 0.025
+    m0 = PricingEngine.calculate_decayed_margin(0.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
+    assert m0 == 0.025
+
+    # t = 10s (1/3 时间) -> 幂律衰减较少，保持较高利润
+    m10 = PricingEngine.calculate_decayed_margin(10.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
+    assert m10 > 0.020
+
+    # t = 30s (到期) -> 达到最低保底利润 0.002
+    m30 = PricingEngine.calculate_decayed_margin(30.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
+    assert m30 == 0.002
+
+def test_anti_pennying_best_ask_clamping():
+    # 当买一 0.498，卖一 0.499 时，step=0.002 不得越过卖一价 (必须 <= 0.499 - 0.001 = 0.498)
+    yes_p, no_p, reason = PricingEngine.calculate_dual_bracket_prices(
+        best_bid_yes=0.40,
+        best_bid_no=0.498,
+        best_ask_yes=0.42,
+        best_ask_no=0.499,
+        anti_penny_step=0.002,
+        min_profit_margin=0.015
+    )
+    assert no_p <= 0.498
+    assert yes_p == 0.402
+    assert reason is None
+

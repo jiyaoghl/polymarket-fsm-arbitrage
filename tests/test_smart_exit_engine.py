@@ -10,9 +10,9 @@ def test_decayed_margin_calculation():
     m0 = PricingEngine.calculate_decayed_margin(0.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
     assert m0 == 0.025
 
-    # 15s 处应线性衰减到中间值
+    # 15s 处按幂律平滑衰减 (保持较高利润)
     m15 = PricingEngine.calculate_decayed_margin(15.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
-    assert round(m15, 4) == round(0.025 - (0.5 * 0.023), 4)
+    assert round(m15, 4) == round(0.025 - ((0.5 ** 1.8) * 0.023), 4)
 
     # 30s 处应衰减至保本门槛 0.2%
     m30 = PricingEngine.calculate_decayed_margin(30.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
