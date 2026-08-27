@@ -99,32 +99,36 @@ class PendingBothLegsTickHandler(BaseTickHandler):
             fsm.transition_to(TradeState.LOCKED)
             return
 
-        # 分支 B: YES 率先成交，NO 保持挂单，进入二腿等待并启动 TTL
+        # 分支 B: YES 率先成交，立即撤销 NO 挂单并流转至 LEG1_ONLY 触发自适应做 T 与配对 OCO
         if yes_filled and not no_filled:
             now_time = time.time()
+            if no_id:
+                await deps.client.cancel_order_async(no_id)
             ctx.leg1 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
-            ctx.leg2 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+            ctx.leg2 = None
             ctx.leg1_dir = "YES"
-            ctx.leg2_dir = "NO"
+            ctx.leg2_dir = None
             ctx.leg1_filled_time = now_time
-            ctx.leg2_issued_time = now_time
-            ctx.leg2_order_id = no_id
+            ctx.dual_orders = []
             deps.set_trade(market_id, ctx.to_dict())
-            fsm.transition_to(TradeState.PENDING_LEG2, order_info=no_order_info)
+            logger.info(f"[策略FSM：{params.strategy_id}] 双挂单 YES 侧率先成交 (price={yes_price:.4f}, size={yes_size:.2f})，已撤销 NO 挂单，流转至 LEG1_ONLY 触发 OCO 双向自适应变现。")
+            fsm.transition_to(TradeState.LEG1_ONLY)
             return
 
-        # 分支 C: NO 率先成交，YES 保持挂单，进入二腿等待并启动 TTL
+        # 分支 C: NO 率先成交，立即撤销 YES 挂单并流转至 LEG1_ONLY 触发自适应做 T 与配对 OCO
         if no_filled and not yes_filled:
             now_time = time.time()
+            if yes_id:
+                await deps.client.cancel_order_async(yes_id)
             ctx.leg1 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
-            ctx.leg2 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
+            ctx.leg2 = None
             ctx.leg1_dir = "NO"
-            ctx.leg2_dir = "YES"
+            ctx.leg2_dir = None
             ctx.leg1_filled_time = now_time
-            ctx.leg2_issued_time = now_time
-            ctx.leg2_order_id = yes_id
+            ctx.dual_orders = []
             deps.set_trade(market_id, ctx.to_dict())
-            fsm.transition_to(TradeState.PENDING_LEG2, order_info=yes_order_info)
+            logger.info(f"[策略FSM：{params.strategy_id}] 双挂单 NO 侧率先成交 (price={no_price:.4f}, size={no_size:.2f})，已撤销 YES 挂单，流转至 LEG1_ONLY 触发 OCO 双向自适应变现。")
+            fsm.transition_to(TradeState.LEG1_ONLY)
             return
 
         # 分支 D: 双边均未成交且临近到期，原子撤单安全退出

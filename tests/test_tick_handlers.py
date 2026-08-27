@@ -227,6 +227,49 @@ def test_pending_both_handler_both_filled():
     asyncio.run(_test())
 
 
+def test_pending_both_handler_single_filled_transitions_to_leg1_only():
+    """测试 PendingBothLegsTickHandler 单边成交时撤销另一侧挂单并流转至 LEG1_ONLY"""
+    async def _test():
+        handler = PendingBothLegsTickHandler()
+        deps, trades = create_mock_dependencies()
+        params = create_sample_params(is_live=False)
+        filter_logger = TickFilterLogger(params.strategy_id)
+        
+        market = {"id": "m_single_fill", "__asset_type": "BTC"}
+        fsm = TradeFSM("m_single_fill", initial_state=TradeState.PENDING_BOTH_LEGS)
+        ctx = TradeContext(
+            market_id="m_single_fill",
+            status=TradeState.PENDING_BOTH_LEGS.value,
+            dual_orders=[
+                {"order_id": "ord_yes", "token_id": "tok_yes", "price": 0.45, "size": 10.0},
+                {"order_id": "ord_no", "token_id": "tok_no", "price": 0.52, "size": 10.0},
+            ],
+            end_time=time.time() + 300
+        )
+        trades["m_single_fill"] = ctx.to_dict()
+        
+        # 仅 YES 买一达到挂单价 (0.46 >= 0.45)，NO 买一未达到 (0.48 < 0.52)
+        tick = TickBundle(
+            yes_token="tok_yes",
+            no_token="tok_no",
+            best_ask_yes=0.46,
+            best_bid_yes=0.46,
+            best_ask_no=0.55,
+            best_bid_no=0.48,
+        )
+        
+        await handler.handle(market, fsm, ctx, tick, params, deps, filter_logger)
+        
+        # 必须流转至 LEG1_ONLY 并撤销未成交的 NO 挂单
+        assert fsm.current_state == TradeState.LEG1_ONLY
+        assert ctx.leg1 is not None
+        assert ctx.leg1.token == "tok_yes"
+        assert ctx.leg1.cost == 0.45
+        assert deps.client.cancel_order_async.called
+
+    asyncio.run(_test())
+
+
 def test_leg1_only_handler_smart_flip():
     """测试 Leg1OnlyTickHandler 在 Smart Flip 模式下发送限价做 T 卖单"""
     async def _test():
