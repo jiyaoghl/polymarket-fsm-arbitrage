@@ -1463,6 +1463,48 @@ def remote_restart() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/ops/clean-history")
+def remote_clean_history() -> Dict[str, Any]:
+    """
+    远程清理 VPS 历史交易与订单数据，并平滑重载服务。
+    """
+    import os
+    import subprocess
+    import threading
+    import logging
+    from polymarket.db import clean_all_historical_trades
+
+    counts = clean_all_historical_trades()
+
+    def _async_restart():
+        time.sleep(1.0)
+        try:
+            if os.name != "nt":
+                subprocess.Popen(
+                    ["bash", "vps.sh", "restart"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            else:
+                subprocess.Popen(
+                    ["python", "-m", "polymarket.apps.dashboard"],
+                    start_new_session=True
+                )
+        except Exception as err:
+            logging.getLogger("poly_bot").error(f"[RemoteOps] 清理后重启失败: {err}")
+
+    threading.Thread(target=_async_restart, daemon=True).start()
+
+    return {
+        "status": "ok",
+        "action": "clean-history",
+        "deleted_records": counts,
+        "message": "已成功清理所有历史交易与订单数据，VPS 正在重新加载服务...",
+        "timestamp": time.time()
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     import os

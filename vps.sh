@@ -221,6 +221,14 @@ case "$1" in
     clean)
         clean_logs
         ;;
+    clean-trades|clean-db)
+        echo "正在清空历史订单与交易数据库..."
+        setup_environment
+        "$VENV_DIR/bin/python3" -c "from polymarket.db import clean_all_historical_trades; print('清理明细:', clean_all_historical_trades())"
+        echo "正在重启服务以生效..."
+        stop_service
+        start_service
+        ;;
     auth|test)
         setup_environment
         "$VENV_DIR/bin/python3" scripts/test_auth.py

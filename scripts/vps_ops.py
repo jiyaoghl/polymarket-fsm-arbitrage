@@ -317,6 +317,22 @@ def cmd_release(args):
         print(f"{YELLOW}[*] 已跳过远程自动部署 (--no-deploy)。{RESET}")
 
 
+def cmd_clean_history(args):
+    """远程调用 VPS 执行历史订单与交易数据彻底清理并重置大盘"""
+    print_banner("VPS 历史订单与交易数据清理")
+    print(f"[*] 正在向远程 VPS 发送清空历史订单指令...")
+    res = fetch_api("/api/ops/clean-history", method="POST")
+    if not res or res.get("status") != "ok":
+        print(f"{RED}历史清理请求失败: {res.get('message') if res else '网络异常'}{RESET}")
+        return
+
+    print(f"{GREEN}[+] {res.get('message')}{RESET}")
+    print(f"[*] 已清空数据表明细: {res.get('deleted_records')}")
+    print("[*] 正在等待 VPS 重新初始化并就绪 (5~8 秒)...")
+    time.sleep(6)
+    cmd_status(args)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket VPS 敏捷运维与闭环分析 CLI")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
@@ -339,6 +355,10 @@ def main():
     # update / reload
     p_update = subparsers.add_parser("update", help="远程直接触发 VPS 执行动态更新与热重载 (免登录)")
     p_update.set_defaults(func=cmd_update)
+
+    # clean-history
+    p_clean = subparsers.add_parser("clean-history", help="远程清空 VPS 所有历史订单与交易数据并重置大盘")
+    p_clean.set_defaults(func=cmd_clean_history)
 
     # release
     p_release = subparsers.add_parser("release", help="一键运行单测 -> 提交 -> 推送 -> 远程动态热更")

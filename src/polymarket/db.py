@@ -287,3 +287,21 @@ def get_expired_unsettled(path: str = _DB_PATH) -> list:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT token_id, market_id, side, amount FROM positions WHERE status != 'settled'").fetchall()
         return [dict(r) for r in rows]
+
+
+# ================= 历史数据彻底清理操作 =================
+
+def clean_all_historical_trades(path: str = _DB_PATH) -> dict:
+    """清空 SQLite 中所有历史交易、缓存、订单与已处理市场记录，使系统重置为零历史状态。"""
+    counts = {}
+    with get_conn(path) as conn:
+        for tbl in ["active_trades_cache", "historical_trades", "orders", "positions", "processed_markets", "ev_candidates"]:
+            try:
+                cur = conn.execute(f"DELETE FROM {tbl}")
+                counts[tbl] = cur.rowcount
+            except Exception:
+                counts[tbl] = 0
+        conn.commit()
+    logger.info(f"[DB] 已清空全部历史交易数据与缓存: {counts}")
+    return counts
+

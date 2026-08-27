@@ -19,3 +19,13 @@ def test_remote_restart_endpoint():
     assert data.get("status") == "ok"
     assert data.get("action") == "restart"
     assert "timestamp" in data
+
+def test_remote_clean_history_endpoint():
+    response = client.post("/api/ops/clean-history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("status") == "ok"
+    assert data.get("action") == "clean-history"
+    assert "deleted_records" in data
+    assert "timestamp" in data
+
