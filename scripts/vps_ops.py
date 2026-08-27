@@ -321,7 +321,7 @@ def cmd_clean_history(args):
     """远程调用 VPS 执行历史订单与交易数据彻底清理并重置大盘"""
     print_banner("VPS 历史订单与交易数据清理")
     print(f"[*] 正在向远程 VPS 发送清空历史订单指令...")
-    res = fetch_api("/api/ops/clean-history", method="POST")
+    res = post_api("/api/ops/clean-history")
     if not res or res.get("status") != "ok":
         print(f"{RED}历史清理请求失败: {res.get('message') if res else '网络异常'}{RESET}")
         return
