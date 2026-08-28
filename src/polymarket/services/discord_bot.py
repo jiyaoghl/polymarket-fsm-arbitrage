@@ -44,7 +44,7 @@ def generate_dashboard_embed() -> Optional[Any]:
 
     rm = RiskManager()
     status = rm.get_status()
-    is_paused = rm.is_emergency_halted
+    is_paused = getattr(rm, "is_emergency_halted", False)
 
     color = 0xEF4444 if is_paused else 0x10B981
     status_icon = "🔴 PAUSED (已暂停开仓)" if is_paused else "🟢 NORMAL (全天候套利中)"

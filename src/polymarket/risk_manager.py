@@ -52,6 +52,9 @@ class RiskManager:
         self.adaptive_retry_success = 0
         self.adaptive_retry_failed = 0
         
+        # 紧急熔断与暂停标志
+        self.is_emergency_halted = False
+
         self.last_balance_refresh = 0.0
         self._initialized = True
         logger.info(
