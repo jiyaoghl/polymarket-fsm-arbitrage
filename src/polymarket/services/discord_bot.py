@@ -46,6 +46,31 @@ def generate_dashboard_embed() -> Optional[Any]:
     status = rm.get_status()
     is_paused = getattr(rm, "is_emergency_halted", False)
 
+    # 1. 实盘资金与敞口
+    live_max = float(status.get("live_max_exposure", 0.0) or 0.0)
+    live_used = float(status.get("live_used_exposure", 0.0) or 0.0)
+
+    # 2. 模拟资金与敞口
+    paper_max = float(status.get("paper_max_exposure", 1000.0) or 1000.0)
+    paper_used = float(status.get("paper_used_exposure", 0.0) or 0.0)
+    paper_avail = max(0.0, paper_max - paper_used)
+
+    # 3. 统计全系统总盈亏与活跃单
+    total_pnl = 0.0
+    active_pos_count = 0
+    try:
+        from polymarket.apps.dashboard import manager
+        for bot in getattr(manager, "bots", []):
+            trades = bot._get_all_active_trades()
+            for trade in trades.values():
+                st = trade.get("status") or ""
+                if st in ("leg1_only", "locked", "pending_leg2", "pending_both"):
+                    active_pos_count += 1
+                profit = float(trade.get("profit_usdc", 0.0) or 0.0)
+                total_pnl += profit
+    except Exception:
+        active_pos_count = count_open_positions()
+
     color = 0xEF4444 if is_paused else 0x10B981
     status_icon = "🔴 PAUSED (已暂停开仓)" if is_paused else "🟢 NORMAL (全天候套利中)"
 
@@ -56,11 +81,11 @@ def generate_dashboard_embed() -> Optional[Any]:
         timestamp=discord.utils.utcnow()
     )
 
-    embed.add_field(name="💰 链上真实余额", value=f"`${status.get('live_balance', 0.0):.2f}` USDC", inline=True)
-    embed.add_field(name="🔒 活跃持仓总数", value=f"`{count_open_positions()}` 笔", inline=True)
-    embed.add_field(name="🛡️ 实盘敞口占用", value=f"`${status.get('live_exposure', 0.0):.2f}` USDC", inline=True)
-    embed.add_field(name="🔵 模拟资金池", value=f"`${status.get('paper_balance', 0.0):.2f}` USDC", inline=True)
-    embed.add_field(name="📈 累计已实现盈亏", value=f"`${status.get('realized_pnl', 0.0):+.4f}` USDC", inline=True)
+    embed.add_field(name="💰 链上真实余额", value=f"`${live_max:.2f}` USDC", inline=True)
+    embed.add_field(name="🔒 活跃持仓总数", value=f"`{active_pos_count}` 笔", inline=True)
+    embed.add_field(name="🛡️ 实盘敞口占用", value=f"`${live_used:.2f}` USDC", inline=True)
+    embed.add_field(name="🔵 模拟资金池", value=f"`${paper_avail:.2f} / ${paper_max:.0f}` USDC", inline=True)
+    embed.add_field(name="📈 累计已实现盈亏", value=f"`{'+' if total_pnl >= 0 else '-'}${abs(total_pnl):.4f}` USDC", inline=True)
 
     # 标的波动率防爆盾状态
     chop_text = []
@@ -105,15 +130,30 @@ if HAS_DISCORD_LIB and discord is not None:
             rm = RiskManager()
             st = rm.get_status()
 
+            live_max = float(st.get("live_max_exposure", 0.0) or 0.0)
+            live_used = float(st.get("live_used_exposure", 0.0) or 0.0)
+            paper_max = float(st.get("paper_max_exposure", 1000.0) or 1000.0)
+            paper_used = float(st.get("paper_used_exposure", 0.0) or 0.0)
+            paper_avail = max(0.0, paper_max - paper_used)
+
+            total_pnl = 0.0
+            try:
+                from polymarket.apps.dashboard import manager
+                for bot in getattr(manager, "bots", []):
+                    for trade in bot._get_all_active_trades().values():
+                        total_pnl += float(trade.get("profit_usdc", 0.0) or 0.0)
+            except Exception:
+                pass
+
             embed = discord.Embed(
                 title="💰 资金池与风控额度概况",
                 color=0x3B82F6,
                 timestamp=discord.utils.utcnow()
             )
-            embed.add_field(name="🔴 实盘链上余额", value=f"`${st.get('live_balance', 0.0):.4f}` USDC", inline=True)
-            embed.add_field(name="🔒 实盘占用敞口", value=f"`${st.get('live_exposure', 0.0):.2f}` USDC", inline=True)
-            embed.add_field(name="🔵 模拟资金池", value=f"`${st.get('paper_balance', 0.0):.2f}` USDC", inline=True)
-            embed.add_field(name="📈 累计已实现盈亏", value=f"`${st.get('realized_pnl', 0.0):+.4f}` USDC", inline=False)
+            embed.add_field(name="🔴 实盘链上余额", value=f"`${live_max:.4f}` USDC", inline=True)
+            embed.add_field(name="🔒 实盘占用敞口", value=f"`${live_used:.2f}` USDC", inline=True)
+            embed.add_field(name="🔵 模拟资金池", value=f"`${paper_avail:.2f} / ${paper_max:.0f}` USDC", inline=True)
+            embed.add_field(name="📈 累计已实现盈亏", value=f"`{'+' if total_pnl >= 0 else '-'}${abs(total_pnl):.4f}` USDC", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         @discord.ui.button(label="📜 最新日志", style=discord.ButtonStyle.secondary, custom_id="btn_view_logs", row=0)
