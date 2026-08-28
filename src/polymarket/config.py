@@ -143,3 +143,9 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "true").lower() in ("true", "1", "yes") and bool(DISCORD_WEBHOOK_URL)
 DISCORD_MIN_SEVERITY = os.getenv("DISCORD_MIN_SEVERITY", "TRADE").upper()  # INFO | TRADE | WARNING | CRITICAL
 
+# Discord Bot 交互式控制配置
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+DISCORD_ADMIN_IDS = [x.strip() for x in os.getenv("DISCORD_ADMIN_IDS", "").split(",") if x.strip()]
+DISCORD_COMMAND_PREFIX = os.getenv("DISCORD_COMMAND_PREFIX", "!").strip() or "!"
+
+

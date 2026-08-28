@@ -19,9 +19,17 @@ price_client = get_client(is_live=True)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """FastAPI 生命周期管理：启动时初始化后台线程。"""
+    """FastAPI 生命周期管理：启动时初始化后台线程与 Discord 交互机器人。"""
     t = threading.Thread(target=manager.run_all, daemon=True)
     t.start()
+
+    # 启动 Discord 交互式控制机器人 (若未配置 Token 则自动平滑跳过)
+    try:
+        from polymarket.services.discord_bot import DiscordInteractiveBot
+        DiscordInteractiveBot.get_instance().start()
+    except Exception as e:
+        pass
+
     yield
 
 
