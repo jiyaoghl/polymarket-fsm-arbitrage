@@ -154,6 +154,40 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 deps.set_trade(market_id, ctx.to_dict())
                 fsm.transition_to(TradeState.LOCKED)
                 return
+
+            # ── A.1 OCO 卖单的自适应阶梯做 T 让价与追单保护 ───────────
+            if not sell_filled and not buy_filled and sell_info:
+                now_ts = tick.now_ts
+                last_reprice = float(ctx.last_reprice_time or ctx.leg1_filled_time or now_ts)
+                time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
+
+                if now_ts - last_reprice >= 10.0 and time_to_exp <= 80.0:
+                    cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                    if cur_bid is not None and cur_bid > 0:
+                        cur_sell_price = float(sell_info.get("price", leg1.cost))
+                        target_reprice = cur_sell_price
+                        if time_to_exp < 45.0:
+                            # 临近交割（<45s）：贴近当前买一价快速出场做 T，消除强平滑点
+                            target_reprice = round(max(cur_bid, leg1.cost * 0.98), 4)
+                        elif time_to_exp < 75.0:
+                            # 中期阶梯（45~75s）：挂在买一 + 0.002
+                            target_reprice = round(max(cur_bid + 0.002, leg1.cost), 4)
+
+                        safe_new_price, _ = OrderExecutionService.sanitize_order_params(target_reprice, target_reprice * leg1.size)
+                        if abs(safe_new_price - cur_sell_price) >= 0.003 and safe_new_price >= leg1.cost * 0.92:
+                            if params.is_live and sell_id:
+                                await deps.client.cancel_order_async(sell_id)
+                                new_order = await deps.client.post_order_async(str(leg1.token), safe_new_price, leg1.size, "SELL", "GTC")
+                                if new_order and new_order.get("status") not in ("ERROR", None):
+                                    sell_info["price"] = safe_new_price
+                                    sell_info["order_id"] = new_order.get("orderID") or new_order.get("order_id")
+                                    ctx.last_reprice_time = now_ts
+                                    deps.set_trade(market_id, ctx.to_dict())
+                            elif not params.is_live:
+                                sell_info["price"] = safe_new_price
+                                ctx.last_reprice_time = now_ts
+                                deps.set_trade(market_id, ctx.to_dict())
+
             return
 
         # ── B. 处理单订单模式成交 ────────────────────────────
