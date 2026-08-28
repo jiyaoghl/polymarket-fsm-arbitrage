@@ -196,11 +196,64 @@ def generate_dashboard_embed() -> Optional[Any]:
     return embed
 
 
+def format_ansi_logs(raw_lines: List[str]) -> str:
+    """将 VPS 日志转换为带有 Discord ANSI 彩色高亮的终端文本"""
+    formatted = []
+    for line in raw_lines:
+        line_clean = line.strip("\r\n")
+        if not line_clean:
+            continue
+        if any(w in line_clean for w in ("ERROR", "CRITICAL", "failed", "强平", "401", "Unauthorized", "Exception")):
+            formatted.append(f"\u001b[31m{line_clean}\u001b[0m")
+        elif any(w in line_clean for w in ("WARNING", "拦截", "溢价", "PAUSED", "熔断", "迟滞")):
+            formatted.append(f"\u001b[33m{line_clean}\u001b[0m")
+        elif any(w in line_clean for w in ("LOCKED", "锁仓", "结算", "成功", "FILLED", "NORMAL", "SETTLED", "已上线")):
+            formatted.append(f"\u001b[32m{line_clean}\u001b[0m")
+        elif any(w in line_clean for w in ("INFO", "poly_bot", "DiscordBot", "LiveGateway")):
+            formatted.append(f"\u001b[34m{line_clean}\u001b[0m")
+        else:
+            formatted.append(line_clean)
+    return "\n".join(formatted)
+
+
 # =============================================================================
-# 持久化纯按钮交互控制面板 (Persistent Button-Driven View V3.0)
+# 持久化纯按钮交互控制面板 (Persistent Button-Driven View V3.1)
 # =============================================================================
 
 if HAS_DISCORD_LIB and discord is not None:
+    class ConfirmCleanHistoryView(discord.ui.View):
+        """清空历史订单二次防误触确认视图 (30s 自动超时自毁)"""
+        def __init__(self, parent_view: Optional[discord.ui.View] = None):
+            super().__init__(timeout=30.0)
+            self.parent_view = parent_view
+
+        async def on_timeout(self):
+            for child in self.children:
+                child.disabled = True
+
+        @discord.ui.button(label="🔴 确认彻底清空历史", style=discord.ButtonStyle.danger, custom_id="btn_confirm_clean_yes")
+        async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            try:
+                from polymarket.db import clean_all_historical_trades
+                counts = clean_all_historical_trades()
+                for child in self.children:
+                    child.disabled = True
+                await interaction.edit_original_response(content=f"✅ 历史订单数据已彻底清空并重置为零历史状态！明细: `{counts}`", view=self)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 清理失败: {e}", ephemeral=True)
+
+        @discord.ui.button(label="🟢 取消返回", style=discord.ButtonStyle.secondary, custom_id="btn_confirm_clean_cancel")
+        async def on_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(content="🛡️ 操作已取消，历史数据保持完好。", view=self)
+
+
     class DashboardControlView(discord.ui.View):
         """
         全功能持久化 3x3 九宫格交互按钮面板。
@@ -289,20 +342,24 @@ if HAS_DISCORD_LIB and discord is not None:
                 return
 
             embed = discord.Embed(
-                title="🎯 当前活跃 5min 套利盘口详情",
-                description=f"系统正在对以下 **{len(current_markets)}** 个市场进行微观扫描：",
+                title="🎯 当前活跃 5min 套利盘口深度与价差",
+                description=f"全天候微观监控：共 **{len(current_markets)}** 个 5min 盘口",
                 color=0x8B5CF6,
                 timestamp=discord.utils.utcnow()
             )
             now = time.time()
             for m in current_markets:
-                asset = m.get("__asset_type", "UNKNOWN")
+                asset = m.get("asset") or m.get("__asset_type", "UNKNOWN")
                 desc = m.get("description", m.get("id", ""))
-                exp = m.get("expiry", 0)
+                exp = m.get("end_time") or m.get("expiry", 0)
                 remaining = max(0, int(exp - now))
+                tokens = m.get("tokens", [])
+                yes_tok = tokens[0].get("token_id") if len(tokens) > 0 else ""
+                no_tok = tokens[1].get("token_id") if len(tokens) > 1 else ""
+
                 embed.add_field(
                     name=f"🪙 [{asset}] {desc[:40]}",
-                    value=f"• 市场 ID: `{m.get('id')[:16]}...`\n• 距离交割: `{remaining}s` ({remaining//60}分{remaining%60}秒)",
+                    value=f"• 距离交割: `{remaining}s` ({remaining//60}分{remaining%60}秒) | 状态: `🟢 活跃追踪`\n• YES Token: `{yes_tok[:12]}...`\n• NO Token: `{no_tok[:12]}...`",
                     inline=False
                 )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -325,14 +382,14 @@ if HAS_DISCORD_LIB and discord is not None:
             try:
                 with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
                     tail_lines = list(deque(f, maxlen=20))
-                content = "".join(tail_lines)
-                if not content.strip():
+                ansi_content = format_ansi_logs(tail_lines)
+                if not ansi_content.strip():
                     await interaction.followup.send("📜 日志暂无内容。", ephemeral=True)
                     return
 
-                chunks = [content[i:i + 1800] for i in range(0, len(content), 1800)]
+                chunks = [ansi_content[i:i + 1800] for i in range(0, len(ansi_content), 1800)]
                 for chunk in chunks:
-                    await interaction.followup.send(f"```text\n{chunk}\n```", ephemeral=True)
+                    await interaction.followup.send(f"```ansi\n{chunk}\n```", ephemeral=True)
             except Exception as e:
                 await interaction.followup.send(f"❌ 读取日志失败: {e}", ephemeral=True)
 
@@ -382,23 +439,22 @@ if HAS_DISCORD_LIB and discord is not None:
                 await interaction.response.edit_message(embed=embed, view=self)
                 await interaction.followup.send("▶️ 策略已恢复：解除暂停状态，恢复 5min 套利扫描。", ephemeral=True)
 
-        @discord.ui.button(label="🧹 清空历史 (需管理员)", style=discord.ButtonStyle.danger, custom_id="btn_clean_history", row=2)
+        @discord.ui.button(label="🧹 清空历史", style=discord.ButtonStyle.danger, custom_id="btn_clean_history", row=2)
         async def on_clean(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not is_admin(interaction.user.id):
                 await interaction.response.send_message("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
                 return
 
-            await interaction.response.defer(ephemeral=True)
-            try:
-                from polymarket.db import clean_all_historical_trades
-                counts = clean_all_historical_trades()
-                embed = generate_dashboard_embed()
-                if embed:
-                    await interaction.message.edit(embed=embed, view=self)
-                await interaction.followup.send(f"✅ 历史订单数据已彻底清空并重置！明细: `{counts}`", ephemeral=True)
-            except Exception as e:
-                await interaction.followup.send(f"❌ 清理失败: {e}", ephemeral=True)
+            confirm_view = ConfirmCleanHistoryView(parent_view=self)
+            await interaction.response.send_message(
+                "⚠️ **高危操作防误触确认**\n您确定要彻底清空 SQLite 数据库中的所有历史订单、已实现盈亏统计和缓存吗？\n（此操作不可逆，30 秒未操作将自动失效）",
+                view=confirm_view,
+                ephemeral=True
+            )
 else:
+    class ConfirmCleanHistoryView:
+        pass
+
     class DashboardControlView:
         pass
 

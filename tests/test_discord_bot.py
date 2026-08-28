@@ -66,5 +66,32 @@ def test_button_view_structure():
     assert "btn_clean_history" in custom_ids
 
 
+def test_format_ansi_logs():
+    from polymarket.services.discord_bot import format_ansi_logs
+    raw = [
+        "13:25:00 | ERROR | poly_bot | [LiveGateway] 下单失败: 401 Unauthorized",
+        "13:25:01 | WARNING | poly_bot | [RiskManager] 拦截开仓: 波动率过大",
+        "13:25:02 | INFO | poly_bot | [FSM] 状态流转: LOCKED 锁仓成功",
+        "13:25:03 | INFO | poly_bot | 普通调试日志"
+    ]
+    ansi_res = format_ansi_logs(raw)
+    assert "\u001b[31m" in ansi_res  # 包含红色
+    assert "\u001b[33m" in ansi_res  # 包含黄色
+    assert "\u001b[32m" in ansi_res  # 包含绿色
+
+
+def test_confirm_clean_view_structure():
+    from polymarket.services.discord_bot import ConfirmCleanHistoryView, HAS_DISCORD_LIB
+    if not HAS_DISCORD_LIB:
+        return
+    view = ConfirmCleanHistoryView()
+    assert hasattr(view, "children")
+    custom_ids = [btn.custom_id for btn in view.children]
+    assert "btn_confirm_clean_yes" in custom_ids
+    assert "btn_confirm_clean_cancel" in custom_ids
+    assert view.timeout == 30.0
+
+
+
 
 
