@@ -44,6 +44,13 @@ class TradeRepository:
         except Exception as e:
             logger.warning(f"[仓储服务：{strategy_id}] 归档交易异常 ({context.market_id}): {e}")
 
+    def delete_active_trade(self, strategy_id: str, market_id: str):
+        """显式清理活跃持仓缓存"""
+        try:
+            db_ops.delete_trade_cache(market_id, strategy_id, self.db_path)
+        except Exception as e:
+            logger.warning(f"[仓储服务：{strategy_id}] 清理活跃缓存异常 ({market_id}): {e}")
+
     def recover_unhedged_trades(self, strategy_id: str, is_live: bool) -> List[TradeContext]:
         """
         开机崩溃恢复：提取所有真正处于单边/未终态的持仓。
