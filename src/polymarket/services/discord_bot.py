@@ -33,15 +33,187 @@ def is_admin(user_id: int) -> bool:
     return str(user_id) in DISCORD_ADMIN_IDS or int(user_id) in [int(x) for x in DISCORD_ADMIN_IDS if x.isdigit()]
 
 
+def generate_dashboard_embed() -> Optional[Any]:
+    """生成统一的大盘状态富文本 Embed 卡片"""
+    if not HAS_DISCORD_LIB or discord is None:
+        return None
+
+    from polymarket.risk_manager import RiskManager
+    from polymarket.kline_analyzer import get_asset_status
+    from polymarket.db import count_open_positions
+
+    rm = RiskManager()
+    status = rm.get_status()
+    is_paused = rm.is_emergency_halted
+
+    color = 0xEF4444 if is_paused else 0x10B981
+    status_icon = "🔴 PAUSED (已暂停开仓)" if is_paused else "🟢 NORMAL (全天候套利中)"
+
+    embed = discord.Embed(
+        title="📊 Polymarket 实时量化监控与远程控制台",
+        description=f"当前系统运行状态: **{status_icon}**",
+        color=color,
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed.add_field(name="💰 链上真实余额", value=f"`${status.get('live_balance', 0.0):.2f}` USDC", inline=True)
+    embed.add_field(name="🔒 活跃持仓总数", value=f"`{count_open_positions()}` 笔", inline=True)
+    embed.add_field(name="🛡️ 实盘敞口占用", value=f"`${status.get('live_exposure', 0.0):.2f}` USDC", inline=True)
+    embed.add_field(name="🔵 模拟资金池", value=f"`${status.get('paper_balance', 0.0):.2f}` USDC", inline=True)
+    embed.add_field(name="📈 累计已实现盈亏", value=f"`${status.get('realized_pnl', 0.0):+.4f}` USDC", inline=True)
+
+    # 标的波动率防爆盾状态
+    chop_text = []
+    for a in SUPPORTED_ASSETS:
+        ast = get_asset_status(a)
+        if ast.get("timestamp", 0) > 0:
+            icon = "🟢 震荡" if ast.get("is_choppy") else "🔴 单边"
+            chop_text.append(f"• **{a}**: 振幅 {ast.get('amplitude', 0.0):.2f}% ({icon})")
+    if chop_text:
+        embed.add_field(name="🪙 实时行情守门 (K线防爆盾)", value="\n".join(chop_text), inline=False)
+
+    embed.set_footer(text="点击下方按钮直接操作 | Polymarket FSM Arbitrage Bot V2.0")
+    return embed
+
+
+# =============================================================================
+# 持久化纯按钮交互控制面板 (Persistent Button-Driven View)
+# =============================================================================
+
+if HAS_DISCORD_LIB and discord is not None:
+    class DashboardControlView(discord.ui.View):
+        """
+        全功能持久化交互按钮面板。
+        特性：
+        1. timeout=None + 静态 custom_id，VPS 重启后按钮永久有效；
+        2. defer(ephemeral=True) 避免 3 秒响应超时；
+        3. 原位刷新 (In-Place Edit) 零刷屏。
+        """
+
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="🔄 刷新大盘", style=discord.ButtonStyle.success, custom_id="btn_refresh_status", row=0)
+        async def on_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+            embed = generate_dashboard_embed()
+            if embed:
+                await interaction.response.edit_message(embed=embed, view=self)
+
+        @discord.ui.button(label="💰 资金余额", style=discord.ButtonStyle.primary, custom_id="btn_view_balance", row=0)
+        async def on_balance(self, interaction: discord.Interaction, button: discord.ui.Button):
+            from polymarket.risk_manager import RiskManager
+            rm = RiskManager()
+            st = rm.get_status()
+
+            embed = discord.Embed(
+                title="💰 资金池与风控额度概况",
+                color=0x3B82F6,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="🔴 实盘链上余额", value=f"`${st.get('live_balance', 0.0):.4f}` USDC", inline=True)
+            embed.add_field(name="🔒 实盘占用敞口", value=f"`${st.get('live_exposure', 0.0):.2f}` USDC", inline=True)
+            embed.add_field(name="🔵 模拟资金池", value=f"`${st.get('paper_balance', 0.0):.2f}` USDC", inline=True)
+            embed.add_field(name="📈 累计已实现盈亏", value=f"`${st.get('realized_pnl', 0.0):+.4f}` USDC", inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        @discord.ui.button(label="📜 最新日志", style=discord.ButtonStyle.secondary, custom_id="btn_view_logs", row=0)
+        async def on_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以查看控制台日志。", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            from polymarket.config import paths
+            from collections import deque
+            log_path = paths.logs_dir() / "trade.log"
+
+            if not log_path.exists():
+                await interaction.followup.send("❌ 日志文件不存在: `trade.log`", ephemeral=True)
+                return
+
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                    tail_lines = list(deque(f, maxlen=20))
+                content = "".join(tail_lines)
+                if not content.strip():
+                    await interaction.followup.send("📜 日志暂无内容。", ephemeral=True)
+                    return
+
+                chunks = [content[i:i + 1800] for i in range(0, len(content), 1800)]
+                for chunk in chunks:
+                    await interaction.followup.send(f"```text\n{chunk}\n```", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 读取日志失败: {e}", ephemeral=True)
+
+        @discord.ui.button(label="⏸️ 紧急暂停", style=discord.ButtonStyle.danger, custom_id="btn_emergency_pause", row=1)
+        async def on_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以执行熔断操作。", ephemeral=True)
+                return
+
+            from polymarket.risk_manager import RiskManager
+            rm = RiskManager()
+            rm.is_emergency_halted = True
+            embed = generate_dashboard_embed()
+            if embed:
+                await interaction.response.edit_message(embed=embed, view=self)
+                await interaction.followup.send("⏸️ 已触发紧急熔断：已暂停所有策略新开仓。", ephemeral=True)
+
+        @discord.ui.button(label="▶️ 恢复开仓", style=discord.ButtonStyle.success, custom_id="btn_resume_trading", row=1)
+        async def on_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以执行恢复操作。", ephemeral=True)
+                return
+
+            from polymarket.risk_manager import RiskManager
+            rm = RiskManager()
+            rm.is_emergency_halted = False
+            embed = generate_dashboard_embed()
+            if embed:
+                await interaction.response.edit_message(embed=embed, view=self)
+                await interaction.followup.send("▶️ 策略已恢复：解除暂停状态，恢复 5min 套利扫描。", ephemeral=True)
+
+        @discord.ui.button(label="🎉 链上赎回", style=discord.ButtonStyle.primary, custom_id="btn_onchain_redeem", row=1)
+        async def on_redeem(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以触发链上赎回。", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            try:
+                from polymarket.services.onchain_redeemer import OnChainRedeemer
+                from polymarket.client import get_client
+                client = get_client(is_live=True)
+                redeemer = OnChainRedeemer(client=client)
+                res = redeemer.redeem_all_expired()
+                await interaction.followup.send(f"🎉 链上赎回执行完毕，结果: `{res}`", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 链上赎回执行异常: {e}", ephemeral=True)
+
+        @discord.ui.button(label="🧹 清空历史 (需管理员)", style=discord.ButtonStyle.danger, custom_id="btn_clean_history", row=2)
+        async def on_clean(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            try:
+                from polymarket.db import clean_all_historical_trades
+                counts = clean_all_historical_trades()
+                embed = generate_dashboard_embed()
+                if embed:
+                    await interaction.message.edit(embed=embed, view=self)
+                await interaction.followup.send(f"✅ 历史订单数据已彻底清空并重置！明细: `{counts}`", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ 清理失败: {e}", ephemeral=True)
+else:
+    class DashboardControlView:
+        pass
+
+
 class DiscordInteractiveBot:
     """
-    Discord 双向交互与远程控制机器人 (Interactive Command Bot)。
-    
-    架构特性：
-    1. 零侵入与平滑降级：未配置 Token 或缺失依赖时不占用任何资源；
-    2. 独立异步事件循环：在独立后台守护线程中运行，绝不阻塞主交易线程；
-    3. 管理员鉴权：高危写操作 (clean, pause, redeem) 严格鉴权；
-    4. 2000 字符分片保护：长文本自动分块发送。
+    Discord 纯按钮交互与远程控制机器人 (Button-Driven Interactive Bot)。
     """
 
     _instance: Optional["DiscordInteractiveBot"] = None
@@ -54,9 +226,9 @@ class DiscordInteractiveBot:
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-        if HAS_DISCORD_LIB and self.token:
+        if HAS_DISCORD_LIB and self.token and discord is not None:
             intents = discord.Intents.default()
-            intents.message_content = True
+            # 按钮交互无需特权消息意图
             prefixes = [self.prefix, "!", "！", "/", "$", "p!"] if self.prefix else ["!", "！", "/"]
             unique_prefixes = list(dict.fromkeys(prefixes))
             self.bot = commands.Bot(
@@ -76,205 +248,25 @@ class DiscordInteractiveBot:
         return cls._instance
 
     def _register_commands(self):
-        """注册所有前缀指令"""
+        """注册指令与持久化 View 绑定"""
         bot = self.bot
         if not bot:
             return
 
         @bot.event
         async def on_ready():
-            logger.info(f"[DiscordBot] 交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id})")
-            activity = discord.Activity(type=discord.ActivityType.watching, name=f"Polymarket 5min 盘口 | !help")
+            logger.info(f"[DiscordBot] 纯按钮交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id})")
+            # 注册持久化视图，确保重启后所有卡片上的按钮永久生效
+            bot.add_view(DashboardControlView())
+            activity = discord.Activity(type=discord.ActivityType.watching, name=f"Polymarket 5min 盘口 | 点击按钮控制")
             await bot.change_presence(status=discord.Status.online, activity=activity)
 
-        @bot.event
-        async def on_message(message):
-            if message.author.bot:
-                return
-            logger.info(f"[DiscordBot] 监听到频道消息 [{message.author}]: {message.content}")
-            await bot.process_commands(message)
-
-        @bot.event
-        async def on_command_error(ctx, error):
-            logger.warning(f"[DiscordBot] 指令处理异常 [{ctx.command}]: {error}")
-            if isinstance(error, commands.CommandNotFound):
-                return
-            await ctx.send(f"⚠️ 指令执行异常: `{error}`")
-
-        @bot.command(name="help")
-        async def cmd_help(ctx):
-            """调出帮助菜单"""
-            embed = discord.Embed(
-                title="🤖 Polymarket 交互控制机器人指令手册",
-                description=f"使用前缀 `{self.prefix}` 发送以下指令进行远程监控与运维：",
-                color=0x3B82F6
-            )
-            embed.add_field(name=f"📊 `{self.prefix}status`", value="查询当前实时大盘、活跃 5min 盘口与各策略盈亏", inline=False)
-            embed.add_field(name=f"💰 `{self.prefix}balance`", value="查询链上真实 USDC 余额与风控已用/剩余额度", inline=False)
-            embed.add_field(name=f"🧹 `{self.prefix}clean`", value="⚠️ 【管理员】一键清空 VPS 历史交易数据并重置大盘", inline=False)
-            embed.add_field(name=f"⏸️ `{self.prefix}pause`", value="⚠️ 【管理员】紧急熔断：暂停所有策略新市场开仓", inline=False)
-            embed.add_field(name=f"▶️ `{self.prefix}resume`", value="⚠️ 【管理员】恢复开仓：解除暂停状态", inline=False)
-            embed.add_field(name=f"🎉 `{self.prefix}redeem`", value="⚠️ 【管理员】手动触发链上已到期市场结算赎回", inline=False)
-            embed.add_field(name=f"📜 `{self.prefix}logs [n]`", value="⚠️ 【管理员】查看 VPS 最新 N 行交易控制台日志", inline=False)
-            embed.set_footer(text="Polymarket FSM Arbitrage Bot V2.0")
-            await ctx.send(embed=embed)
-
-        @bot.command(name="status")
-        async def cmd_status(ctx):
-            """查询大盘总览"""
-            from polymarket.risk_manager import RiskManager
-            from polymarket.kline_analyzer import get_asset_status
-            from polymarket.db import count_open_positions
-            
-            rm = RiskManager()
-            status = rm.get_status()
-            
-            embed = discord.Embed(
-                title="📊 Polymarket 实时运行与量化大盘状态",
-                color=0x10B981,
-                timestamp=discord.utils.utcnow()
-            )
-            embed.add_field(name="💰 链上真实余额", value=f"`${status.get('live_balance', 0.0):.2f}` USDC", inline=True)
-            embed.add_field(name="🔒 活跃持仓总数", value=f"`{count_open_positions()}` 笔", inline=True)
-            embed.add_field(name="🛡️ 风控状态", value=f"`{'PAUSED (已暂停)' if rm.is_emergency_halted else 'NORMAL (正常运行)'}`", inline=True)
-
-            # 波动率状态
-            chop_text = []
-            for a in SUPPORTED_ASSETS:
-                ast = get_asset_status(a)
-                if ast.get("timestamp", 0) > 0:
-                    icon = "🟢 震荡" if ast.get("is_choppy") else "🔴 单边"
-                    chop_text.append(f"• **{a}**: 振幅 {ast.get('amplitude', 0.0):.2f}% ({icon})")
-            if chop_text:
-                embed.add_field(name="📈 标的波动率守门", value="\n".join(chop_text), inline=False)
-
-            embed.set_footer(text="数据来源: VPS 本地 SQLite WAL & 内存状态")
-            await ctx.send(embed=embed)
-
-        @bot.command(name="balance")
-        async def cmd_balance(ctx):
-            """查询余额与额度"""
-            from polymarket.risk_manager import RiskManager
-            rm = RiskManager()
-            st = rm.get_status()
-
-            embed = discord.Embed(
-                title="💰 资金池与风控额度概况",
-                color=0x3B82F6,
-                timestamp=discord.utils.utcnow()
-            )
-            embed.add_field(name="🔴 实盘链上余额", value=f"`${st.get('live_balance', 0.0):.4f}` USDC", inline=True)
-            embed.add_field(name="🔒 实盘占用敞口", value=f"`${st.get('live_exposure', 0.0):.2f}` USDC", inline=True)
-            embed.add_field(name="🔵 模拟资金池", value=f"`${st.get('paper_balance', 0.0):.2f}` USDC", inline=True)
-            embed.add_field(name="📈 累计已实现盈亏", value=f"`${st.get('realized_pnl', 0.0):+.4f}` USDC", inline=False)
-            await ctx.send(embed=embed)
-
-        @bot.command(name="clean")
-        async def cmd_clean(ctx):
-            """一键清理历史数据"""
-            if not is_admin(ctx.author.id):
-                await ctx.send(f"❌ 权限不足：只有管理员可以执行 `{self.prefix}clean` 指令。")
-                return
-
-            await ctx.send("🧹 正在执行 VPS 历史订单与交易数据清理...")
-            try:
-                from polymarket.db import clean_all_historical_trades
-                counts = clean_all_historical_trades()
-                embed = discord.Embed(
-                    title="✅ VPS 历史交易数据已彻底清空并重置",
-                    description=f"已清空表记录明细：\n`{counts}`\n大盘看板已恢复 $0.0000 初始纯净状态。",
-                    color=0x10B981
-                )
-                await ctx.send(embed=embed)
-            except Exception as e:
-                await ctx.send(f"❌ 清理失败: {e}")
-
-        @bot.command(name="pause")
-        async def cmd_pause(ctx):
-            """紧急熔断暂停开仓"""
-            if not is_admin(ctx.author.id):
-                await ctx.send("❌ 权限不足：只有管理员可以执行熔断操作。")
-                return
-
-            from polymarket.risk_manager import RiskManager
-            rm = RiskManager()
-            rm.is_emergency_halted = True
-            embed = discord.Embed(
-                title="⏸️ 策略开仓已紧急暂停 (Emergency Halted)",
-                description="风控熔断开关已开启，所有策略将拒绝进入新市场开仓。",
-                color=0xEF4444
-            )
-            await ctx.send(embed=embed)
-
-        @bot.command(name="resume")
-        async def cmd_resume(ctx):
-            """恢复开仓"""
-            if not is_admin(ctx.author.id):
-                await ctx.send("❌ 权限不足：只有管理员可以执行恢复操作。")
-                return
-
-            from polymarket.risk_manager import RiskManager
-            rm = RiskManager()
-            rm.is_emergency_halted = False
-            embed = discord.Embed(
-                title="▶️ 策略开仓已成功恢复 (Resumed)",
-                description="风控熔断已解除，系统恢复正常 5min 盘口套利扫描。",
-                color=0x10B981
-            )
-            await ctx.send(embed=embed)
-
-        @bot.command(name="redeem")
-        async def cmd_redeem(ctx):
-            """手动触发链上赎回"""
-            if not is_admin(ctx.author.id):
-                await ctx.send("❌ 权限不足：只有管理员可以触发链上赎回。")
-                return
-
-            await ctx.send("⏳ 正在扫描链上已到期市场并执行自动赎回...")
-            try:
-                from polymarket.services.onchain_redeemer import OnChainRedeemer
-                from polymarket.client import get_client
-                client = get_client(is_live=True)
-                redeemer = OnChainRedeemer(client=client)
-                res = redeemer.redeem_all_expired()
-                await ctx.send(f"🎉 链上赎回执行完毕，结果: `{res}`")
-            except Exception as e:
-                await ctx.send(f"❌ 链上赎回执行异常: {e}")
-
-        @bot.command(name="logs")
-        async def cmd_logs(ctx, lines: int = 20):
-            """查看 VPS 日志"""
-            if not is_admin(ctx.author.id):
-                await ctx.send("❌ 权限不足：只有管理员可以查看系统日志。")
-                return
-
-            lines = min(max(lines, 5), 50)
-            from polymarket.config import paths
-            from collections import deque
-            log_path = paths.logs_dir() / "trade.log"
-
-            if not log_path.exists():
-                await ctx.send("❌ 日志文件不存在: `trade.log`")
-                return
-
-            try:
-                with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                    tail_lines = list(deque(f, maxlen=lines))
-                content = "".join(tail_lines)
-                if not content.strip():
-                    await ctx.send("📜 日志暂无内容。")
-                    return
-
-                # 分块发送防 2000 字符截断
-                chunks = [content[i:i + 1800] for i in range(0, len(content), 1800)]
-                for idx, chunk in enumerate(chunks):
-                    await ctx.send(f"```text\n{chunk}\n```")
-            except Exception as e:
-                await ctx.send(f"❌ 读取日志失败: {e}")
-
-    # =========================================================================
-    # 启动与生命周期管理
-    # =========================================================================
+        @bot.command(name="panel", aliases=["status", "help", "menu", "p", "dashboard"])
+        async def cmd_panel(ctx):
+            """唤出纯按钮交互控制台"""
+            embed = generate_dashboard_embed()
+            view = DashboardControlView()
+            await ctx.send(embed=embed, view=view)
 
     def start(self):
         """在独立后台守护线程中启动 Discord 机器人"""
@@ -290,10 +282,11 @@ class DiscordInteractiveBot:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
             try:
-                logger.info("[DiscordBot] 正在启动 Discord 双向交互控制机器人...")
+                logger.info("[DiscordBot] 正在启动 Discord 纯按钮交互控制机器人...")
                 self._loop.run_until_complete(self.bot.start(self.token))
             except Exception as e:
                 logger.warning(f"[DiscordBot] 机器人后台线程异常退出: {e}")
 
         self._thread = threading.Thread(target=_runner, daemon=True, name="DiscordInteractiveBotWorker")
         self._thread.start()
+

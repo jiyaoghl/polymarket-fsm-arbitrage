@@ -26,58 +26,29 @@ def test_bot_graceful_degradation():
     bot_service.start()
 
 
-def test_bot_commands_execution_mocked():
-    import asyncio
-    async def _test():
-        from polymarket.services.discord_bot import HAS_DISCORD_LIB
-        if not HAS_DISCORD_LIB:
-            return  # 若测试环境未安装 discord.py 则安全返回
+def test_dashboard_embed_generation():
+    from polymarket.services.discord_bot import generate_dashboard_embed, HAS_DISCORD_LIB
+    if not HAS_DISCORD_LIB:
+        return
+    embed = generate_dashboard_embed()
+    assert embed is not None
+    assert "Polymarket 实时量化监控与远程控制台" in embed.title
 
-        with patch("polymarket.services.discord_bot.DISCORD_ADMIN_IDS", ["12345"]):
-            bot_service = DiscordInteractiveBot(token="mock_token_123", prefix="!")
-            if not bot_service.bot:
-                return
 
-            # 模拟上下文 Context
-            mock_ctx = MagicMock()
-            mock_ctx.send = AsyncMock()
-            mock_ctx.author.id = 12345
+def test_button_view_structure():
+    from polymarket.services.discord_bot import DashboardControlView, HAS_DISCORD_LIB
+    if not HAS_DISCORD_LIB:
+        return
+    view = DashboardControlView()
+    assert hasattr(view, "children")
+    custom_ids = [btn.custom_id for btn in view.children]
+    assert "btn_refresh_status" in custom_ids
+    assert "btn_view_balance" in custom_ids
+    assert "btn_view_logs" in custom_ids
+    assert "btn_emergency_pause" in custom_ids
+    assert "btn_resume_trading" in custom_ids
+    assert "btn_onchain_redeem" in custom_ids
+    assert "btn_clean_history" in custom_ids
 
-            # 模拟非管理员 Context
-            mock_non_admin_ctx = MagicMock()
-            mock_non_admin_ctx.send = AsyncMock()
-            mock_non_admin_ctx.author.id = 99999
-
-            # 1. 测试 help 指令
-            help_cmd = bot_service.bot.get_command("help")
-            if help_cmd:
-                await help_cmd.callback(mock_ctx)
-                assert mock_ctx.send.called
-
-            # 2. 测试 status 指令
-            status_cmd = bot_service.bot.get_command("status")
-            if status_cmd:
-                await status_cmd.callback(mock_ctx)
-                assert mock_ctx.send.called
-
-            # 3. 测试 balance 指令
-            balance_cmd = bot_service.bot.get_command("balance")
-            if balance_cmd:
-                await balance_cmd.callback(mock_ctx)
-                assert mock_ctx.send.called
-
-            # 4. 测试非管理员触发 clean 被拦截
-            clean_cmd = bot_service.bot.get_command("clean")
-            if clean_cmd:
-                await clean_cmd.callback(mock_non_admin_ctx)
-                assert "权限不足" in mock_non_admin_ctx.send.call_args[0][0]
-
-            # 5. 测试非管理员触发 pause / resume 被拦截
-            pause_cmd = bot_service.bot.get_command("pause")
-            if pause_cmd:
-                await pause_cmd.callback(mock_non_admin_ctx)
-                assert "权限不足" in mock_non_admin_ctx.send.call_args[0][0]
-
-    asyncio.run(_test())
 
 

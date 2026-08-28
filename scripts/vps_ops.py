@@ -31,7 +31,7 @@ except ImportError:
     sys.exit(1)
 
 # 默认 VPS 地址，支持环境变量覆盖
-DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://43.163.193.38:8888")
+DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://43.167.189.162:8888")
 
 # ANSI 终端色彩
 GREEN = "\033[92m"
