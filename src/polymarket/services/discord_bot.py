@@ -238,6 +238,11 @@ class DiscordInteractiveBot:
 
         if HAS_DISCORD_LIB and is_valid_token and discord is not None:
             intents = discord.Intents.default()
+            try:
+                intents.message_content = True
+            except Exception:
+                pass
+
             prefixes = [self.prefix, "!", "！", "/", "$", "p!"] if self.prefix else ["!", "！", "/"]
             unique_prefixes = list(dict.fromkeys(prefixes))
             self.bot = commands.Bot(
@@ -267,8 +272,37 @@ class DiscordInteractiveBot:
             logger.info(f"[DiscordBot] 纯按钮交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id})")
             # 注册持久化视图，确保重启后所有卡片上的按钮永久生效
             bot.add_view(DashboardControlView())
-            activity = discord.Activity(type=discord.ActivityType.watching, name=f"Polymarket 5min 盘口 | 点击按钮控制")
+            activity = discord.Activity(type=discord.ActivityType.watching, name="Polymarket 5min 盘口 | 点击按钮控制")
             await bot.change_presence(status=discord.Status.online, activity=activity)
+
+            # 启动时主动向所在服务器的首个可写频道投递最新的控制台卡片
+            for guild in bot.guilds:
+                for channel in guild.text_channels:
+                    perms = channel.permissions_for(guild.me)
+                    if perms.send_messages and perms.embed_links:
+                        try:
+                            embed = generate_dashboard_embed()
+                            view = DashboardControlView()
+                            await channel.send("🚀 **Polymarket 量化控制台已上线**，请直接点击下方按钮进行操作：", embed=embed, view=view)
+                            logger.info(f"[DiscordBot] 已自动向频道 [{channel.name}] 投递纯按钮控制面板。")
+                            break
+                        except Exception as e:
+                            logger.debug(f"[DiscordBot] 自动投递控制台异常: {e}")
+
+        @bot.event
+        async def on_message(message):
+            if message.author.bot:
+                return
+            logger.info(f"[DiscordBot] 监听到频道消息 [{message.author}]: '{message.content}'")
+            content_clean = message.content.strip().lower()
+            # 智能唤出：被 @ 或发送 panel/status/help/大盘/控制台 时直接投递控制面板
+            trigger_words = ("!panel", "！panel", "/panel", "!status", "！status", "/status", "!help", "！help", "/help", "panel", "status", "help", "控制台", "大盘")
+            if (bot.user and bot.user.mentioned_in(message)) or content_clean in trigger_words or content_clean.startswith(tuple(self.prefix)):
+                embed = generate_dashboard_embed()
+                view = DashboardControlView()
+                await message.channel.send(embed=embed, view=view)
+                return
+            await bot.process_commands(message)
 
         @bot.command(name="panel", aliases=["status", "help", "menu", "p", "dashboard"])
         async def cmd_panel(ctx):
