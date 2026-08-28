@@ -146,8 +146,12 @@ class ArbitrageBotFSM(BaseStrategy):
                 ctx.fee_usdc = fee
                 ctx.profit_usdc = net
                 self._set_trade(market_id, ctx.to_dict())
-                
-            self.repository.archive_trade(self.strategy_id, ctx)
+
+            # 仅对真正发生过开仓成交 (含 leg1 或 leg2) 的有效交易进行历史归档
+            if ctx.leg1 is not None or ctx.leg2 is not None:
+                self.repository.archive_trade(self.strategy_id, ctx)
+            else:
+                self.repository.delete_active_trade(self.strategy_id, market_id)
         else:
             self.repository.save_active_trade(self.strategy_id, ctx)
 

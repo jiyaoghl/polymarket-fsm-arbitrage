@@ -317,20 +317,24 @@ def get_all_historical_pnl_summary(path: str = _DB_PATH) -> dict:
         strat_counts = {}
         total_ev = 0.0
         total_fee = 0.0
-        win_count = 0
-        closed_count = 0
-
+        valid_trades_cnt = 0
         for r in rows:
             sid = r["strategy_id"]
             ev = float(r["ev"] or 0.0)
-            strat_pnl[sid] = strat_pnl.get(sid, 0.0) + ev
-            strat_counts[sid] = strat_counts.get(sid, 0) + 1
-            total_ev += ev
 
             try:
                 t = json.loads(r["trade_json"]) if r["trade_json"] else {}
+                # 过滤未曾实际开仓成交的空记录
+                if not t.get("leg1") and not t.get("leg2"):
+                    continue
+
                 fee = float(t.get("fee_usdc", 0.0) or 0.0)
                 total_fee += fee
+                strat_pnl[sid] = strat_pnl.get(sid, 0.0) + ev
+                strat_counts[sid] = strat_counts.get(sid, 0) + 1
+                total_ev += ev
+                valid_trades_cnt += 1
+
                 st = t.get("status") or ""
                 if st in ("locked", "settled"):
                     closed_count += 1
@@ -346,7 +350,7 @@ def get_all_historical_pnl_summary(path: str = _DB_PATH) -> dict:
             "strategies_count": strat_counts,
             "total_net_ev": total_ev,
             "total_fee": total_fee,
-            "total_trades": len(rows),
+            "total_trades": valid_trades_cnt,
             "win_rate": win_rate
         }
 

@@ -1227,12 +1227,11 @@ def api_status() -> DashboardStatusModel:
                 profit_usdc = row["ev"] or 0.0
                 status_str = trade.get("status") or ""
                 
-                # [优化] 如果历史订单状态是 failed，直接跳过，不在前端长久展示，保持界面整洁
-                if status_str == "failed":
-                    continue
-                    
+                # [优化] 如果历史订单状态是 failed，或从未建仓开单 (无 leg1 与 leg2)，直接跳过，保持界面干净
                 h_leg1 = trade.get("leg1")
                 h_leg2 = trade.get("leg2")
+                if status_str == "failed" or (not h_leg1 and not h_leg2):
+                    continue
                 h_gross = float(trade.get("gross_profit_usdc", 0.0))
                 h_fee = float(trade.get("fee_usdc", 0.0))
                 if (h_gross == 0.0 or h_fee == 0.0) and isinstance(h_leg1, dict) and isinstance(h_leg2, dict):
