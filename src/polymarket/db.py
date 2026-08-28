@@ -305,3 +305,49 @@ def clean_all_historical_trades(path: str = _DB_PATH) -> dict:
     logger.info(f"[DB] 已清空全部历史交易数据与缓存: {counts}")
     return counts
 
+
+def get_all_historical_pnl_summary(path: str = _DB_PATH) -> dict:
+    """聚合查询所有策略的历史已结算盈亏、手续费、胜率与订单总数，供 Web 与 Discord 统一使用。"""
+    import json
+    with get_conn(path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT strategy_id, ev, trade_json FROM historical_trades").fetchall()
+
+        strat_pnl = {}
+        strat_counts = {}
+        total_ev = 0.0
+        total_fee = 0.0
+        win_count = 0
+        closed_count = 0
+
+        for r in rows:
+            sid = r["strategy_id"]
+            ev = float(r["ev"] or 0.0)
+            strat_pnl[sid] = strat_pnl.get(sid, 0.0) + ev
+            strat_counts[sid] = strat_counts.get(sid, 0) + 1
+            total_ev += ev
+
+            try:
+                t = json.loads(r["trade_json"]) if r["trade_json"] else {}
+                fee = float(t.get("fee_usdc", 0.0) or 0.0)
+                total_fee += fee
+                st = t.get("status") or ""
+                if st in ("locked", "settled"):
+                    closed_count += 1
+                    if ev > 0:
+                        win_count += 1
+            except Exception:
+                pass
+
+        win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+
+        return {
+            "strategies_pnl": strat_pnl,
+            "strategies_count": strat_counts,
+            "total_net_ev": total_ev,
+            "total_fee": total_fee,
+            "total_trades": len(rows),
+            "win_rate": win_rate
+        }
+
+

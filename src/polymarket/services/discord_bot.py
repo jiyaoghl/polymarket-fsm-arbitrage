@@ -44,13 +44,13 @@ def render_progress_bar(used: float, total: float, length: int = 8) -> str:
 
 
 def generate_dashboard_embed() -> Optional[Any]:
-    """生成统一的大盘状态富文本 Embed 卡片 (V3.0 精修版)"""
+    """生成统一的大盘状态富文本 Embed 卡片 (V3.0 精修版，与 Web 页面 100% 统计对齐)"""
     if not HAS_DISCORD_LIB or discord is None:
         return None
 
     from polymarket.risk_manager import RiskManager
     from polymarket.kline_analyzer import get_asset_status
-    from polymarket.db import count_open_positions
+    from polymarket.db import count_open_positions, get_all_historical_pnl_summary
 
     rm = RiskManager()
     status = rm.get_status()
@@ -66,8 +66,12 @@ def generate_dashboard_embed() -> Optional[Any]:
     paper_avail = max(0.0, paper_max - paper_used)
     paper_bar = render_progress_bar(paper_used, paper_max, length=7)
 
-    # 3. 统计全系统总盈亏与活跃单
-    total_pnl = 0.0
+    # 3. 统计全系统总盈亏与活跃单 (历史归档 + 内存活跃单叠加)
+    hist_summary = get_all_historical_pnl_summary()
+    total_pnl = float(hist_summary.get("total_net_ev", 0.0))
+    total_trades_cnt = int(hist_summary.get("total_trades", 0))
+    win_rate = float(hist_summary.get("win_rate", 0.0))
+
     active_pos_count = 0
     tracking_assets = []
     earliest_remaining = None
@@ -107,8 +111,8 @@ def generate_dashboard_embed() -> Optional[Any]:
     )
 
     embed.add_field(name="💰 实盘链上余额", value=f"`${live_max:.2f}` USDC (占用: `${live_used:.2f}`)", inline=True)
-    embed.add_field(name="🔒 活跃持仓总数", value=f"`{active_pos_count}` 笔", inline=True)
-    embed.add_field(name="📈 累计已实现盈亏", value=f"`{'+' if total_pnl >= 0 else '-'}${abs(total_pnl):.4f}` USDC", inline=True)
+    embed.add_field(name="🔒 活跃持仓 / 历史", value=f"`{active_pos_count}` 笔 (历史 `{total_trades_cnt}` 笔)", inline=True)
+    embed.add_field(name="📈 累计净净收益", value=f"`{'+' if total_pnl >= 0 else '-'}${abs(total_pnl):.4f}` USDC (胜率 `{win_rate:.1f}%`)", inline=True)
     embed.add_field(name="🔵 模拟资金池", value=f"`${paper_avail:.2f} / ${paper_max:.0f}` USDC `{paper_bar}`", inline=False)
 
     # 当前盘口追踪状态
@@ -157,8 +161,10 @@ if HAS_DISCORD_LIB and discord is not None:
         @discord.ui.button(label="💰 资金明细", style=discord.ButtonStyle.primary, custom_id="btn_view_balance", row=0)
         async def on_balance(self, interaction: discord.Interaction, button: discord.ui.Button):
             from polymarket.risk_manager import RiskManager
+            from polymarket.db import get_all_historical_pnl_summary
             rm = RiskManager()
             st = rm.get_status()
+            hist = get_all_historical_pnl_summary()
 
             live_max = float(st.get("live_max_exposure", 0.0) or 0.0)
             live_used = float(st.get("live_used_exposure", 0.0) or 0.0)
@@ -166,6 +172,9 @@ if HAS_DISCORD_LIB and discord is not None:
             paper_used = float(st.get("paper_used_exposure", 0.0) or 0.0)
             paper_avail = max(0.0, paper_max - paper_used)
             paper_bar = render_progress_bar(paper_used, paper_max, length=10)
+
+            total_ev = float(hist.get("total_net_ev", 0.0))
+            total_fee = float(hist.get("total_fee", 0.0))
 
             embed = discord.Embed(
                 title="💰 资金池与风控额度明细概况",
@@ -175,32 +184,52 @@ if HAS_DISCORD_LIB and discord is not None:
             embed.add_field(name="🔴 实盘真实余额", value=f"`${live_max:.4f}` USDC", inline=True)
             embed.add_field(name="🔒 实盘占用敞口", value=f"`${live_used:.2f}` USDC", inline=True)
             embed.add_field(name="🔵 模拟资金池使用率", value=f"`${paper_avail:.2f} / ${paper_max:.0f}` USDC\n`{paper_bar}`", inline=False)
+            embed.add_field(name="📈 累计已实现净收益", value=f"`{'+' if total_ev >= 0 else '-'}${abs(total_ev):.4f}` USDC", inline=True)
+            embed.add_field(name="⛽ 累计手续费消耗", value=f"`-${total_fee:.4f}` USDC", inline=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         @discord.ui.button(label="📈 策略盈亏", style=discord.ButtonStyle.primary, custom_id="btn_view_strategies", row=0)
         async def on_strategies(self, interaction: discord.Interaction, button: discord.ui.Button):
             from polymarket.apps.dashboard import manager
+            from polymarket.db import get_all_historical_pnl_summary
+            hist = get_all_historical_pnl_summary()
+            strat_pnl_hist = hist.get("strategies_pnl", {})
+            strat_cnt_hist = hist.get("strategies_count", {})
+
             embed = discord.Embed(
                 title="📈 各策略独立持仓与盈亏排行榜",
+                description="包含全量历史订单与内存活跃持仓聚合统计：",
                 color=0x3B82F6,
                 timestamp=discord.utils.utcnow()
             )
+
             total_all = 0.0
             for bot in getattr(manager, "bots", []):
-                sid = bot.config.get("name", bot.strategy_id)
+                sid = bot.strategy_id
+                sname = bot.config.get("name", sid)
                 mode = "🔴 LIVE" if bot.is_live else "🔵 PAPER"
+                
+                # 内存活跃单
                 trades = bot._get_all_active_trades()
                 active_cnt = sum(1 for t in trades.values() if t.get("status") in ("leg1_only", "locked", "pending_leg2", "pending_both"))
-                pnl = sum(float(t.get("profit_usdc", 0.0) or 0.0) for t in trades.values())
-                total_all += pnl
-                pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"
+                mem_pnl = sum(float(t.get("profit_usdc", 0.0) or 0.0) for t in trades.values())
+                
+                # 历史表累计
+                h_pnl = float(strat_pnl_hist.get(sid, 0.0))
+                h_cnt = int(strat_cnt_hist.get(sid, 0))
+                
+                combined_pnl = h_pnl + mem_pnl
+                total_all += combined_pnl
+                pnl_str = f"+${combined_pnl:.4f}" if combined_pnl >= 0 else f"-${abs(combined_pnl):.4f}"
+
                 embed.add_field(
-                    name=f"{mode} | {sid}",
-                    value=f"• 活跃持仓: `{active_cnt}` 笔 | 累计盈亏: `{pnl_str}` USDC\n• 入场门槛: `≤{bot.entry_max_price:.3f}` | 单笔: `${bot.order_amount:.1f}`",
+                    name=f"{mode} | {sname}",
+                    value=f"• 活跃持仓: `{active_cnt}` 笔 | 历史单: `{h_cnt}` 笔\n• 策略净净收益: `{pnl_str}` USDC\n• 入场门槛: `≤{bot.entry_max_price:.3f}` | 单笔: `${bot.order_amount:.1f}`",
                     inline=False
                 )
+
             tot_str = f"+${total_all:.4f}" if total_all >= 0 else f"-${abs(total_all):.4f}"
-            embed.set_footer(text=f"全组合累计总盈亏: {tot_str} USDC")
+            embed.set_footer(text=f"全组合净净收益: {tot_str} USDC | 手续费: -${hist.get('total_fee', 0.0):.4f} | 胜率: {hist.get('win_rate', 0.0):.1f}%")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         # ---------------- 行 1：微观盘口、日志与链上结算 ----------------
