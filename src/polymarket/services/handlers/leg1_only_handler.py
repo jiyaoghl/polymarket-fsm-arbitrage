@@ -75,6 +75,7 @@ class Leg1OnlyTickHandler(BaseTickHandler):
                 if batch_res and batch_res.get("status") != "ERROR":
                     orders = batch_res.get("orders", [])
                     ctx.dual_orders = orders
+                    ctx.last_reprice_time = now_ts
                     deps.set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.PENDING_LEG2, orders=orders)
                 else:
@@ -97,9 +98,10 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             # 发送同向限价卖单 (GTC SELL)
             order = await deps.client.post_order_async(str(leg1.token), safe_p, leg1.size, "SELL", "GTC")
             if order and order.get("status") not in ("ERROR", None):
-                fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
                 ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
+                ctx.last_reprice_time = now_ts
                 deps.set_trade(market_id, ctx.to_dict())
+                fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
             return
 
         # ── 模式 C: 反向配对对冲 (Pair Hedging) ──
@@ -131,6 +133,9 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             if deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=params.is_live):
                 order = await deps.client.post_order_async(str(opp_token), safe_p, safe_s, "BUY", params.leg2_order_type)
                 if order and order.get("status") not in ("ERROR", None):
+                    ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
+                    ctx.last_reprice_time = now_ts
+                    deps.set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
                 else:
                     deps.risk_manager.release_trade_lock(params.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=params.is_live)

@@ -378,3 +378,81 @@ def test_dispatcher_routing():
         assert mock_handler.handle.called
 
     asyncio.run(_test())
+
+
+def test_pending_leg2_handler_adaptive_reprice():
+    """测试 PendingLeg2TickHandler 在满足阶梯改价条件时安全更新 last_reprice_time 并发送新限价卖单"""
+    async def _test():
+        handler = PendingLeg2TickHandler()
+        deps, trades = create_mock_dependencies()
+        deps.client.post_order_async.return_value = {
+            "status": "OK",
+            "orderID": "new_reprice_order_456"
+        }
+        params = create_sample_params(is_live=True)
+        filter_logger = TickFilterLogger(params.strategy_id)
+        
+        now = time.time()
+        market = {"id": "m_reprice", "__asset_type": "BTC", "expiry": now + 60.0}
+        fsm = TradeFSM("m_reprice", initial_state=TradeState.PENDING_LEG2)
+        
+        # 初始挂单价 0.48，首腿买入价 0.45，上次改价时间为 20 秒前 (>15s)
+        ctx = TradeContext(
+            market_id="m_reprice",
+            status=TradeState.PENDING_LEG2.value,
+            leg1=LegPosition(token="tok_yes", side="BUY", cost=0.45, size=10.0, order_id="buy_1"),
+            leg2=LegPosition(token="tok_yes", side="SELL", cost=0.48, size=10.0, order_id="old_order_123"),
+            leg1_dir="YES",
+            leg2_order_id="old_order_123",
+            last_reprice_time=now - 20.0,
+            end_time=now + 60.0
+        )
+        trades["m_reprice"] = ctx.to_dict()
+        
+        # 盘口买一价为 0.46 (未达到 0.48 未能立即成交)，但符合 45~75s 阶梯改价 (cur_bid + 0.002 = 0.462)
+        tick = TickBundle(
+            yes_token="tok_yes",
+            no_token="tok_no",
+            best_ask_yes=0.47,
+            best_bid_yes=0.46,
+            best_ask_no=0.54,
+            best_bid_no=0.53,
+            now_ts=now
+        )
+        
+        await handler.handle(market, fsm, ctx, tick, params, deps, filter_logger)
+        
+        # 验证撤旧单并挂新单
+        assert deps.client.cancel_order_async.called
+        assert deps.client.post_order_async.called
+        # 验证 last_reprice_time 更新为当前时间
+        assert ctx.last_reprice_time == now
+        assert ctx.leg2_order_id == "new_reprice_order_456"
+        assert ctx.leg2.cost == 0.462
+        
+        # 验证序列化与反序列化无损
+        saved_dict = trades["m_reprice"]
+        assert saved_dict.get("last_reprice_time") == now
+        restored_ctx = TradeContext.from_dict(saved_dict)
+        assert restored_ctx.last_reprice_time == now
+
+    asyncio.run(_test())
+
+
+def test_trade_context_reprice_serialization():
+    """测试 TradeContext 模型包含 last_reprice_time 的无损双向转换"""
+    ctx = TradeContext(
+        market_id="m_ctx_test",
+        status="pending_leg2",
+        last_reprice_time=1725000000.5,
+        dynamic_ttl=45.0,
+        dynamic_flip_timeout=35.0
+    )
+    d = ctx.to_dict()
+    assert d["last_reprice_time"] == 1725000000.5
+    assert d["dynamic_ttl"] == 45.0
+    
+    restored = TradeContext.from_dict(d)
+    assert restored.last_reprice_time == 1725000000.5
+    assert restored.dynamic_ttl == 45.0
+

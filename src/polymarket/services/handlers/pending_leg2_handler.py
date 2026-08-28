@@ -158,7 +158,7 @@ class PendingLeg2TickHandler(BaseTickHandler):
             # ── A.1 OCO 卖单的自适应阶梯做 T 让价与追单保护 ───────────
             if not sell_filled and not buy_filled and sell_info:
                 now_ts = tick.now_ts
-                last_reprice = float(ctx.last_reprice_time or ctx.leg1_filled_time or now_ts)
+                last_reprice = float(getattr(ctx, "last_reprice_time", None) or ctx.leg1_filled_time or now_ts)
                 time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
 
                 if now_ts - last_reprice >= 10.0 and time_to_exp <= 80.0:
@@ -259,7 +259,7 @@ class PendingLeg2TickHandler(BaseTickHandler):
         # 当订单挂出超过一定时间且交割临近时，按倒计时阶梯微调挂单价，降低强平率
         if not is_fill and leg2.side == "SELL":
             now_ts = tick.now_ts
-            last_reprice = float(ctx.last_reprice_time or ctx.leg1_filled_time or now_ts)
+            last_reprice = float(getattr(ctx, "last_reprice_time", None) or ctx.leg1_filled_time or now_ts)
             time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
 
             if now_ts - last_reprice >= 15.0:

@@ -69,6 +69,7 @@ class TradeContext:
     
     dynamic_ttl: Optional[float] = None
     dynamic_flip_timeout: Optional[float] = None
+    last_reprice_time: Optional[float] = None
     filter_reason: Optional[str] = None
     exit_mode: str = "smart_flip"  # smart_flip | pair_only
     exit_stage: str = "init"       # init | flip_active | hedge_fallback | settled
@@ -112,6 +113,7 @@ class TradeContext:
             "settlement_type": self.settlement_type,
             "dynamic_ttl": self.dynamic_ttl,
             "dynamic_flip_timeout": self.dynamic_flip_timeout,
+            "last_reprice_time": self.last_reprice_time,
             "filter_reason": self.filter_reason,
             "exit_mode": self.exit_mode,
             "exit_stage": self.exit_stage,
@@ -145,6 +147,7 @@ class TradeContext:
             settlement_type=data.get("settlement_type"),
             dynamic_ttl=data.get("dynamic_ttl"),
             dynamic_flip_timeout=data.get("dynamic_flip_timeout"),
+            last_reprice_time=data.get("last_reprice_time"),
             filter_reason=data.get("filter_reason"),
             exit_mode=data.get("exit_mode", "smart_flip"),
             exit_stage=data.get("exit_stage", "init"),

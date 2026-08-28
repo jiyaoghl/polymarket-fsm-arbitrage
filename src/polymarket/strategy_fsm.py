@@ -419,14 +419,17 @@ class ArbitrageBotFSM(BaseStrategy):
                 if best_ask_yes is None or best_ask_no is None:
                     continue
 
-                # 根据 FSM 状态流转处理
-                await self._process_market_tick(
-                    market, fsm, yes_token, no_token,
-                    best_ask_yes, best_bid_yes, best_ask_no, best_bid_no
-                )
+                # 根据 FSM 状态流转处理 (带局部异常隔离，防止单次 Tick 异常导致 WS 监听循环意外崩溃退出)
+                try:
+                    await self._process_market_tick(
+                        market, fsm, yes_token, no_token,
+                        best_ask_yes, best_bid_yes, best_ask_no, best_bid_no
+                    )
+                except Exception as tick_err:
+                    logger.error(f"[策略FSM：{self.strategy_id}] 处理市场 {market_id} 单次 Tick 异常: {tick_err}", exc_info=True)
 
         except Exception as e:
-            logger.error(f"[策略FSM：{self.strategy_id}] 监听循环异常 ({market_id}): {e}")
+            logger.error(f"[策略FSM：{self.strategy_id}] 监听循环致命异常 ({market_id}): {e}", exc_info=True)
         finally:
             streamer.unsubscribe(market_id, queue)
             # 若从未开仓且已结束，清理活跃交易字典避免内存泄漏
