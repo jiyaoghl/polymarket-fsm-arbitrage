@@ -120,6 +120,13 @@ start_service() {
     # 尝试提高文件描述符上限，防止高并发或 WS 异常时因 Too many open files 崩溃
     ulimit -n 65535 2>/dev/null || true
 
+    # 启动前自动归档并清空历史 nohup.log，确保每次重启都是纯净最新日志
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        mkdir -p "$LOG_DIR/archive"
+        cp "$LOG_FILE" "$LOG_DIR/archive/nohup_$(date +%Y%m%d_%H%M%S).log" 2>/dev/null || true
+        > "$LOG_FILE" 2>/dev/null || true
+    fi
+
     PORT=$(get_port)
 
     # 后台启动进程

@@ -49,6 +49,30 @@ class ColoredFormatter(logging.Formatter):
             record.levelname = orig_levelname
 
 
+def reset_startup_logs() -> None:
+    """系统启动/重启时自动清理历史日志，确保每次启动都有纯净的最新日志上下文。"""
+    try:
+        log_dir = paths.logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        archive_dir = log_dir / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        for name in ["trade.log", "trade_detailed.log", "trade_error.log", "nohup.log"]:
+            target = log_dir / name
+            if target.exists() and target.stat().st_size > 0:
+                try:
+                    import shutil
+                    archived_file = archive_dir / f"{target.stem}_{now_str}{target.suffix}"
+                    shutil.copy2(target, archived_file)
+                    with open(target, "w", encoding="utf-8") as f:
+                        f.truncate(0)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INFO):
     """
     设置日志系统。
@@ -67,6 +91,9 @@ def setup_logger(name="poly_bot", log_file: str | None = None, level=logging.INF
     # 避免重复添加 handler
     if logger.handlers:
         return logger
+
+    # 首次初始化日志系统时，自动清空历史日志（旧日志已备份至 archive/）
+    reset_startup_logs()
     
     # 文件日志格式（纯文本，自动剥离 ANSI）
     detailed_formatter = PlainTextFormatter(

@@ -92,6 +92,36 @@ def test_confirm_clean_view_structure():
     assert view.timeout == 30.0
 
 
+def test_reset_startup_logs():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+    from polymarket.logger import reset_startup_logs
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        with patch("polymarket.paths.logs_dir", return_value=temp_path):
+            trade_log = temp_path / "trade.log"
+            trade_log.write_text("old legacy log line 1\nold legacy log line 2\n", encoding="utf-8")
+            assert trade_log.exists()
+            assert trade_log.stat().st_size > 0
+
+            # 执行重启日志清理
+            reset_startup_logs()
+
+            # 验证原文件已被清空为 0 字节
+            assert trade_log.exists()
+            assert trade_log.stat().st_size == 0
+
+            # 验证 archive 目录下生成了归档备份
+            archive_dir = temp_path / "archive"
+            assert archive_dir.exists()
+            archived_files = list(archive_dir.glob("trade_*.log"))
+            assert len(archived_files) == 1
+            assert "old legacy log" in archived_files[0].read_text(encoding="utf-8")
+
+
+
 
 
 
