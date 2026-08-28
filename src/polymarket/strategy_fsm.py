@@ -18,6 +18,7 @@ from polymarket.services.execution import OrderExecutionService
 from polymarket.services.liquidator import AdaptiveLiquidatorService
 from polymarket.services.pegging import MakerPeggingService
 from polymarket.services.repository import TradeRepository
+from polymarket.services.notifier import DiscordNotifier
 from polymarket.risk_manager import RiskManager
 from polymarket.services.handlers import (
     StrategyParams,
@@ -189,6 +190,10 @@ class ArbitrageBotFSM(BaseStrategy):
                     market_id=market_id, asset=asset, strategy=self.strategy_id,
                     reason=f"币安 K 线防爆盾: {err_msg}", level="error"
                 )
+                DiscordNotifier.get_instance().notify_risk_alert(
+                    market_id=market_id, asset=asset, strategy_name=self.config.get("name", self.strategy_id),
+                    reason=f"K 线防爆盾拦截: {err_msg}", level="warning"
+                )
                 return
 
         logger.info(f"[策略FSM：{self.strategy_id}] 开始基于 FSM 监控市场：{market_id}")
@@ -240,6 +245,22 @@ class ArbitrageBotFSM(BaseStrategy):
         self._add_trade_event(fsm.market_id, TradeState.LEG1_ONLY.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.LEG1_ONLY.value, leg1_filled_time=time.time())
 
+        # 触发首腿开仓成功战报通知
+        trade = self._get_trade(fsm.market_id) or {}
+        leg1 = trade.get("leg1") or {}
+        strat_name = self.config.get("name", self.strategy_id)
+        if leg1:
+            DiscordNotifier.get_instance().notify_entry(
+                market_id=fsm.market_id,
+                asset=trade.get("asset", "crypto"),
+                strategy_name=strat_name,
+                side=trade.get("leg1_dir", "BUY"),
+                price=float(leg1.get("cost", 0.0)),
+                shares=float(leg1.get("size", 0.0)),
+                is_live=self.is_live,
+                order_type=getattr(self, "leg1_order_type", "FOK")
+            )
+
     def on_pending_leg2(self, fsm: TradeFSM, **kwargs):
         is_stop = kwargs.get("is_stop_loss", False)
         order = kwargs.get("order_info", {})
@@ -260,6 +281,25 @@ class ArbitrageBotFSM(BaseStrategy):
         self._add_trade_event(fsm.market_id, TradeState.LOCKED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.LOCKED.value)
         metrics.trades_locked_total.inc(labels={"strategy": self.strategy_id, "asset": "crypto"})
+
+        # 触发双腿锁仓达成战报通知
+        trade = self._get_trade(fsm.market_id) or {}
+        leg1 = trade.get("leg1") or {}
+        leg2 = trade.get("leg2") or {}
+        strat_name = self.config.get("name", self.strategy_id)
+        if leg1 and leg2:
+            DiscordNotifier.get_instance().notify_hedged_lock(
+                market_id=fsm.market_id,
+                asset=trade.get("asset", "crypto"),
+                strategy_name=strat_name,
+                leg1_cost=float(leg1.get("cost", 0.0)),
+                leg2_cost=float(leg2.get("cost", 0.0)),
+                shares=float(leg1.get("size", 0.0)),
+                net_ev=float(trade.get("profit_usdc", 0.0)),
+                gross_profit=float(trade.get("gross_profit_usdc", 0.0)),
+                fee_usdc=float(trade.get("fee_usdc", 0.0)),
+                is_live=self.is_live
+            )
 
     def on_settled(self, fsm: TradeFSM, **kwargs):
         msg = "市场到期或清盘结算。"
@@ -480,6 +520,20 @@ class ArbitrageBotFSM(BaseStrategy):
                                     size=close_size
                                 )
                                 self._set_trade(market_id, ctx.to_dict())
+
+                                # 触发单边敞口强平平仓战报通知
+                                DiscordNotifier.get_instance().notify_force_close(
+                                    market_id=market_id,
+                                    asset=ctx.asset or "crypto",
+                                    strategy_name=self.config.get("name", self.strategy_id),
+                                    leg1_cost=ctx.leg1.cost,
+                                    vwap_close_price=close_price,
+                                    shares=ctx.leg1.size,
+                                    realized_pnl=realized_pnl,
+                                    hold_seconds=max(0.0, elapsed),
+                                    is_live=self.is_live
+                                )
+
                                 fsm.transition_to(TradeState.SETTLED, reason=f"自适应 TTL 强平完成 (平仓卖出价: {close_price}, PnL: ${realized_pnl:.4f})")
                             else:
                                 # 二腿市价平仓失败 (如临期流动性枯竭或直接进入交割锁定)

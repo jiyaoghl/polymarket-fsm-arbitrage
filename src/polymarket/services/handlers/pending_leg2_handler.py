@@ -1,3 +1,4 @@
+import time
 from typing import Dict, Any
 
 from polymarket.domain.fsm import TradeFSM, TradeState
@@ -36,6 +37,7 @@ class PendingLeg2TickHandler(BaseTickHandler):
             return
 
         market_id = market["id"]
+        asset_type = market.get("__asset_type", "Crypto")
         yes_token = tick.yes_token
         no_token = tick.no_token
         best_ask_yes = tick.best_ask_yes
@@ -91,6 +93,23 @@ class PendingLeg2TickHandler(BaseTickHandler):
                     order_id=sell_id or "sim_sell"
                 )
                 deps.set_trade(market_id, ctx.to_dict())
+
+                from polymarket.services.notifier import DiscordNotifier
+                hold_sec = time.time() - float(ctx.leg1_filled_time or time.time())
+                DiscordNotifier.get_instance().notify_flip_success(
+                    market_id=market_id,
+                    asset=ctx.asset or asset_type,
+                    strategy_name=params.strategy_id,
+                    leg1_cost=leg1.cost,
+                    sell_price=sell_price,
+                    shares=leg1.size,
+                    hold_seconds=max(0.0, hold_sec),
+                    net_profit=realized_pnl,
+                    gross_profit=gross_pnl,
+                    fee_usdc=fee,
+                    is_live=params.is_live
+                )
+
                 fsm.transition_to(TradeState.SETTLED, reason=f"OCO 做T卖出率先成交变现，净锁定 ${realized_pnl:.4f}")
                 return
 
@@ -169,6 +188,23 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 ctx.fee_usdc = fee
                 ctx.settlement_type = "SMART_FLIP_SETTLED"
                 deps.set_trade(market_id, ctx.to_dict())
+
+                from polymarket.services.notifier import DiscordNotifier
+                hold_sec = time.time() - float(ctx.leg1_filled_time or time.time())
+                DiscordNotifier.get_instance().notify_flip_success(
+                    market_id=market_id,
+                    asset=ctx.asset or asset_type,
+                    strategy_name=params.strategy_id,
+                    leg1_cost=ctx.leg1.cost,
+                    sell_price=leg2.cost,
+                    shares=ctx.leg1.size,
+                    hold_seconds=max(0.0, hold_sec),
+                    net_profit=realized_pnl,
+                    gross_profit=gross_pnl,
+                    fee_usdc=fee,
+                    is_live=params.is_live
+                )
+
                 fsm.transition_to(TradeState.SETTLED, reason=f"智能做T高抛成交变现，净锁定 ${realized_pnl:.4f}")
             else:
                 gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(

@@ -137,3 +137,9 @@ DB_PATH = os.getenv("DB_PATH", str(paths.data_dir() / "trading.db"))
 
 # RiskGuard 检查间隔（秒）
 RISK_CHECK_INTERVAL = int(os.getenv("RISK_CHECK_INTERVAL", "10"))
+
+# Discord Webhook 实时战报推送配置
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "true").lower() in ("true", "1", "yes") and bool(DISCORD_WEBHOOK_URL)
+DISCORD_MIN_SEVERITY = os.getenv("DISCORD_MIN_SEVERITY", "TRADE").upper()  # INFO | TRADE | WARNING | CRITICAL
+

@@ -335,6 +335,22 @@ class StrategyManager:
                             bot.settle_market(m_id)
                         except Exception as b_err:
                             logger.warning(f"策略 {bot.strategy_id} 结算市场 {m_id} 异常: {b_err}")
+
+                    # 触发链上自动赎回成功战报通知
+                    from polymarket.services.notifier import DiscordNotifier
+                    tx_hash = res.get("tx_hash") or res.get("transaction_hash")
+                    m_asset = "Crypto"
+                    for b in self.bots:
+                        t_info = b._get_trade(m_id)
+                        if t_info and t_info.get("asset"):
+                            m_asset = t_info.get("asset")
+                            break
+                    DiscordNotifier.get_instance().notify_redeemed(
+                        market_id=m_id,
+                        asset=m_asset,
+                        amount_usdc=float(res.get("amount") or 0.0),
+                        tx_hash=tx_hash
+                    )
                 except Exception as e:
                     logger.warning(f"redeem {m_id} 失败：{e}")
 
@@ -490,6 +506,18 @@ class StrategyManager:
         t3.start()
 
         logger.info("策略管理器已启动：市场发现 + 结算扫描 + 风控监控")
+
+        # 触发系统启动就绪通知
+        try:
+            from polymarket.services.notifier import DiscordNotifier
+            live_count = sum(1 for b in self.bots if getattr(b, "is_live", False))
+            DiscordNotifier.get_instance().notify_system_startup(
+                strategies_count=len(self.bots),
+                live_strategies_count=live_count,
+                supported_assets=SUPPORTED_ASSETS
+            )
+        except Exception as e:
+            logger.debug(f"发送启动通知异常: {e}")
 
         # 主线程保持存活，使用循环 timeout 允许响应 Ctrl+C 信号
         try:
