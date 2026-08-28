@@ -200,7 +200,7 @@ class PricingEngine:
         best_bid_yes: float,
         best_bid_no: float,
         entry_max_price: float = 0.50,
-        entry_min_price: float = 0.05,
+        entry_min_price: float = 0.30,
         min_profit_margin: float = 0.015,
         best_ask_yes: Optional[float] = None,
         best_ask_no: Optional[float] = None,
@@ -364,7 +364,7 @@ class PricingEngine:
         best_ask_no: float,
         best_bid_no: Optional[float],
         entry_max_price: float = 0.50,
-        entry_min_price: float = 0.05,
+        entry_min_price: float = 0.30,
         min_profit_margin: float = 0.010,
         leg1_amount: float = 10.0
     ) -> Tuple[bool, Optional[str], Optional[float], Optional[float], str]:
