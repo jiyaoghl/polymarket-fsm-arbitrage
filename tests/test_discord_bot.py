@@ -26,6 +26,18 @@ def test_bot_graceful_degradation():
     bot_service.start()
 
 
+def test_render_progress_bar():
+    from polymarket.services.discord_bot import render_progress_bar
+    bar_0 = render_progress_bar(0, 100, length=8)
+    assert bar_0 == "[░░░░░░░░] 0.0%"
+    bar_50 = render_progress_bar(50, 100, length=8)
+    assert bar_50 == "[▓▓▓▓░░░░] 50.0%"
+    bar_100 = render_progress_bar(100, 100, length=8)
+    assert bar_100 == "[▓▓▓▓▓▓▓▓] 100.0%"
+    bar_zero_div = render_progress_bar(10, 0, length=8)
+    assert bar_zero_div == "[░░░░░░░░] 0.0%"
+
+
 def test_dashboard_embed_generation():
     from polymarket.services.discord_bot import generate_dashboard_embed, HAS_DISCORD_LIB
     if not HAS_DISCORD_LIB:
@@ -42,13 +54,17 @@ def test_button_view_structure():
     view = DashboardControlView()
     assert hasattr(view, "children")
     custom_ids = [btn.custom_id for btn in view.children]
+    assert len(custom_ids) == 9
     assert "btn_refresh_status" in custom_ids
     assert "btn_view_balance" in custom_ids
+    assert "btn_view_strategies" in custom_ids
+    assert "btn_view_markets" in custom_ids
     assert "btn_view_logs" in custom_ids
+    assert "btn_onchain_redeem" in custom_ids
     assert "btn_emergency_pause" in custom_ids
     assert "btn_resume_trading" in custom_ids
-    assert "btn_onchain_redeem" in custom_ids
     assert "btn_clean_history" in custom_ids
+
 
 
 
