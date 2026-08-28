@@ -219,3 +219,37 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 ctx.settlement_type = "HEDGED_LOCKED"
                 deps.set_trade(market_id, ctx.to_dict())
                 fsm.transition_to(TradeState.LOCKED)
+                return
+
+        # ── C. 阶梯式做 T 智能让价与追单保护 (Multi-Level Maker) ──
+        # 当订单挂出超过一定时间且交割临近时，按倒计时阶梯微调挂单价，降低强平率
+        if not is_fill and leg2.side == "SELL":
+            now_ts = tick.now_ts
+            last_reprice = float(ctx.last_reprice_time or ctx.leg1_filled_time or now_ts)
+            time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
+
+            if now_ts - last_reprice >= 15.0:
+                cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                if cur_bid is not None and cur_bid > 0:
+                    target_reprice = leg2.cost
+                    if time_to_exp < 45.0:
+                        # 临近交割（<45s）：贴近当前买一价快速出场
+                        target_reprice = round(max(cur_bid, leg1.cost * 0.98), 4)
+                    elif time_to_exp < 75.0:
+                        # 中期阶梯（45~75s）：挂在买一 + 0.002
+                        target_reprice = round(max(cur_bid + 0.002, leg1.cost), 4)
+
+                    safe_new_price, _ = OrderExecutionService.sanitize_order_params(target_reprice, target_reprice * leg1.size)
+                    if abs(safe_new_price - leg2.cost) >= 0.003 and safe_new_price >= leg1.cost * 0.95:
+                        if params.is_live:
+                            await deps.client.cancel_order_async(ctx.leg2_order_id)
+                            new_order = await deps.client.post_order_async(str(leg2.token), safe_new_price, leg1.size, "SELL", "GTC")
+                            if new_order and new_order.get("status") not in ("ERROR", None):
+                                ctx.leg2.cost = safe_new_price
+                                ctx.leg2_order_id = new_order.get("orderID") or new_order.get("order_id")
+                                ctx.last_reprice_time = now_ts
+                                deps.set_trade(market_id, ctx.to_dict())
+                        else:
+                            ctx.leg2.cost = safe_new_price
+                            ctx.last_reprice_time = now_ts
+                            deps.set_trade(market_id, ctx.to_dict())
