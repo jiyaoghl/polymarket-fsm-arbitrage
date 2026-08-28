@@ -220,15 +220,24 @@ class DiscordInteractiveBot:
     _lock = threading.Lock()
 
     def __init__(self, token: Optional[str] = None, prefix: Optional[str] = None):
-        self.token = token if token is not None else DISCORD_BOT_TOKEN
+        raw_token = token if token is not None else DISCORD_BOT_TOKEN
+        self.token = raw_token.strip().strip("'\"") if raw_token else ""
         self.prefix = prefix if prefix is not None else DISCORD_COMMAND_PREFIX
         self.bot = None
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._is_started = False
 
-        if HAS_DISCORD_LIB and self.token and discord is not None:
+        # 检查是否为真实合法 Token (拦截占位符)
+        is_valid_token = bool(
+            self.token
+            and not self.token.startswith("your_")
+            and "GxXxXx" not in self.token
+            and len(self.token) >= 30
+        )
+
+        if HAS_DISCORD_LIB and is_valid_token and discord is not None:
             intents = discord.Intents.default()
-            # 按钮交互无需特权消息意图
             prefixes = [self.prefix, "!", "！", "/", "$", "p!"] if self.prefix else ["!", "！", "/"]
             unique_prefixes = list(dict.fromkeys(prefixes))
             self.bot = commands.Bot(
@@ -269,23 +278,38 @@ class DiscordInteractiveBot:
             await ctx.send(embed=embed, view=view)
 
     def start(self):
-        """在独立后台守护线程中启动 Discord 机器人"""
+        """在独立后台守护线程中启动 Discord 机器人 (幂等防并发)"""
+        with self._lock:
+            if self._is_started:
+                return  # 已经启动过，直接幂等跳过
+            self._is_started = True
+
         if not HAS_DISCORD_LIB:
             logger.debug("[DiscordBot] 缺失 discord.py 库，跳过交互机器人启动。")
             return
 
-        if not self.token:
-            logger.debug("[DiscordBot] 未配置 DISCORD_BOT_TOKEN，跳过交互机器人启动。")
+        if not self.token or self.token.startswith("your_") or "GxXxXx" in self.token:
+            logger.info("[DiscordBot] 未配置有效的 DISCORD_BOT_TOKEN (或为占位符)，跳过交互机器人启动。")
+            return
+
+        if not self.bot:
+            logger.warning("[DiscordBot] DISCORD_BOT_TOKEN 格式不合法 (长度不足 30 字符)，跳过启动。请检查 .env 中的 Bot Token。")
             return
 
         def _runner():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
             try:
-                logger.info("[DiscordBot] 正在启动 Discord 纯按钮交互控制机器人...")
-                self._loop.run_until_complete(self.bot.start(self.token))
+                logger.info("[DiscordBot] 正在连接 Discord 官方网关并启动纯按钮交互机器人...")
+                loop.run_until_complete(self.bot.start(self.token))
             except Exception as e:
-                logger.warning(f"[DiscordBot] 机器人后台线程异常退出: {e}")
+                logger.warning(f"[DiscordBot] 机器人登录网关失败: {e} (请检查 .env 中的 DISCORD_BOT_TOKEN 是否正确无空格)")
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
 
         self._thread = threading.Thread(target=_runner, daemon=True, name="DiscordInteractiveBotWorker")
         self._thread.start()
