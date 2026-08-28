@@ -301,12 +301,12 @@ def cmd_release(args):
     # 2. Git Commit
     print(f"\n{BOLD}[2/4] 暂存并提交代码...{RESET}")
     subprocess.run(["git", "add", "."], check=True)
-    ret_commit = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
+    ret_commit = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True, encoding="utf-8", errors="replace")
     print(ret_commit.stdout)
 
     # 3. Git Push
     print(f"\n{BOLD}[3/4] 推送到远程仓库 origin/main...{RESET}")
-    subprocess.run(["git", "push", "origin", "main"], check=True)
+    subprocess.run(["git", "push", "origin", "main"], check=True, encoding="utf-8", errors="replace")
     print(f"{GREEN}[+] 代码已成功推送到远程仓库！{RESET}")
 
     # 4. 远程触发 VPS 自动热重载 (除非显式指定 --no-deploy)
