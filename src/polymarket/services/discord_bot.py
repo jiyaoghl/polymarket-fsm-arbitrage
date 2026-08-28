@@ -57,7 +57,13 @@ class DiscordInteractiveBot:
         if HAS_DISCORD_LIB and self.token:
             intents = discord.Intents.default()
             intents.message_content = True
-            self.bot = commands.Bot(command_prefix=self.prefix, intents=intents, help_command=None)
+            prefixes = [self.prefix, "!", "！", "/", "$", "p!"] if self.prefix else ["!", "！", "/"]
+            unique_prefixes = list(dict.fromkeys(prefixes))
+            self.bot = commands.Bot(
+                command_prefix=commands.when_mentioned_or(*unique_prefixes),
+                intents=intents,
+                help_command=None
+            )
             self._register_commands()
 
     @classmethod
@@ -77,9 +83,23 @@ class DiscordInteractiveBot:
 
         @bot.event
         async def on_ready():
-            logger.info(f"[DiscordBot] 交互机器人已成功登录: {bot.user.name} (ID: {bot.user.id})")
-            activity = discord.Activity(type=discord.ActivityType.watching, name=f"Polymarket 5min 盘口 | {self.prefix}help")
+            logger.info(f"[DiscordBot] 交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id})")
+            activity = discord.Activity(type=discord.ActivityType.watching, name=f"Polymarket 5min 盘口 | !help")
             await bot.change_presence(status=discord.Status.online, activity=activity)
+
+        @bot.event
+        async def on_message(message):
+            if message.author.bot:
+                return
+            logger.info(f"[DiscordBot] 监听到频道消息 [{message.author}]: {message.content}")
+            await bot.process_commands(message)
+
+        @bot.event
+        async def on_command_error(ctx, error):
+            logger.warning(f"[DiscordBot] 指令处理异常 [{ctx.command}]: {error}")
+            if isinstance(error, commands.CommandNotFound):
+                return
+            await ctx.send(f"⚠️ 指令执行异常: `{error}`")
 
         @bot.command(name="help")
         async def cmd_help(ctx):

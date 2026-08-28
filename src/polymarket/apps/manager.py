@@ -519,6 +519,13 @@ class StrategyManager:
         except Exception as e:
             logger.debug(f"发送启动通知异常: {e}")
 
+        # 启动 Discord 交互式控制机器人 (若配置了 Token 则自动平滑拉起)
+        try:
+            from polymarket.services.discord_bot import DiscordInteractiveBot
+            DiscordInteractiveBot.get_instance().start()
+        except Exception as e:
+            logger.debug(f"启动交互机器人异常: {e}")
+
         # 主线程保持存活，使用循环 timeout 允许响应 Ctrl+C 信号
         try:
             while t1.is_alive() or t2.is_alive() or t3.is_alive():
