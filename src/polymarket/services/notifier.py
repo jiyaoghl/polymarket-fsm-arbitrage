@@ -59,6 +59,10 @@ class DiscordNotifier:
         self.enabled = enabled if enabled is not None else DISCORD_ENABLED
         self.min_severity = DISCORD_MIN_SEVERITY
 
+        # 占位符或无效 URL 自动禁用推送，避免 HTTP 400 报错
+        if not self.webhook_url or "your_webhook_id" in self.webhook_url or not self.webhook_url.startswith("http"):
+            self.enabled = False
+
         self._queue: queue.Queue = queue.Queue(maxsize=500)
         self._suppress_cache: Dict[str, float] = {}  # 拦截事件防刷缓存
         self._suppress_lock = threading.Lock()

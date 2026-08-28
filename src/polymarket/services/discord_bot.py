@@ -269,14 +269,21 @@ class DiscordInteractiveBot:
 
         @bot.event
         async def on_ready():
-            logger.info(f"[DiscordBot] 纯按钮交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id})")
+            guild_names = [f"{g.name} (ID: {g.id}, 成员数: {g.member_count})" for g in bot.guilds]
+            logger.info(f"[DiscordBot] 纯按钮交互机器人已成功登录网关: {bot.user.name} (ID: {bot.user.id}) | 已加入 {len(bot.guilds)} 个服务器: {guild_names}")
+            
             # 注册持久化视图，确保重启后所有卡片上的按钮永久生效
             bot.add_view(DashboardControlView())
             activity = discord.Activity(type=discord.ActivityType.watching, name="Polymarket 5min 盘口 | 点击按钮控制")
             await bot.change_presence(status=discord.Status.online, activity=activity)
 
+            if not bot.guilds:
+                logger.warning("[DiscordBot] ⚠️ 警告：机器人尚未加入任何 Discord 服务器！请访问 OAuth2 邀请链接将机器人拉入您的 Discord 群组。")
+                return
+
             # 启动时主动向所在服务器的首个可写频道投递最新的控制台卡片
             for guild in bot.guilds:
+                posted = False
                 for channel in guild.text_channels:
                     perms = channel.permissions_for(guild.me)
                     if perms.send_messages and perms.embed_links:
@@ -284,10 +291,13 @@ class DiscordInteractiveBot:
                             embed = generate_dashboard_embed()
                             view = DashboardControlView()
                             await channel.send("🚀 **Polymarket 量化控制台已上线**，请直接点击下方按钮进行操作：", embed=embed, view=view)
-                            logger.info(f"[DiscordBot] 已自动向频道 [{channel.name}] 投递纯按钮控制面板。")
+                            logger.info(f"[DiscordBot] 已自动向服务器 [{guild.name}] 的频道 [{channel.name}] 投递纯按钮控制面板！")
+                            posted = True
                             break
                         except Exception as e:
-                            logger.debug(f"[DiscordBot] 自动投递控制台异常: {e}")
+                            logger.warning(f"[DiscordBot] 向频道 [{channel.name}] 投递控制台异常: {e}")
+                if not posted:
+                    logger.warning(f"[DiscordBot] ⚠️ 在服务器 [{guild.name}] 中未找到具备 发送消息与嵌入链接 权限的文字频道！请检查机器人角色权限。")
 
         @bot.event
         async def on_message(message):
