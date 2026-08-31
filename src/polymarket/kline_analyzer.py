@@ -68,30 +68,41 @@ def is_asset_choppy(asset: str, limit: int = 10, cache_ttl: float = 10.0) -> boo
         stdev_pct = (stdev_close / mean_close) * 100
         amplitude = stdev_pct * 3
         
-        # 2. 均值回归偏离度 (代替原来单纯的首尾相减)
-        # 考察最新价偏离 10 分钟均线的程度，这比看第一根和最后一根更加鲁棒
+        # 2. 均值回归偏离度 (考察最新价偏离 10 分钟均线的程度)
         net_change = abs(closes[-1] - mean_close) / mean_close * 100
         
+        # 3. 极短期 1m 动量飞刀冲击检测 (检测最近 1 分钟内的急跌/急拉)
+        last_k = data[-1]
+        last_open = float(last_k[1])
+        last_close = float(last_k[4])
+        last_1m_net_change = (abs(last_close - last_open) / last_open * 100) if last_open > 0 else 0.0
+
         # [动态阈值匹配] 优先使用该品种专属阈值，回退到通用阈值
         asset_cfg = ASSET_CHOP_THRESHOLDS.get(asset_upper, {})
         max_amp_thresh = asset_cfg.get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE)
         max_net_thresh = asset_cfg.get("max_net_change", CRYPTO_CHOP_MAX_NET_CHANGE)
+        max_1m_shock_thresh = max_net_thresh * 0.65
         
-        is_choppy = (amplitude < max_amp_thresh) and (net_change < max_net_thresh)
+        is_macro_choppy = (amplitude < max_amp_thresh) and (net_change < max_net_thresh)
+        is_1m_shock = (last_1m_net_change >= max_1m_shock_thresh)
+        
+        is_choppy = is_macro_choppy and (not is_1m_shock)
         
         last_status = _asset_status.get(asset_upper, {}).get("is_choppy", None)
         status_changed = (last_status is None) or (last_status != is_choppy)
         
         if not is_choppy:
-            msg = (f"[风控] {asset_upper} 当前存在单边波动风险！\n"
-                   f"  振幅: {amplitude:.3f}% (阈值 {max_amp_thresh}%)\n"
-                   f"  净变动: {net_change:.3f}% (阈值 {max_net_thresh}%)")
+            if is_1m_shock:
+                reason = f"1m 极速动量冲击 (1m变动: {last_1m_net_change:.3f}% >= 门槛 {max_1m_shock_thresh:.3f}%)"
+            else:
+                reason = f"宏观振幅或净变动超限 (振幅: {amplitude:.3f}%/{max_amp_thresh}%, 净变动: {net_change:.3f}%/{max_net_thresh}%)"
+            msg = f"[风控] {asset_upper} 当前存在单边波动风险！{reason}"
             if status_changed:
                 logger.warning(msg)
             else:
                 logger.debug(msg)
         else:
-            msg = f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}% ≤ {max_amp_thresh}%)，允许入场。"
+            msg = f"[风控] {asset_upper} 行情稳定 (振幅 {amplitude:.3f}% ≤ {max_amp_thresh}%, 1m变动 {last_1m_net_change:.3f}% < {max_1m_shock_thresh:.3f}%)，允许入场。"
             if status_changed:
                 logger.info(msg)
             else:
@@ -101,6 +112,7 @@ def is_asset_choppy(asset: str, limit: int = 10, cache_ttl: float = 10.0) -> boo
             "is_choppy": is_choppy,
             "amplitude": amplitude,
             "net_change": net_change,
+            "last_1m_net_change": last_1m_net_change,
             "latest_price": closes[-1] if closes else 0.0,
             "error": "",
             "timestamp": time.time()

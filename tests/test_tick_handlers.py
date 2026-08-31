@@ -98,7 +98,7 @@ def test_idle_handler_spread_filter():
         
         market = {"id": "m_spread", "__asset_type": "BTC"}
         fsm = TradeFSM("m_spread", initial_state=TradeState.IDLE)
-        ctx = TradeContext(market_id="m_spread", status=TradeState.IDLE.value, end_time=time.time() + 300)
+        ctx = TradeContext(market_id="m_spread", status=TradeState.IDLE.value, end_time=time.time() + 200)
         trades["m_spread"] = ctx.to_dict()
         
         # YES 买卖价差 0.50 - 0.40 = 0.10 > 0.05
@@ -167,7 +167,7 @@ def test_idle_handler_dual_bracket():
         
         market = {"id": "m_dual", "__asset_type": "ETH"}
         fsm = TradeFSM("m_dual", initial_state=TradeState.IDLE)
-        ctx = TradeContext(market_id="m_dual", status=TradeState.IDLE.value, end_time=time.time() + 300)
+        ctx = TradeContext(market_id="m_dual", status=TradeState.IDLE.value, end_time=time.time() + 200)
         trades["m_dual"] = ctx.to_dict()
         
         tick = TickBundle(

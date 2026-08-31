@@ -31,15 +31,25 @@ class IdleTickHandler(BaseTickHandler):
         asset_type = market.get("__asset_type", "UNKNOWN")
         now_ts = tick.now_ts
 
-        # 1. 临期交割拦截
+        # 1. 开盘时空窗口守门 (开盘 15s 绝对静默 + 临期交割守门)
         time_to_expiry = ctx.end_time - now_ts if ctx.end_time > 0 else 999.0
-        if ctx.end_time > 0 and time_to_expiry < params.min_time_to_expiry_entry:
-            filter_logger.intercept(
-                market_id, asset_type,
-                f"临近交割 (剩余 {time_to_expiry:.1f}s < {params.min_time_to_expiry_entry}s)，禁止开仓",
-                ctx, deps
-            )
-            return
+        if ctx.end_time > 0:
+            # 开盘前 15s 绝对静默保护 (防止开盘瞬间做市商铺单未稳的流动性真空)
+            if time_to_expiry >= 285.0:
+                filter_logger.intercept(
+                    market_id, asset_type,
+                    f"开盘前 15s 流动性成熟期 (剩余 {time_to_expiry:.1f}s >= 285.0s)，等待做市铺单",
+                    ctx, deps
+                )
+                return
+            # 临近交割拦截
+            if time_to_expiry < params.min_time_to_expiry_entry:
+                filter_logger.intercept(
+                    market_id, asset_type,
+                    f"临近交割 (剩余 {time_to_expiry:.1f}s < {params.min_time_to_expiry_entry}s)，禁止开仓",
+                    ctx, deps
+                )
+                return
 
         # 2. 单市场跨策略排他锁检查 (Market-Level Concurrency Lock)
         if hasattr(deps.risk_manager, "is_market_occupied"):
@@ -145,10 +155,14 @@ class IdleTickHandler(BaseTickHandler):
 
         if is_opp and target_side and entry_price:
             target_token = tick.yes_token if target_side == "YES" else tick.no_token
+            opp_token = tick.no_token if target_side == "YES" else tick.yes_token
 
-            # [OBI 深度失衡守门防御] 过滤单边卖盘严重压迫行情 (仅在深度充足时触发)
             from polymarket.services.grid import OrderbookMemoryGrid
-            target_snap = OrderbookMemoryGrid.get_instance().get_snapshot(str(target_token))
+            grid = OrderbookMemoryGrid.get_instance()
+            target_snap = grid.get_snapshot(str(target_token))
+            opp_snap = grid.get_snapshot(str(opp_token))
+
+            # [OBI 卖盘压迫防御] 目标 Token 卖盘严重压迫时拦截
             if target_snap and not target_snap.is_stale(10.0):
                 obi_val, tot_depth, is_valid_depth = PricingEngine.calculate_obi(
                     list(target_snap.bids), list(target_snap.asks), top_n_levels=5, min_total_shares=30.0
@@ -160,11 +174,24 @@ class IdleTickHandler(BaseTickHandler):
                         ctx, deps
                     )
                     return
+
+            # [对侧买盘 OBI 承接深度壁垒] 对侧买盘前 5 档深度必须 >= 20.0 份
+            if opp_snap and not opp_snap.is_stale(10.0):
+                opp_bids = list(opp_snap.bids)
+                opp_bid_depth = sum(float(b[1] if isinstance(b, (list, tuple)) else b.get("size", 0.0)) for b in opp_bids[:5])
+                if opp_bid_depth < 20.0:
+                    filter_logger.intercept(
+                        market_id, asset_type,
+                        f"对侧买盘承接深度不足 (前5档买盘={opp_bid_depth:.1f}份 < 20.0份)，拦截吃单",
+                        ctx, deps
+                    )
+                    return
+
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(entry_price, params.amount)
 
             # [多档位穿透式 VWAP 深度吃单] 若卖一深度不足但多档均价满足 entry_max_price，采用加权 VWAP 发单防踏空
             if target_snap and not target_snap.is_stale(10.0):
-                vwap_ask = OrderbookMemoryGrid.get_instance().calculate_ask_vwap_local(str(target_token), safe_s)
+                vwap_ask = grid.calculate_ask_vwap_local(str(target_token), safe_s)
                 if vwap_ask and vwap_ask <= params.entry_max_price:
                     safe_p, _ = OrderExecutionService.sanitize_order_params(vwap_ask, params.amount)
 
@@ -177,6 +204,10 @@ class IdleTickHandler(BaseTickHandler):
             ctx.dynamic_flip_timeout = PricingEngine.calculate_adaptive_flip_duration(
                 base_duration=params.flip_timeout_sec, asset_amplitude=asset_amp, max_amplitude_threshold=max_amp
             )
+
+            # 若为极度超跌单，标记退场阶段并适度压缩做 T 衰减基准
+            if "[极度超跌做T达标]" in opp_reason:
+                ctx.dynamic_flip_timeout = min(ctx.dynamic_flip_timeout or 35.0, 20.0)
 
             lock_amount = round(safe_p * safe_s, 2)
             
