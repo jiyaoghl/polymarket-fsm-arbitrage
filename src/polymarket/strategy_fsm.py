@@ -506,7 +506,9 @@ class ArbitrageBotFSM(BaseStrategy):
                     if is_timed_out:
                         fsm = self.fsms.get(market_id)
                         if fsm and fsm.current_state in (TradeState.LEG1_ONLY, TradeState.PENDING_LEG2):
-                            success, close_price, close_size, close_order_id = AdaptiveLiquidatorService.execute_force_close(self.client, ctx, self.strategy_id)
+                            success, close_price, close_size, close_order_id = AdaptiveLiquidatorService.execute_force_close(
+                                self.client, ctx, self.strategy_id, allow_grace=True
+                            )
                             if success and close_price is not None and ctx.leg1:
                                 leg1_is_taker = (self.leg1_order_type == "FOK")
                                 realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(

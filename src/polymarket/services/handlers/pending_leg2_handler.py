@@ -4,6 +4,7 @@ from typing import Dict, Any
 from polymarket.domain.fsm import TradeFSM, TradeState
 from polymarket.domain.models import TradeContext, LegPosition
 from polymarket.services.pricing import PricingEngine
+from polymarket.services.pegging import MakerPeggingService
 from polymarket.services.execution import OrderExecutionService
 from polymarket.services.liquidator import AdaptiveLiquidatorService
 from polymarket.services.handlers.base import BaseTickHandler
@@ -155,38 +156,44 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 fsm.transition_to(TradeState.LOCKED)
                 return
 
-            # ── A.1 OCO 卖单的自适应阶梯做 T 让价与追单保护 ───────────
-            if not sell_filled and not buy_filled and sell_info:
+            # ── A.1 OCO 双单的主动 Anti-Pennying 阶梯跟单与坚守利润 ───────────
+            if not sell_filled and not buy_filled and buy_info:
                 now_ts = tick.now_ts
                 last_reprice = float(getattr(ctx, "last_reprice_time", None) or ctx.leg1_filled_time or now_ts)
-                time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
-
-                if now_ts - last_reprice >= 10.0 and time_to_exp <= 80.0:
-                    cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
-                    if cur_bid is not None and cur_bid > 0:
-                        cur_sell_price = float(sell_info.get("price", leg1.cost))
-                        target_reprice = cur_sell_price
-                        if time_to_exp < 45.0:
-                            # 临近交割（<45s）：贴近当前买一价快速出场做 T，消除强平滑点
-                            target_reprice = round(max(cur_bid, leg1.cost * 0.98), 4)
-                        elif time_to_exp < 75.0:
-                            # 中期阶梯（45~75s）：挂在买一 + 0.002
-                            target_reprice = round(max(cur_bid + 0.002, leg1.cost), 4)
-
-                        safe_new_price, _ = OrderExecutionService.sanitize_order_params(target_reprice, target_reprice * leg1.size)
-                        if abs(safe_new_price - cur_sell_price) >= 0.003 and safe_new_price >= leg1.cost * 0.92:
-                            if params.is_live and sell_id:
-                                await deps.client.cancel_order_async(sell_id)
-                                new_order = await deps.client.post_order_async(str(leg1.token), safe_new_price, leg1.size, "SELL", "GTC")
-                                if new_order and new_order.get("status") not in ("ERROR", None):
-                                    sell_info["price"] = safe_new_price
-                                    sell_info["order_id"] = new_order.get("orderID") or new_order.get("order_id")
+                
+                # 间隔 >= 3.0s 允许跟单一次，防高频撤挂惩罚
+                if now_ts - last_reprice >= 3.0:
+                    cur_opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
+                    cur_buy_price = float(buy_info.get("price", 0.0))
+                    
+                    if cur_opp_bid is not None and cur_buy_price > 0:
+                        # 计算保利买入最高上限 (保证扣除手续费后净利差 >= 0.002)
+                        fee_buffer = (leg1.cost * 0.001) + (1.0 - leg1.cost) * 0.001
+                        max_allowed_buy_price = round(max(0.01, 1.0 - leg1.cost - 0.002 - fee_buffer), 4)
+                        
+                        should_repeg, new_target, reason = MakerPeggingService.calculate_pegged_price(
+                            current_best_bid=cur_opp_bid,
+                            our_current_price=cur_buy_price,
+                            entry_max_price=max_allowed_buy_price,
+                            step_min=0.002,
+                            step_max=0.004
+                        )
+                        
+                        if should_repeg and new_target > cur_buy_price:
+                            safe_new_price, _ = OrderExecutionService.sanitize_order_params(new_target, new_target * leg1.size)
+                            if safe_new_price > cur_buy_price and safe_new_price <= max_allowed_buy_price:
+                                if params.is_live and buy_id:
+                                    await deps.client.cancel_order_async(buy_id)
+                                    new_order = await deps.client.post_order_async(str(opp_token), safe_new_price, leg1.size, "BUY", "GTC")
+                                    if new_order and new_order.get("status") not in ("ERROR", None):
+                                        buy_info["price"] = safe_new_price
+                                        buy_info["order_id"] = new_order.get("orderID") or new_order.get("order_id")
+                                        ctx.last_reprice_time = now_ts
+                                        deps.set_trade(market_id, ctx.to_dict())
+                                elif not params.is_live:
+                                    buy_info["price"] = safe_new_price
                                     ctx.last_reprice_time = now_ts
                                     deps.set_trade(market_id, ctx.to_dict())
-                            elif not params.is_live:
-                                sell_info["price"] = safe_new_price
-                                ctx.last_reprice_time = now_ts
-                                deps.set_trade(market_id, ctx.to_dict())
 
             return
 

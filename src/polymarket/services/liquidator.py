@@ -139,7 +139,8 @@ class AdaptiveLiquidatorService:
     def execute_force_close(
         client: PolyClient,
         context: TradeContext,
-        strategy_id: str = "default"
+        strategy_id: str = "default",
+        allow_grace: bool = False
     ) -> Tuple[bool, Optional[float], float, Optional[str]]:
         """
         执行强平平仓动作：
@@ -215,6 +216,18 @@ class AdaptiveLiquidatorService:
                 logger.warning(f"[强平引擎：{strategy_id}] 拉取深度计算 VWAP 异常，使用保底盘口: {e}")
                 price_info = client.get_market_price(token_id)
                 best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+
+        # 3.3 [弹性缓冲保护] 若买盘穿透估算亏损 > 5% 且未曾给予过缓冲，给予一次 10s 均值回归缓冲
+        time_to_exp = max(0.0, context.end_time - time.time()) if context.end_time > 0 else 999.0
+        if allow_grace and vwap_price and leg1.cost > 0 and (vwap_price < leg1.cost * 0.95):
+            if not getattr(context, "ttl_grace_extended", False) and time_to_exp >= 25.0:
+                context.ttl_grace_extended = True
+                context.dynamic_ttl = (context.dynamic_ttl or 90.0) + 10.0
+                logger.warning(
+                    f"[强平引擎：{strategy_id}] 买盘 VWAP 穿透亏损较大 (估算价 {vwap_price:.4f} < 成本 {leg1.cost:.4f} * 0.95)，"
+                    f"给予一次性 10s 均值回归弹性缓冲 (剩余到期 {time_to_exp:.1f}s)"
+                )
+                return False, None, size, None
 
         # 4. 尝试市价 FOK 平仓 (快速吃单离场，保护限价下浮 2%)
         safe_price = round(max(float(best_price) * 0.98, 0.001), 4) if close_side == "SELL" else round(min(float(best_price) * 1.02, 0.999), 4)
