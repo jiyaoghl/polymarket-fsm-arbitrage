@@ -184,38 +184,46 @@ class AdaptiveLiquidatorService:
         # 首腿是 BUY，平仓方向必须为 SELL
         close_side = "SELL" if leg1.side == "BUY" else "BUY"
 
-        # 3. 穿透订单簿买盘深度计算真实 VWAP (优先使用本地 OrderbookMemoryGrid 0 网络 I/O，缺失时降级 REST)
+        # 3. 穿透订单簿买盘深度计算真实 VWAP 与边际价格 (优先使用本地 OrderbookMemoryGrid 0 网络 I/O，缺失时降级 REST)
         from polymarket.services.grid import OrderbookMemoryGrid
         vwap_price = None
+        marginal_price = None
         best_price = 0.01
 
-        # 3.1 尝试本地内存网格 (耗时 <0.05ms)
+        # 3.1 尝试本地内存网格 (严格 5.0s 时效限制，耗时 <0.05ms)
         try:
-            local_vwap = OrderbookMemoryGrid.get_instance().calculate_bid_vwap_local(token_id, size, max_staleness=10.0)
+            local_vwap, local_marginal, local_filled = OrderbookMemoryGrid.get_instance().calculate_bid_vwap_and_marginal_local(
+                token_id, size, max_staleness=5.0
+            )
             if local_vwap:
                 vwap_price = local_vwap
+                marginal_price = local_marginal
                 best_price = local_vwap
-                logger.info(f"[强平引擎：{strategy_id}] 基于本地共享盘口网格 (0 网络 I/O) 算出平仓 VWAP 均价: {vwap_price}")
+                logger.info(f"[强平引擎：{strategy_id}] 基于本地共享盘口网格 (0 网络 I/O) 算出平仓 VWAP: {vwap_price}, 边际价: {marginal_price}")
         except Exception as e:
             logger.debug(f"[强平引擎：{strategy_id}] 本地网格穿透异常: {e}")
 
-        # 3.2 本地未命中时安全降级至 REST API
+        # 3.2 本地未命中或陈旧时安全降级至 REST API
         if not vwap_price:
             try:
                 orderbook = client.get_orderbook(token_id)
                 if orderbook and orderbook.get("bids"):
-                    vwap_price = PricingEngine.calculate_bid_vwap(orderbook.get("bids", []), size)
+                    vwap_price, marginal_price, _ = PricingEngine.calculate_bid_vwap_and_marginal(
+                        orderbook.get("bids", []), size
+                    )
                 
                 if vwap_price:
                     best_price = vwap_price
-                    logger.info(f"[强平引擎：{strategy_id}] 基于 REST 订单簿深度算出平仓 VWAP 均价: {vwap_price}")
+                    logger.info(f"[强平引擎：{strategy_id}] 基于 REST 订单簿深度算出平仓 VWAP: {vwap_price}, 边际价: {marginal_price}")
                 else:
                     price_info = client.get_market_price(token_id)
                     best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+                    marginal_price = best_price
             except Exception as e:
                 logger.warning(f"[强平引擎：{strategy_id}] 拉取深度计算 VWAP 异常，使用保底盘口: {e}")
                 price_info = client.get_market_price(token_id)
                 best_price = float(price_info.get("bid", 0.01) if close_side == "SELL" else price_info.get("ask", 0.99))
+                marginal_price = best_price
 
         # 3.3 [弹性缓冲保护] 若买盘穿透估算亏损 > 5% 且未曾给予过缓冲，给予一次 10s 均值回归缓冲
         time_to_exp = max(0.0, context.end_time - time.time()) if context.end_time > 0 else 999.0
@@ -229,16 +237,17 @@ class AdaptiveLiquidatorService:
                 )
                 return False, None, size, None
 
-        # 4. 尝试市价 FOK 平仓 (快速吃单离场，保护限价下浮 2%)
-        safe_price = round(max(float(best_price) * 0.98, 0.001), 4) if close_side == "SELL" else round(min(float(best_price) * 1.02, 0.999), 4)
+        # 4. 尝试市价 FOK 平仓 (基于边际价 P_marginal - 0.002 精确保护发单，确保 100% 一次性吃满)
+        ref_price = marginal_price if marginal_price is not None else best_price
+        safe_price = round(max(float(ref_price) - 0.002, 0.001), 4) if close_side == "SELL" else round(min(float(ref_price) + 0.002, 0.999), 4)
         
         try:
             fok_order = client.post_order(token_id, safe_price, size, close_side, "FOK")
             if fok_order and fok_order.get("status") not in ("ERROR", None):
-                # 模拟盘优先使用深度 VWAP 均价，实盘取撮合成交价
+                # 模拟盘强制 100% 严格使用加权 VWAP 均价记账，实盘取撮合成交价
                 actual_price = float(vwap_price or fok_order.get("price") or safe_price)
                 order_id = str(fok_order.get("orderID") or fok_order.get("order_id") or "fok_close")
-                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {order_id}, 最终成交价(VWAP): {actual_price}")
+                logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {order_id}, 最终成交价(VWAP): {actual_price} (保护价: {safe_price})")
                 return True, actual_price, size, order_id
         except Exception as e:
             logger.warning(f"[强平引擎：{strategy_id}] 发送市价 FOK 平仓失败: {e}")

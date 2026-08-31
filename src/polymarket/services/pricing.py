@@ -50,14 +50,25 @@ class PricingEngine:
         return round(total_cost / target_shares, 4)
 
     @staticmethod
-    def calculate_bid_vwap(orderbook_bids: List[Any], target_shares: float) -> Optional[float]:
+    def calculate_bid_vwap_and_marginal(
+        orderbook_bids: List[Any],
+        target_shares: float,
+        allow_partial: bool = True
+    ) -> Tuple[Optional[float], Optional[float], float]:
         """
-        基于订单簿买盘深度计算卖出平仓 target_shares 份数的加权平均成交价 (Bid VWAP)。
-        买单按价格降序排列 (从高到低吃买盘)。
-        若深度不足，返回 None。
+        穿透订单簿买盘深度计算:
+        1. 卖出 target_shares 份数的加权平均成交价 (Bid VWAP)
+        2. 吞没 target_shares 份数所触及的最深一档买价 (Marginal Fill Price)
+        3. 实际吃到的总份数 (Filled Shares)
+        
+        若买盘深度不足且 allow_partial=True，则以可用最大深度全量穿透计算并返回最后一档价格；
+        若 allow_partial=False 且深度不足，则返回 (None, None, accum_shares)。
+        
+        Returns:
+            (vwap_price, marginal_price, filled_shares)
         """
         if not orderbook_bids or target_shares <= 0:
-            return None
+            return None, None, 0.0
 
         parsed_bids = []
         for item in orderbook_bids:
@@ -66,16 +77,18 @@ class PricingEngine:
             elif isinstance(item, dict):
                 parsed_bids.append((float(item.get("price", 0.0)), float(item.get("size", 0.0))))
 
-        # 买单按价格降序排列 (从高到低吃买单)
+        # 买单按价格降序排列 (从高到低吃买盘)
         sorted_bids = sorted(parsed_bids, key=lambda x: x[0], reverse=True)
 
         accum_shares = 0.0
         total_revenue = 0.0
+        last_marginal_price = None
 
         for price, size in sorted_bids:
             if size <= 0:
                 continue
 
+            last_marginal_price = price
             needed = target_shares - accum_shares
             if size >= needed:
                 total_revenue += needed * price
@@ -85,10 +98,24 @@ class PricingEngine:
                 total_revenue += size * price
                 accum_shares += size
 
-        if accum_shares < target_shares:
-            return None
+        if accum_shares <= 0 or last_marginal_price is None:
+            return None, None, 0.0
 
-        return round(total_revenue / target_shares, 4)
+        if not allow_partial and accum_shares < target_shares:
+            return None, None, round(accum_shares, 4)
+
+        vwap_price = round(total_revenue / accum_shares, 4)
+        return vwap_price, last_marginal_price, round(accum_shares, 4)
+
+    @staticmethod
+    def calculate_bid_vwap(orderbook_bids: List[Any], target_shares: float) -> Optional[float]:
+        """
+        基于订单簿买盘深度计算卖出平仓 target_shares 份数的加权平均成交价 (Bid VWAP)。
+        买单按价格降序排列 (从高到低吃买盘)。
+        若深度不足，返回 None。
+        """
+        vwap, _, _ = PricingEngine.calculate_bid_vwap_and_marginal(orderbook_bids, target_shares, allow_partial=False)
+        return vwap
 
     @staticmethod
     def calculate_net_ev(

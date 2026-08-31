@@ -258,21 +258,32 @@ class OrderbookMemoryGrid:
 
         return ask_yes, bid_yes, ask_no, bid_no
 
-    def calculate_bid_vwap_local(
-        self, token_id: str, target_shares: float, max_staleness: float = 10.0
-    ) -> Optional[float]:
+    def calculate_bid_vwap_and_marginal_local(
+        self, token_id: str, target_shares: float, max_staleness: float = 5.0
+    ) -> Tuple[Optional[float], Optional[float], float]:
         """
-        基于本地内存 L2 深度穿透买盘，0 网络 I/O 计算市价平仓 VWAP 加权均价。
-        若数据缺失或陈旧过期，返回 None 触发上层安全降级。
+        基于本地内存 L2 深度穿透买盘，0 网络 I/O 计算:
+        (vwap_price, marginal_price, filled_shares)
+        若数据缺失或陈旧超过 5.0s，返回 None 触发上层安全降级至 REST。
         """
         snap = self.get_snapshot(str(token_id))
         if not snap or snap.is_stale(max_staleness) or not snap.bids:
-            return None
+            return None, None, 0.0
 
-        return PricingEngine.calculate_bid_vwap(list(snap.bids), target_shares)
+        return PricingEngine.calculate_bid_vwap_and_marginal(list(snap.bids), target_shares)
+
+    def calculate_bid_vwap_local(
+        self, token_id: str, target_shares: float, max_staleness: float = 5.0
+    ) -> Optional[float]:
+        """
+        基于本地内存 L2 深度穿透买盘，0 网络 I/O 计算市价平仓 VWAP 加权均价。
+        若数据缺失或陈旧超过 5.0s，返回 None 触发上层安全降级。
+        """
+        vwap, _, _ = self.calculate_bid_vwap_and_marginal_local(token_id, target_shares, max_staleness)
+        return vwap
 
     def calculate_ask_vwap_local(
-        self, token_id: str, target_shares: float, max_staleness: float = 10.0
+        self, token_id: str, target_shares: float, max_staleness: float = 5.0
     ) -> Optional[float]:
         """
         基于本地内存 L2 深度穿透卖盘，0 网络 I/O 计算买入吃单 VWAP 加权均价。
