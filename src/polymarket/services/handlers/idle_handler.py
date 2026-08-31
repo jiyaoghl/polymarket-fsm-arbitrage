@@ -1,3 +1,4 @@
+import time
 from typing import Dict, Any
 
 from polymarket.domain.fsm import TradeFSM, TradeState
@@ -90,11 +91,11 @@ class IdleTickHandler(BaseTickHandler):
                 )
                 return
 
-            # [盘口成熟度防御] 双边买一必须均 >= 0.35，防止在开盘前 3 秒流动性真空期盲目挂单
-            if tick.best_bid_yes < 0.35 or tick.best_bid_no < 0.35:
+            # [盘口成熟度防御] 双边买一必须均 >= 0.38，防止在低成熟度单边行情中盲目挂单
+            if tick.best_bid_yes < 0.38 or tick.best_bid_no < 0.38:
                 filter_logger.intercept(
                     market_id, asset_type,
-                    f"盘口流动性尚未成熟 (YES买一 {tick.best_bid_yes:.4f} / NO买一 {tick.best_bid_no:.4f} < 0.35)",
+                    f"做市盘口流动性尚未成熟 (YES买一 {tick.best_bid_yes:.4f} / NO买一 {tick.best_bid_no:.4f} < 0.38)",
                     ctx, deps
                 )
                 return
@@ -227,7 +228,15 @@ class IdleTickHandler(BaseTickHandler):
                     deps.client, order.get("orderID") or order.get("order_id"), str(target_token), safe_s, params.strategy_id
                 )
                 if is_fill:
+                    if pos:
+                        ctx.leg1 = pos
+                    ctx.leg1_filled_time = time.time()
+                    deps.set_trade(market_id, ctx.to_dict())
                     fsm.transition_to(TradeState.LEG1_ONLY)
+                    
+                    # [极速直通通道] 首腿成交后就地触发挂出二腿，抢占盘口队列优先位 (<5ms)
+                    from polymarket.services.handlers.leg1_only_handler import Leg1OnlyTickHandler
+                    await Leg1OnlyTickHandler().handle(market, fsm, ctx, tick, params, deps, filter_logger)
                 else:
                     fsm.transition_to(TradeState.FAILED, reason="首腿成交确认超时")
             else:
