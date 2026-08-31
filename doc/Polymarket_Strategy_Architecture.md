@@ -96,9 +96,13 @@ flowchart TD
    └─► 盘口到期 ─► [Polygon 链上 35Gwei 自动赎回 Redeem] ─► [SETTLED 终态并无条件归还风控额度]
 ```
 
-### 4.1 `IdleTickHandler` (开仓过滤与分流)
-- **Top 5 档 OBI 深度失衡守门**：穿透计算买卖盘压迫度 $OBI = \frac{V_{\text{bid}} - V_{\text{ask}}}{V_{\text{bid}} + V_{\text{ask}}}$，设置 $\sum Shares \ge 30.0$ 防早盘误杀，当 $OBI < -0.40$（卖压泰山压顶）时主动拦截入场；
-- **Anti-Pennying 做市防穿透**：挂单施加 $\min(\text{RawTarget}, \text{BestAsk} - 0.001)$ 上限，杜绝意外成为 Taker 吃单。
+### 4.1 `IdleTickHandler` (开仓四重守门网与机会分流)
+- **开盘 15s 绝对静默保护**：当 `time_to_expiry >= 285.0s`（即 5min 盘刚开 $\le 15\text{s}$）时一律静默等待做市商铺单，避开开盘流动性真空；
+- **现货 1m 极速动量飞刀拦截 (65% 阈值)**：提取最新 1m 现货 K 线，当 1 分钟位移 $\ge \text{max\_amplitude} \times 0.65$ 时即刻判定为单边剧烈动量冲击，拦截开仓；
+- **首腿常规保利与极度超跌做 T 双轨**：常规单强制要求对侧买一 $\ge 0.25$ 且满足净利差；极度超跌单 ($P_1 \le 0.25$) 允许对侧买一 $\ge 0.15$ 放行并标记为 `smart_flip` 智能快速做 T；
+- **对侧买盘 OBI 承接厚度壁垒**：吃入首腿前必须验证对侧 Token 前 5 档买盘总有效深度 $\ge 20.0$ 份（约 \$8~\$10 USDC），杜绝二腿挂出后无流动性承接；
+- **双做市买一门槛提升至 0.38**：保留的 `maker_maker_conservative` 仅在双边买一 $\ge 0.38$ 时才挂单，杜绝接飞刀；
+- **首腿成交就地直通挂二腿 (<5ms)**：私有 WS 捕获成交后，当前协程就地直接调度 `Leg1OnlyTickHandler` 抢占队列优先位。
 
 ### 4.2 `PendingBothLegsTickHandler` (双挂做市推进)
 - 双边同时成交直接进入 `LOCKED` 锁仓；
@@ -108,9 +112,10 @@ flowchart TD
 - 首腿成交后，**严格对齐实际成交份数 (Shares Alignment)**；
 - 下发 `dual_exit` OCO 订单，并在 35s 内通过连续幂律函数 $\text{Margin}(t) = \text{InitialMargin} - (t/T)^{1.8} \times (\text{InitialMargin} - \text{MinMargin})$ 实现前期稳润、后期加速脱手，强锁 $\text{Net EV} \ge 0$。
 
-### 4.4 `PendingLeg2TickHandler` (二腿 OCO 变现与真实损益核算)
-- 监听做 T 卖单与配对买单成交流；
-- 任意一边成交后立即撤销另一侧订单；在二腿买单成交时接入 `PricingEngine.calculate_net_ev` 核算扣除真实手续费后的净收益，标记 `HEDGED_LOCKED` 杜绝账本失真。
+### 4.4 `PendingLeg2TickHandler` (二腿 OCO 变现与 Anti-Pennying 阶梯跟单)
+- **OCO 买单 Anti-Pennying 跳跃跟单**：当对侧买一排位被反超且冷却 $\ge 3.0\text{s}$ 时，调用 `MakerPeggingService` 跳跃加价 $0.002\sim 0.004$ 抢占买一，上限严格钳制在净利润 $\ge 0.2\%$ 保利价位；
+- **坚守做 T 卖单初始利润**：卖单全程挂在保利目标价，彻底移除临期贱卖打损逻辑；
+- **真实损益核算**：二腿成交后立即撤销对侧订单，核算扣除手续费后的净收益并流转 `LOCKED` 或 `SETTLED`。
 
 ---
 

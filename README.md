@@ -92,18 +92,17 @@ flowchart TD
 
 ## 🌟 核心量化机制与技术亮点
 
-### 1. 状态处理器架构模式 (State Handlers Pattern)
-系统采用 **状态处理器模式** 解耦传统庞大的单体状态机循环，由 [`MarketTickDispatcher`](file:///d:/生活/Trading/polymarket/src/polymarket/services/handlers/dispatcher.py) 基于当前状态进行 $O(1)$ 路由分发：
-- **`IdleTickHandler`**：开仓扫描、K线防爆盾校验、Top 5 档 OBI 深度失衡过滤（$OBI \ge -0.40$ 且 $\sum Shares \ge 30$）与入场分流；
-- **`PendingBothLegsTickHandler`**：双挂做市推进；双边成交立即进入 `LOCKED`；**单腿被吃时立即撤销反向单并流转至 `LEG1_ONLY` 触发 OCO 双向自适应变现**；
-- **`Leg1OnlyTickHandler`**：首腿成交份数绝对对齐，并发挂出【同向做 T 限价卖单】与【反向配对限价买单】（`dual_exit` 模式），启动 **35s 连续幂律平滑加速让价阶梯**；
-- **`PendingLeg2TickHandler`**：二腿 OCO 变现裁决、成交真实 Net EV 损益核算、Maker 挂单反卷 (Anti-Pennying) 与阶梯跃迁跟单。
+### 1. 入场质量四重微观守门网 (Entry Quality Guard)
+系统在开仓扫描与吃单决策端设立了严密的 4 重数学守门，从源头杜绝接飞刀与单边穿透打损：
+- **开盘 15s 绝对静默保护**：当 `time_to_expiry >= 285.0s`（即 5min 盘刚开 $\le 15\text{s}$）时一律静默等待做市商铺单，避开开盘流动性真空；
+- **现货 1m 极速动量飞刀拦截 (65% 阈值)**：提取最新 1m 现货 K 线，当 1 分钟位移 $\ge \text{max\_amplitude} \times 0.65$ 时即刻判定为单边剧烈动量冲击，拦截开仓；
+- **首腿常规保利与极度超跌做 T 双轨**：常规单强制要求对侧买一 $\ge 0.25$ 且满足净利差；极度超跌单 ($P_1 \le 0.25$) 允许对侧买一 $\ge 0.15$ 放行并标记为 `smart_flip` 智能快速做 T；
+- **对侧买盘 OBI 承接厚度壁垒**：吃入首腿前必须验证对侧 Token 前 5 档买盘总有效深度 $\ge 20.0$ 份（约 \$8~\$10 USDC），杜绝二腿挂出后无流动性承接。
 
-### 2. OBI 深度失衡守门与连续幂律让价 (OBI Gate & Power-law Decay)
-- **Top 5 档 OBI 深度压迫拦截**：穿透订单簿买卖盘前 5 档计算 $OBI = \frac{V_{\text{bid}} - V_{\text{ask}}}{V_{\text{bid}} + V_{\text{ask}}}$。设置 $\sum Shares \ge 30.0$ 防早盘冷启动误杀门槛，当 $OBI < -0.40$（卖压泰山压顶）时主动拦截 Taker 入场。
-- **连续幂律加速平滑让价阶梯**：
-  $$\text{CurrentMargin}(t) = \text{InitialMargin} - \left(\frac{t}{T}\right)^{1.8} \times (\text{InitialMargin} - \text{MinMargin})$$
-  在 35s 内实现前期平稳赚利、后期加速保本脱手，底线强锁 $\text{Net EV} \ge 0$，彻底杜绝超时打损。
+### 2. 毫秒级二腿直通挂单与 Anti-Pennying (Zero-Latency Leg2 & Anti-Pennying)
+- **首腿成交就地直通挂二腿 (<5ms)**：私有 WebSocket 捕获到首腿成交后，**无需等待下一个公共 WS 盘口帧**，直接在当前异步协程中就地调度 `Leg1OnlyTickHandler` 挂出二腿，最大化抢占对手盘队列第一位；
+- **OCO 对冲买单 Anti-Pennying 阶梯跟单**：当对侧买一排位被反超且冷却 $\ge 3.0\text{s}$ 时，跳跃加价 $0.002\sim 0.004$ 抢占队列，追价上限严格受净利差 $\ge 0.2\%$ 底线约束；
+- **坚守卖单初始利润**：做 T 卖单全程坚守保利价位，彻底废除过早（$<45\text{s}$）自杀式低抛打折出场。
 
 ### 3. 全局共享盘口内存网格 (Orderbook Memory Grid)
 - **`OrderbookMemoryGrid` 单例**：单例维护全市场 L2 集中式内存订单簿；
@@ -120,9 +119,9 @@ flowchart TD
 - **Polygon CTF 官方合约原生赎回**：统一由 `OnChainRedeemer` 直接向 Polygon 主网 `ConditionalTokens` 官方合约调用 `redeemPositions`，配置多候选 RPC 轮询与 **35 Gwei 最低 Gas 保底**；
 - **风控额度全生命周期闭环**：链上赎回后联动触发 FSM `settle_market` 流转至 `SETTLED`，在 `finally` 块中强制归还额度，彻底杜绝小本金实盘账户额度假死。
 
-### 6. 动态自适应强平引擎与全量撤单防御 (Adaptive TTL & Liquidation)
+### 6. 动态自适应强平引擎与买盘 VWAP 穿透保护 (Adaptive TTL & Liquidation)
 - **高波动联动收紧**：根据 K 线振幅动态将 TTL 压缩至 `35s ~ 60s` 提前强平逃命；
-- **临期截断与单调递减**：持仓期间 TTL 只允许变短，绝不反向延长；
+- **强平买盘 VWAP 穿透与 10s 弹性缓冲**：穿透深度计算 VWAP 加权均价，若估算强平亏损 $> 5\%$ 且未曾延期过，自动给予一次性 **10 秒均值回归弹性缓冲**；
 - **全量撤单防孤儿单**：强平时统一撤销 `leg2_order_id` 与 `dual_orders` 中所有挂单并做独立异常隔离，随后发送市价 FOK 平仓，杜绝平仓后原买单被吃产生单边孤儿仓位。
 
 ---
@@ -131,13 +130,13 @@ flowchart TD
 
 系统内置多组异构策略并行运行，覆盖不同行情风格：
 
-| 策略 ID | 策略模式 | 首腿入场 | 出场机制 | 核心特性 |
-| :--- | :--- | :--- | :--- | :--- |
-| `taker_maker_conservative` | 吃单 + 挂单 | ≤ 0.42 | dual_exit OCO | **实盘主力 (3U 起步)**，低入场价保护，35s 幂律平滑让价脱手 |
-| `taker_maker_standard` | 吃单 + 挂单 | ≤ 0.45 | dual_exit OCO | 拥抱长尾市场，兼顾 OBI 深度风控与全盘口净 EV 套利 |
-| `taker_maker_aggressive` | 吃单 + 挂单 | ≤ 0.48 | dual_exit OCO | 高敏型 Taker-Maker，全盘口流动性快速捕捉 |
-| `maker_maker_conservative` | 挂单 + 挂单 | ≤ 0.45 | dual_exit OCO | **双边并发做市**，单腿被吃立即转入 OCO 快速脱手，0% 费率 |
-| `maker_maker_standard` | 挂单 + 挂单 | ≤ 0.50 | dual_exit OCO | **双边并发做市**，深度参与 5min 盘口做市与做 T 变现 |
+| 策略 ID | 策略模式 | 首腿入场 | 出场机制 | 核心特性 | 状态 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.40** | dual_exit OCO | **实盘主力 (3U 起步)**，严苛入场门槛，高保利安全空间 | 🟢 活跃实盘 |
+| `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.42** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 | 🟢 活跃模拟 |
+| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，快速捕捉盘口微小价差 | 🟢 活跃模拟 |
+| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **极小额做市观察 (3U)**，严苛盘口成熟度守门 (买一 $\ge 0.38$) | 🟢 活跃模拟 |
+| `maker_maker_standard` | 挂单 + 挂单 | - | - | 避免单边行情接飞刀失血，资源让渡给 Taker-Maker | ⏹️ **已停用下线** |
 
 ---
 
@@ -152,7 +151,7 @@ pip install -r requirements.txt
 cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
-# 3. 运行自动化单元测试套件 (135 项测试 100% 绿灯通过)
+# 3. 运行自动化单元测试套件 (162 项测试 100% 绿灯通过)
 python -m pytest tests/
 
 # 4. 启动 Dashboard 仪表盘
@@ -160,7 +159,7 @@ python -m polymarket.apps.dashboard
 ```
 
 ### 2. 敏捷发布流水线 (Agile Release Pipeline)
-本地开发调试完毕并通过 135 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
+本地开发调试完毕并通过 162 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
 
 ```bash
 # 自动执行【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】

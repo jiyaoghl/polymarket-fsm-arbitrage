@@ -50,24 +50,25 @@
 ## 3. 实战标准模板推荐 (4 大经典策略组合)
 
 ### 模板 1：`taker_maker_conservative` (保守防守型 · 3U 实盘起步)
-> **适用场景**：新账户实盘小资金试水、极小滑点、低入场价格保护、双出口快速离场。
+> **适用场景**：新账户实盘小资金试水、极小滑点、严控首腿成本（≤0.40）、双出口快速离场。
 ```jsonc
 {
     "strategy_id": "taker_maker_conservative",        // [必填] 策略唯一ID
     "name": "吃单+挂单 保守型策略 (3U起步)",           // [必填] 策略中文名称
     "description": "首腿FOK市价吃单，二腿双出口并发退出。低入场价区间，严格防滑点与小额安全试水", // 策略描述
-    "is_live": false,                                 // [必填] 实盘开关: true=实盘, false=模拟盘
+    "is_live": true,                                  // [必填] 实盘开关: true=实盘, false=模拟盘
+    "is_active": true,                                // [必填] 策略激活状态
     "amount": 3.0,                                   // [必填] 单笔金额 (USDC)，折算份数保证 >= 5.0
-    "entry_max_price": 0.45,                         // [必填] 首腿最大买价 (最高0.45，留足55%对冲空间)
+    "entry_max_price": 0.40,                         // [必填] 首腿最大买价 (最高0.40，留足60%对冲空间)
     "entry_min_price": 0.30,                         // [必填] 首腿最小买价 (最低0.30，防极端事件)
     "reentry_trigger": 0.35,                         // [必填] 二腿反卷买一阈值
-    "min_time_to_expiry_entry": 45,                  // 临近交割禁止入场时间 (秒)
+    "min_time_to_expiry_entry": 150.0,               // 临近交割禁止入场时间 (秒)
     "leg1_order_type": "FOK",                        // [必填] 首腿订单类型: FOK 市价吃单
     "leg2_order_type": "GTC",                        // [必填] 二腿订单类型: GTC 做市挂单
     "leg2_price_mode": "bid",                        // [必填] 二腿定价参考: bid 买一价
     "dual_bracket_entry": false,                     // 首腿是否双挂: false
     "exit_mode": "dual_exit",                        // [必填] 出场模式: dual_exit 双出口并发
-    "initial_margin": 0.025,                         // [必填] 初始做T期望毛利: 2.5%
+    "initial_margin": 0.015,                         // [必填] 初始做T期望毛利: 1.5%
     "breakeven_margin": 0.002,                       // [必填] 保本安全最低毛利: 0.2%
     "flip_timeout_sec": 35,                          // [必填] 做T等待衰减周期: 35秒
     "leg2_cancel_before_expiry": 30,                 // [必填] 到期前强制撤单时间: 30秒
@@ -78,24 +79,25 @@
 ---
 
 ### 模板 2：`taker_maker_standard` (均衡主力型 · 10U 日常套利)
-> **适用场景**：主力均衡策略，兼顾开仓成交率与利差利润，适合 BTC / ETH / SOL 5min 盘口。
+> **适用场景**：主力均衡策略，兼顾开仓成交率与利差利润（≤0.42），适合 BTC / ETH / SOL 5min 盘口。
 ```jsonc
 {
     "strategy_id": "taker_maker_standard",            // [必填] 策略唯一ID
     "name": "吃单+挂单 标准主力策略",                 // [必填] 策略中文名称
     "description": "主力均衡策略，平衡开仓频率与利差收益，适合日常自动化套利",
     "is_live": false,                                 // [必填] 实盘开关
+    "is_active": true,                                // [必填] 策略激活状态
     "amount": 10.0,                                  // [必填] 单笔金额: $10.0 USDC
-    "entry_max_price": 0.50,                         // [必填] 首腿最大买价: 0.50
-    "entry_min_price": 0.25,                         // [必填] 首腿最小买价: 0.25
-    "reentry_trigger": 0.42,                         // [必填] 二腿反卷阈值: 0.42
-    "min_time_to_expiry_entry": 45,                  // 临近交割禁止入场时间: 45s
+    "entry_max_price": 0.42,                         // [必填] 首腿最大买价: 0.42 (留足58%空间)
+    "entry_min_price": 0.30,                         // [必填] 首腿最小买价: 0.30
+    "reentry_trigger": 0.35,                         // [必填] 二腿反卷阈值: 0.35
+    "min_time_to_expiry_entry": 150.0,               // 临近交割禁止入场时间: 150s
     "leg1_order_type": "FOK",                        // [必填] 首腿 FOK
     "leg2_order_type": "GTC",                        // [必填] 二腿 GTC
     "leg2_price_mode": "bid",                        // [必填] 二腿参考买一
     "dual_bracket_entry": false,                     // 首腿单边吃单
     "exit_mode": "dual_exit",                        // [必填] 出场模式: dual_exit 双出口并发
-    "initial_margin": 0.025,                         // [必填] 初始期望毛利: 2.5%
+    "initial_margin": 0.015,                         // [必填] 初始期望毛利: 1.5%
     "breakeven_margin": 0.002,                       // [必填] 保本最低毛利: 0.2%
     "flip_timeout_sec": 35,                          // [必填] 衰减周期: 35秒
     "leg2_cancel_before_expiry": 30,                 // [必填] 到期前撤单: 30秒
@@ -105,25 +107,26 @@
 
 ---
 
-### 模板 3：`maker_maker_standard` (双边做市型 · 0 手续费完美套利)
-> **适用场景**：通过批量接口同时原子级挂出 YES 与 NO 限价单，完全免手续费，两边成交直接锁定 1.5% 刚性净利。
+### 模板 3：`maker_maker_conservative` (低频做市观察型 · 3U 极小额)
+> **适用场景**：仅在双边买一 $\ge 0.38$ 成熟盘口下进行极低额度双边挂单观察，严防单边接飞刀。
 ```jsonc
 {
-    "strategy_id": "maker_maker_standard",            // [必填] 策略唯一ID
-    "name": "挂单+挂单 标准双做市策略",               // [必填] 策略中文名称
-    "description": "双边限价做市主力策略，享受Polymarket Maker零手续费福利，原子并发双挂完美套利",
+    "strategy_id": "maker_maker_conservative",        // [必填] 策略唯一ID
+    "name": "挂单+挂单 保守做市策略",                 // [必填] 策略中文名称
+    "description": "极低额度双边限价做市观察，严苛流动性守门(买一>=0.38)，单腿成交立即转入OCO脱手",
     "is_live": false,                                 // [必填] 实盘开关
-    "amount": 10.0,                                  // [必填] 单笔金额: $10.0 USDC
+    "is_active": true,                                // [必填] 策略激活状态
+    "amount": 3.0,                                   // [必填] 单笔金额: $3.0 USDC
     "dual_bracket_entry": true,                      // [必填] 开局双边原子并发双挂！
-    "entry_max_price": 0.50,                         // [必填] 首腿最大买价: 0.50
-    "entry_min_price": 0.25,                         // [必填] 首腿最小买价: 0.25
-    "reentry_trigger": 0.42,                         // [必填] 二腿反卷阈值: 0.42
-    "min_time_to_expiry_entry": 45,                  // 临近交割禁止入场: 45s
+    "entry_max_price": 0.42,                         // [必填] 首腿最大买价: 0.42
+    "entry_min_price": 0.30,                         // [必填] 首腿最小买价: 0.30
+    "reentry_trigger": 0.35,                         // [必填] 二腿反卷阈值: 0.35
+    "min_time_to_expiry_entry": 150.0,               // 临近交割禁止入场: 150s
     "leg1_order_type": "GTC",                        // [必填] 首腿 GTC 限价单 (0费率)
     "leg2_order_type": "GTC",                        // [必填] 二腿 GTC 限价单 (0费率)
     "leg2_price_mode": "bid",                        // [必填] 参考买一
     "exit_mode": "dual_exit",                        // [必填] 单边残留时激活 dual_exit 双出口脱身
-    "initial_margin": 0.025,                         // [必填] 初始毛利: 2.5%
+    "initial_margin": 0.015,                         // [必填] 初始毛利: 1.5%
     "breakeven_margin": 0.002,                       // [必填] 保本毛利: 0.2%
     "flip_timeout_sec": 35,                          // [必填] 衰减周期: 35秒
     "leg2_cancel_before_expiry": 30,                 // [必填] 撤单时间: 30秒
