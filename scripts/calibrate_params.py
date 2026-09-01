@@ -166,14 +166,17 @@ class MathSandbox:
 
 
 class GridCalibrator:
-    """网格搜索与多维参数标定器"""
+    """网格搜索与多维参数标定器 (内置真实交易生命周期锁)"""
 
-    def __init__(self, frames: List[SnapshotFrame]):
+    def __init__(self, frames: List[SnapshotFrame], trade_cooldown_sec: float = 120.0):
         self.frames = frames
-        # 按 token_id 建立索引，便于对侧盘口快速配对
-        self.token_frames: Dict[str, List[SnapshotFrame]] = {}
+        self.trade_cooldown_sec = trade_cooldown_sec
+        # 按时间戳组织时序索引：ts -> Dict[token_id, SnapshotFrame]
+        from collections import defaultdict
+        self.ts_frames: Dict[float, Dict[str, SnapshotFrame]] = defaultdict(dict)
         for f in frames:
-            self.token_frames.setdefault(f.token_id, []).append(f)
+            self.ts_frames[f.ts][f.token_id] = f
+        self.sorted_timestamps = sorted(self.ts_frames.keys())
 
     def run_grid_search(
         self,
@@ -185,76 +188,79 @@ class GridCalibrator:
         keys = list(param_grid.keys())
         combinations = list(itertools.product(*[param_grid[k] for k in keys]))
         if len(combinations) > max_evals:
-            # 步长抽样
-            step = len(combinations) // max_evals
+            step = max(1, len(combinations) // max_evals)
             combinations = combinations[::step][:max_evals]
 
         results: List[EvalResult] = []
         total_combos = len(combinations)
-        print(f"[*] 开始评估 {total_combos} 组参数组合 (快照样本数: {len(self.frames)} 帧)...")
-
-        # 预构建时间戳临近的 Token 对 (简化为连续相邻帧匹配)
-        token_list = list(self.token_frames.keys())
+        span_min = (max(self.sorted_timestamps) - min(self.sorted_timestamps)) / 60.0 if self.sorted_timestamps else 0.0
+        print(f"[*] 开始评估 {total_combos} 组参数组合 (快照样本数: {len(self.frames)} 帧, 覆盖 {span_min:.2f} 分钟)...")
 
         for idx, combo in enumerate(combinations):
             p = dict(zip(keys, combo))
-            eval_res = self._eval_single_param_set(p, token_list)
+            eval_res = self._eval_single_param_set(p)
             results.append(eval_res)
 
         # 按照 扣费净 EV * 机会次数 综合评分排序
         results.sort(key=lambda r: r.score, reverse=True)
         return results
 
-    def _eval_single_param_set(self, params: Dict[str, Any], token_list: List[str]) -> EvalResult:
+    def _eval_single_param_set(self, params: Dict[str, Any]) -> EvalResult:
         res = EvalResult(params=params)
         total_ev = 0.0
-        opps = 0
+        trades_count = 0
         intercepts = 0
+        last_trade_ts = 0.0
 
-        # 如果至少有 2 个 Token，模拟 YES/NO 配对
-        if len(token_list) >= 2:
-            t1_frames = self.token_frames[token_list[0]]
-            t2_frames = self.token_frames[token_list[1]]
-            min_len = min(len(t1_frames), len(t2_frames), 200)
+        for ts in self.sorted_timestamps:
+            # 真实交易生命周期锁：上一笔开仓后进入冷却期，避免同个 5min 市场连续重采样
+            if ts - last_trade_ts < self.trade_cooldown_sec:
+                continue
 
-            for i in range(min_len):
-                f1 = t1_frames[i]
-                f2 = t2_frames[i]
+            tokens = list(self.ts_frames[ts].values())
+            if len(tokens) >= 2:
+                # 评估主力 Token 对 (YES vs NO)
+                f1, f2 = tokens[0], tokens[1]
                 is_maker, ev, reason = MathSandbox.evaluate_maker_opportunity(f1, f2, params)
                 if is_maker:
-                    opps += 1
+                    trades_count += 1
                     total_ev += ev
+                    last_trade_ts = ts
                 else:
                     intercepts += 1
 
-        res.total_opportunities = opps
+        res.total_opportunities = trades_count
         res.total_net_ev = round(total_ev, 4)
-        res.avg_net_margin = round(total_ev / opps, 4) if opps > 0 else 0.0
+        res.avg_net_margin = round(total_ev / trades_count, 4) if trades_count > 0 else 0.0
         res.intercept_count = intercepts
-        # 目标函数：扣费净收益 + 适度开仓频率惩罚/奖励
-        res.score = round(total_ev * (1.0 + min(opps, 100) / 100.0), 4)
+        # 综合评分：累计净 EV * 交易独立成功率
+        res.score = round(total_ev * (1.0 + min(trades_count, 50) / 50.0), 4)
         return res
 
     def generate_report(self, results: List[EvalResult], output_path: str):
         """生成详细 Markdown 标定报告"""
         top5 = results[:5]
+        span_min = (max(self.sorted_timestamps) - min(self.sorted_timestamps)) / 60.0 if self.sorted_timestamps else 0.0
+        span_hour = span_min / 60.0
         lines = [
             "# Polymarket 离线参数标定与帕累托寻优报告",
             f"> **生成时间**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"> **快照样本**: 共 {len(self.frames)} 帧真实 L2 深度数据",
+            f"> **快照样本**: 共 {len(self.frames)} 帧真实 L2 深度数据 (覆盖 {span_min:.1f} 分钟 / {span_hour:.2f} 小时)",
             f"> **搜索空间**: 评估 {len(results)} 组参数组合",
+            f"> **生命周期模型**: 包含 120s 单市场排他冷却锁 (杜绝 Tick 级重复过度统计)",
             "",
             "## 🏆 Top 5 最优参数组合推荐",
             "",
-            "| 排名 | 综合得分 | 机会次数 | 累计净 EV ($) | 平均单笔 EV ($) | entry_max | mm_min_bid | max_spread | obi_floor | initial_margin |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+            "| 排名 | 综合得分 | 独立交易笔数 | 累计净 EV ($) | 平均单笔 EV ($) | 预测小时频次 | entry_max | mm_min_bid | max_spread | obi_floor | initial_margin |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
         ]
 
         for rank, r in enumerate(top5, 1):
             p = r.params
+            hourly_freq = (r.total_opportunities / max(span_hour, 0.01)) if span_hour > 0 else 0
             lines.append(
-                f"| #{rank} | **{r.score:.2f}** | {r.total_opportunities} | **+${r.total_net_ev:.4f}** | "
-                f"+${r.avg_net_margin:.4f} | {p.get('entry_max_price', '-')} | {p.get('mm_min_bid', '-')} | "
+                f"| #{rank} | **{r.score:.2f}** | {r.total_opportunities} 笔 | **+${r.total_net_ev:.4f}** | "
+                f"+${r.avg_net_margin:.4f} | {hourly_freq:.1f} 笔/h | {p.get('entry_max_price', '-')} | {p.get('mm_min_bid', '-')} | "
                 f"{p.get('max_spread', '-')} | {p.get('obi_floor', '-')} | {p.get('initial_margin', '-')} |"
             )
 
@@ -276,7 +282,7 @@ class GridCalibrator:
 def main():
     parser = argparse.ArgumentParser(description="Polymarket 离线高保真参数标定引擎")
     parser.add_argument("--snapshots-dir", type=str, default="vps-logs/snapshots", help="L2 快照目录路径")
-    parser.add_argument("--max-frames", type=int, default=1000, help="最多读取的快照帧数")
+    parser.add_argument("--max-frames", type=int, default=50000, help="最多读取的快照帧数 (默认 50000)")
     parser.add_argument("--dry-run", action="store_true", help="快速演练模式 (采样 50 帧)")
     parser.add_argument("--output", type=str, default="data/calibration_report.md", help="输出报告路径")
     args = parser.parse_args()
