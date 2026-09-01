@@ -32,6 +32,13 @@ class StrategyParams:
     breakeven_margin: float
     flip_timeout_sec: float
     min_time_to_expiry_entry: float
+    # ── 新增微观结构可配置门槛 (带安全默认值) ──
+    open_silence_sec: float = 15.0
+    max_spread: float = 0.05
+    mm_min_bid: float = 0.38
+    obi_floor: float = -0.40
+    base_opp_depth: float = 20.0
+    opp_depth_amp_mult: float = 1.5
 
 @dataclass
 class StrategyDependencies:

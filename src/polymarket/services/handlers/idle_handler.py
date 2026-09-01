@@ -32,14 +32,15 @@ class IdleTickHandler(BaseTickHandler):
         asset_type = market.get("__asset_type", "UNKNOWN")
         now_ts = tick.now_ts
 
-        # 1. 开盘时空窗口守门 (开盘 15s 绝对静默 + 临期交割守门)
+        # 1. 开盘时空窗口守门 (开盘静默期 + 临期交割守门)
         time_to_expiry = ctx.end_time - now_ts if ctx.end_time > 0 else 999.0
         if ctx.end_time > 0:
-            # 开盘前 15s 绝对静默保护 (防止开盘瞬间做市商铺单未稳的流动性真空)
-            if time_to_expiry >= 285.0:
+            # 开盘前流动性成熟期绝对静默保护 (防止开盘瞬间做市商铺单未稳的流动性真空)
+            silence_limit = 300.0 - params.open_silence_sec
+            if time_to_expiry >= silence_limit:
                 filter_logger.intercept(
                     market_id, asset_type,
-                    f"开盘前 15s 流动性成熟期 (剩余 {time_to_expiry:.1f}s >= 285.0s)，等待做市铺单",
+                    f"开盘前 {params.open_silence_sec:.0f}s 流动性成熟期 (剩余 {time_to_expiry:.1f}s >= {silence_limit:.1f}s)，等待做市铺单",
                     ctx, deps
                 )
                 return
@@ -66,17 +67,17 @@ class IdleTickHandler(BaseTickHandler):
                     return
 
         # 3. 买卖价差过大拦截 (流动性真空)
-        if tick.best_bid_yes and (tick.best_ask_yes - tick.best_bid_yes) > 0.05:
+        if tick.best_bid_yes and (tick.best_ask_yes - tick.best_bid_yes) > params.max_spread:
             filter_logger.intercept(
                 market_id, asset_type,
-                f"YES 买卖价差 {(tick.best_ask_yes - tick.best_bid_yes):.4f} > 0.05",
+                f"YES 买卖价差 {(tick.best_ask_yes - tick.best_bid_yes):.4f} > {params.max_spread:.4f}",
                 ctx, deps
             )
             return
-        if tick.best_bid_no and (tick.best_ask_no - tick.best_bid_no) > 0.05:
+        if tick.best_bid_no and (tick.best_ask_no - tick.best_bid_no) > params.max_spread:
             filter_logger.intercept(
                 market_id, asset_type,
-                f"NO 买卖价差 {(tick.best_ask_no - tick.best_bid_no):.4f} > 0.05",
+                f"NO 买卖价差 {(tick.best_ask_no - tick.best_bid_no):.4f} > {params.max_spread:.4f}",
                 ctx, deps
             )
             return
@@ -91,11 +92,11 @@ class IdleTickHandler(BaseTickHandler):
                 )
                 return
 
-            # [盘口成熟度防御] 双边买一必须均 >= 0.38，防止在低成熟度单边行情中盲目挂单
-            if tick.best_bid_yes < 0.38 or tick.best_bid_no < 0.38:
+            # [盘口成熟度防御] 双边买一必须均 >= mm_min_bid，防止在低成熟度单边行情中盲目挂单
+            if tick.best_bid_yes < params.mm_min_bid or tick.best_bid_no < params.mm_min_bid:
                 filter_logger.intercept(
                     market_id, asset_type,
-                    f"做市盘口流动性尚未成熟 (YES买一 {tick.best_bid_yes:.4f} / NO买一 {tick.best_bid_no:.4f} < 0.38)",
+                    f"做市盘口流动性尚未成熟 (YES买一 {tick.best_bid_yes:.4f} / NO买一 {tick.best_bid_no:.4f} < {params.mm_min_bid:.2f})",
                     ctx, deps
                 )
                 return
@@ -168,22 +169,22 @@ class IdleTickHandler(BaseTickHandler):
                 obi_val, tot_depth, is_valid_depth = PricingEngine.calculate_obi(
                     list(target_snap.bids), list(target_snap.asks), top_n_levels=5, min_total_shares=30.0
                 )
-                if is_valid_depth and obi_val < -0.40:
+                if is_valid_depth and obi_val < params.obi_floor:
                     filter_logger.intercept(
                         market_id, asset_type,
-                        f"OBI 卖盘深度严重压迫 (OBI={obi_val:.2f} < -0.40, 总深度={tot_depth:.1f}份)，拦截吃单",
+                        f"OBI 卖盘深度严重压迫 (OBI={obi_val:.2f} < {params.obi_floor:.2f}, 总深度={tot_depth:.1f}份)，拦截吃单",
                         ctx, deps
                     )
                     return
 
-            # [波动率联动对侧买盘 OBI 承接深度壁垒] 根据当前 K 线波幅动态提升对侧深度要求 (20.0 ~ 50.0 份)
+            # [波动率联动对侧买盘 OBI 承接深度壁垒] 根据当前 K 线波幅动态提升对侧深度要求
             from polymarket.kline_analyzer import get_asset_status
             from polymarket.config import ASSET_CHOP_THRESHOLDS, CRYPTO_CHOP_MAX_AMPLITUDE
             asset_status = get_asset_status(asset_type)
             asset_amp = float(asset_status.get("amplitude", 0.0))
             max_amp = float(ASSET_CHOP_THRESHOLDS.get(asset_type.upper(), {}).get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE))
             amp_ratio = min(max(asset_amp / max_amp if max_amp > 0 else 0.0, 0.0), 1.0)
-            required_opp_depth = round(20.0 * (1.0 + amp_ratio * 1.5), 1)
+            required_opp_depth = round(params.base_opp_depth * (1.0 + amp_ratio * params.opp_depth_amp_mult), 1)
 
             if opp_snap and not opp_snap.is_stale(10.0):
                 opp_bids = list(opp_snap.bids)

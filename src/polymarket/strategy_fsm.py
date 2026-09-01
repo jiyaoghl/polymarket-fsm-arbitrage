@@ -83,6 +83,12 @@ class ArbitrageBotFSM(BaseStrategy):
             breakeven_margin=self.breakeven_margin,
             flip_timeout_sec=self.flip_timeout_sec,
             min_time_to_expiry_entry=self.min_time_to_expiry_entry,
+            open_silence_sec=float(strategy_config.get("open_silence_sec", 15.0)),
+            max_spread=float(strategy_config.get("max_spread", 0.05)),
+            mm_min_bid=float(strategy_config.get("mm_min_bid", 0.38)),
+            obi_floor=float(strategy_config.get("obi_floor", -0.40)),
+            base_opp_depth=float(strategy_config.get("base_opp_depth", 20.0)),
+            opp_depth_amp_mult=float(strategy_config.get("opp_depth_amp_mult", 1.5)),
         )
         self.dependencies = StrategyDependencies(
             client=self.client,

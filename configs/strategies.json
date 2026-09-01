@@ -16,7 +16,12 @@
         "breakeven_margin": 0.002,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
+        "leg2_fallback_to_maker": true,
+        "open_silence_sec": 15,
+        "max_spread": 0.05,
+        "obi_floor": -0.35,
+        "base_opp_depth": 25.0,
+        "opp_depth_amp_mult": 1.5
     },
     {
         "strategy_id": "taker_maker_standard",
@@ -35,7 +40,12 @@
         "breakeven_margin": 0.002,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
+        "leg2_fallback_to_maker": true,
+        "open_silence_sec": 15,
+        "max_spread": 0.05,
+        "obi_floor": -0.40,
+        "base_opp_depth": 20.0,
+        "opp_depth_amp_mult": 1.5
     },
     {
         "strategy_id": "taker_maker_aggressive",
@@ -54,7 +64,12 @@
         "breakeven_margin": 0.002,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
+        "leg2_fallback_to_maker": true,
+        "open_silence_sec": 10,
+        "max_spread": 0.06,
+        "obi_floor": -0.45,
+        "base_opp_depth": 15.0,
+        "opp_depth_amp_mult": 1.2
     },
     {
         "strategy_id": "maker_maker_conservative",
@@ -74,7 +89,10 @@
         "breakeven_margin": 0.002,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
+        "leg2_fallback_to_maker": true,
+        "open_silence_sec": 15,
+        "max_spread": 0.05,
+        "mm_min_bid": 0.38
     },
     {
         "strategy_id": "maker_maker_standard",
@@ -94,6 +112,9 @@
         "breakeven_margin": 0.002,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
-        "leg2_fallback_to_maker": true
+        "leg2_fallback_to_maker": true,
+        "open_silence_sec": 15,
+        "max_spread": 0.06,
+        "mm_min_bid": 0.35
     }
 ]
