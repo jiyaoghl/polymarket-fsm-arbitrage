@@ -14,9 +14,14 @@ dependencies = [
   "python-dotenv",
   "fastapi",
   "uvicorn",
+  "aiohttp",
   "pycryptodome",
   "eth-account",
   "eip712",
+  "py-clob-client>=0.19.0",
+  "brotli",
+  "discord.py>=2.3.0",
+  "web3>=6.0.0",
 ]
 
 [project.optional-dependencies]

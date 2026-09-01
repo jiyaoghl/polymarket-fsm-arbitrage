@@ -1,6 +1,7 @@
 import time
 from typing import Dict, Any
 
+from polymarket.logger import logger
 from polymarket.domain.fsm import TradeFSM, TradeState
 from polymarket.domain.models import TradeContext
 from polymarket.services.pricing import PricingEngine
@@ -71,14 +72,18 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             if deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live):
                 order_sell = {"token_id": str(leg1.token), "price": safe_p_sell, "size": leg1.size, "side": "SELL", "order_type": "GTC"}
                 order_buy = {"token_id": str(opp_token), "price": safe_p_pair, "size": safe_s_pair, "side": "BUY", "order_type": "GTC"}
-                batch_res = await deps.client.post_batch_orders_async([order_sell, order_buy])
-                if batch_res and batch_res.get("status") != "ERROR":
-                    orders = batch_res.get("orders", [])
-                    ctx.dual_orders = orders
-                    ctx.last_reprice_time = now_ts
-                    deps.set_trade(market_id, ctx.to_dict())
-                    fsm.transition_to(TradeState.PENDING_LEG2, orders=orders)
-                else:
+                try:
+                    batch_res = await deps.client.post_batch_orders_async([order_sell, order_buy])
+                    if batch_res and batch_res.get("status") != "ERROR":
+                        orders = batch_res.get("orders", [])
+                        ctx.dual_orders = orders
+                        ctx.last_reprice_time = now_ts
+                        deps.set_trade(market_id, ctx.to_dict())
+                        fsm.transition_to(TradeState.PENDING_LEG2, orders=orders)
+                    else:
+                        deps.risk_manager.release_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live)
+                except Exception as err:
+                    logger.error(f"[Leg1OnlyTickHandler] 批量挂出 dual_exit 订单网络异常 (下一轮重试): {err}")
                     deps.risk_manager.release_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live)
             return
 
@@ -96,12 +101,15 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(sell_price, sell_price * leg1.size)
             
             # 发送同向限价卖单 (GTC SELL)
-            order = await deps.client.post_order_async(str(leg1.token), safe_p, leg1.size, "SELL", "GTC")
-            if order and order.get("status") not in ("ERROR", None):
-                ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
-                ctx.last_reprice_time = now_ts
-                deps.set_trade(market_id, ctx.to_dict())
-                fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+            try:
+                order = await deps.client.post_order_async(str(leg1.token), safe_p, leg1.size, "SELL", "GTC")
+                if order and order.get("status") not in ("ERROR", None):
+                    ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
+                    ctx.last_reprice_time = now_ts
+                    deps.set_trade(market_id, ctx.to_dict())
+                    fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+            except Exception as err:
+                logger.error(f"[Leg1OnlyTickHandler] 发送 smart_flip 卖单网络异常: {err}")
             return
 
         # ── 模式 C: 反向配对对冲 (Pair Hedging) ──
@@ -118,8 +126,9 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         )
         
         # 若盘口买一价比理论对冲价更优，则优先使用盘口买一价
-        if opp_bid and opp_bid < target_leg2_price:
-            target_leg2_price = opp_bid
+        cur_opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
+        if cur_opp_bid is not None and cur_opp_bid > 0:
+            target_leg2_price = max(target_leg2_price, cur_opp_bid)
 
         # 对冲盈利数学校验
         is_prof, net_ev, p_msg = PricingEngine.verify_hedged_profitability(
@@ -130,12 +139,17 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         if is_prof:
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(target_leg2_price, target_leg2_price * leg1.size)
             # 申请二腿额度
-            if deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=params.is_live):
-                order = await deps.client.post_order_async(str(opp_token), safe_p, safe_s, "BUY", params.leg2_order_type)
-                if order and order.get("status") not in ("ERROR", None):
-                    ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
-                    ctx.last_reprice_time = now_ts
-                    deps.set_trade(market_id, ctx.to_dict())
-                    fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
-                else:
-                    deps.risk_manager.release_trade_lock(params.strategy_id, market_id, round(safe_p * safe_s, 2), is_live=params.is_live)
+            lock_amount = round(safe_p * safe_s, 2)
+            if deps.risk_manager.acquire_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live):
+                try:
+                    order = await deps.client.post_order_async(str(opp_token), safe_p, safe_s, "BUY", params.leg2_order_type)
+                    if order and order.get("status") not in ("ERROR", None):
+                        ctx.leg2_order_id = order.get("orderID") or order.get("order_id")
+                        ctx.last_reprice_time = now_ts
+                        deps.set_trade(market_id, ctx.to_dict())
+                        fsm.transition_to(TradeState.PENDING_LEG2, order_info=order)
+                    else:
+                        deps.risk_manager.release_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live)
+                except Exception as err:
+                    logger.error(f"[Leg1OnlyTickHandler] 发送对冲买单网络异常: {err}")
+                    deps.risk_manager.release_trade_lock(params.strategy_id, market_id, lock_amount, is_live=params.is_live)
