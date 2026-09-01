@@ -137,11 +137,11 @@ flowchart TD
 
 | 策略 ID | 策略模式 | 首腿入场 | 出场机制 | 核心特性 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.40** | dual_exit OCO | **极小额演练观察 (3U)**，严苛入场门槛，高保利安全空间 | 🟢 活跃模拟 |
-| `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.42** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 | 🟢 活跃模拟 |
-| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，严格扣费净 EV 守门 | 🟢 活跃模拟 |
-| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **零手续费做市 (3U/5U)**，100% 实盘胜率，双边买一 $\ge 0.38$ 守门 | 🟢 活跃模拟 |
-| `maker_maker_standard` | 挂单 + 挂单 | - | - | 避免单边行情接飞刀失血，资源让渡给稳健做市 | ⏹️ **已停用下线** |
+| `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.40** | dual_exit OCO | **极小额对照演练 (3U)**，严格入场门槛，高保利安全空间 | 🟢 活跃模拟 (对照组) |
+| `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.42** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 (5U) | 🟢 活跃模拟 (对照组) |
+| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，严格扣费净 EV 守门 (5U) | 🟢 活跃模拟 (对照组) |
+| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **零手续费主力做市 (10U)**，动态 OBI + 成熟度守门 | 🟢 活跃模拟 (主力引擎) |
+| `maker_maker_standard` | 挂单 + 挂单 | **≤ 0.50** | dual_exit OCO | **宽泛做市副引擎 (10U)**，双边挂单拓宽流动性捕获 | 🟢 活跃模拟 (副引擎) |
 
 ---
 
@@ -174,6 +174,7 @@ python scripts/vps_ops.py release "feat: 中文提交说明"
 python scripts/vps_ops.py status         # 查看远程 VPS 运行大盘、各策略盈亏与延迟快照
 python scripts/vps_ops.py logs -n 50     # 查看远程 VPS 实时业务与风控日志流
 python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与出场路径透视表
+python scripts/vps_ops.py sync-snapshots # 从 VPS 同步真实 L2 盘口快照到本地 vps-logs/snapshots/
 ```
 
 启动成功后，在浏览器中访问 `http://<你的IP>:8888` 即可进入实时量化大盘。
@@ -190,4 +191,7 @@ python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与�
 | `LEG1_MAX_UNHEDGED_SECONDS`| int | `90` | 首腿最大未对冲基础持有时间 (秒)，结合波动率自适应收紧 |
 | `TAKER_FEE_RATE` | float | `0.01` | Taker 吃单手续费率 (1.0%) |
 | `MAKER_FEE_RATE` | float | `0.00` | Maker 做市手续费率 (0.0%) |
+| `SNAPSHOT_ENABLED` | bool | `true` | 是否启用 L2 盘口深度快照常驻录包 |
+| `SNAPSHOT_INTERVAL_SEC`| float | `1.0` | L2 快照录包采样频率 (秒/帧) |
+| `SNAPSHOT_RETENTION_DAYS`| int | `7` | VPS 快照文件保留天数 (超过自动清理) |
 | `SIGNATURE_TYPE` | int | `0` | 钱包签名类型 (0: EOA, 1: Polymarket Proxy, 2: Gnosis Safe) |

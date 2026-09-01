@@ -73,11 +73,10 @@ class TestTakerMakerFocus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cfg_map["taker_maker_standard"]["entry_max_price"], 0.42)
         self.assertEqual(cfg_map["taker_maker_aggressive"]["entry_max_price"], 0.44)
 
-        # 2. 验证 maker_maker_standard 已下线
-        self.assertFalse(cfg_map["maker_maker_standard"]["is_active"])
-        # 3. 验证 maker_maker_conservative 保持 3U
+        # 2. 验证做市引擎状态 (保守主力 10U + 标准副引擎启用)
+        self.assertTrue(cfg_map["maker_maker_standard"]["is_active"])
         self.assertTrue(cfg_map["maker_maker_conservative"]["is_active"])
-        self.assertEqual(cfg_map["maker_maker_conservative"]["amount"], 3.0)
+        self.assertEqual(cfg_map["maker_maker_conservative"]["amount"], 10.0)
 
     async def test_dual_bracket_entry_038_guard(self):
         """验证做市双挂单成熟度守门已从 0.35 提升至 0.38"""
@@ -115,8 +114,8 @@ class TestTakerMakerFocus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fsm.current_state, TradeState.IDLE)
         self.assertIn("0.38", self.ctx.filter_reason or "")
 
-    async @pytest.mark.skip(reason="Pricing logic changed to Smart Flip Ladder")
-def test_taker_fill_immediate_zero_latency_leg2_dispatch(self):
+    @unittest.skip("Pricing logic changed to Smart Flip Ladder")
+    async def test_taker_fill_immediate_zero_latency_leg2_dispatch(self):
         """验证首腿成交确认后，就地直通挂出二腿 OCO，流转至 PENDING_LEG2"""
         now_ts = time.time()
         self.ctx.end_time = now_ts + 200.0

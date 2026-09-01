@@ -178,6 +178,31 @@ def test_idle_handler_dual_bracket():
             best_ask_no=0.55,
             best_bid_no=0.54,
         )
+
+        from polymarket.services.grid import OrderbookMemoryGrid, OrderbookSnapshot
+        grid = OrderbookMemoryGrid.get_instance()
+        grid._books["tok_yes"] = OrderbookSnapshot(
+            token_id="tok_yes",
+            best_bid=0.45,
+            best_ask=0.46,
+            bids=((0.45, 50.0), (0.44, 50.0)),
+            asks=((0.46, 20.0), (0.47, 20.0)),
+            spread=0.01,
+            mid_price=0.455,
+            obi=0.43,
+            last_update_ts=time.time()
+        )
+        grid._books["tok_no"] = OrderbookSnapshot(
+            token_id="tok_no",
+            best_bid=0.54,
+            best_ask=0.55,
+            bids=((0.54, 50.0), (0.53, 50.0)),
+            asks=((0.55, 20.0), (0.56, 20.0)),
+            spread=0.01,
+            mid_price=0.545,
+            obi=0.43,
+            last_update_ts=time.time()
+        )
         
         await handler.handle(market, fsm, ctx, tick, params, deps, filter_logger)
         
