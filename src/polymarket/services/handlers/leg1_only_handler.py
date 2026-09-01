@@ -90,13 +90,13 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         # ── 模式 B: 智能做 T 高抛 (Smart Flip) ──
         if params.exit_mode == "smart_flip" and elapsed_since_leg1 <= flip_timeout:
             ctx.exit_stage = "flip_active"
-            sell_price = PricingEngine.calculate_flip_sell_price(
+            cur_bid = float(best_bid_yes if is_leg1_yes else best_bid_no) if (best_bid_yes if is_leg1_yes else best_bid_no) is not None else 0.0
+            sell_price = PricingEngine.calculate_smart_flip_ladder_price(
                 leg1_cost=leg1.cost,
                 elapsed_seconds=elapsed_since_leg1,
-                initial_margin=params.initial_margin,
-                min_margin=params.breakeven_margin,
-                decay_duration=flip_timeout,
-                leg1_is_taker=(params.leg1_order_type == "FOK")
+                current_bid=cur_bid,
+                leg1_is_taker=(params.leg1_order_type == "FOK"),
+                leg2_is_taker=False
             )
             safe_p, safe_s = OrderExecutionService.sanitize_order_params(sell_price, sell_price * leg1.size)
             

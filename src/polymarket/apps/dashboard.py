@@ -328,7 +328,35 @@ def get_metrics() -> Dict[str, Any]:
     return metrics.export_dashboard_json()
 
 
+
+@app.get("/api/trade_detail/{market_id}")
+def get_trade_detail(market_id: str):
+    import sqlite3, json
+    from polymarket.config import DB_PATH
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            c = conn.cursor()
+            # 优先查活跃表
+            c.execute("SELECT trade_json FROM active_trades WHERE market_id = ?", (market_id,))
+            row = c.fetchone()
+            if not row:
+                # 查历史表
+                c.execute("SELECT trade_json FROM historical_trades WHERE market_id = ?", (market_id,))
+                row = c.fetchone()
+            if row:
+                t_data = json.loads(row[0])
+                # 计算各种指标
+                t_data['latency_ms'] = 0
+                if t_data.get('leg1_filled_time') and t_data.get('leg2_issued_time'):
+                    t_data['latency_ms'] = round((float(t_data['leg2_issued_time']) - float(t_data['leg1_filled_time'])) * 1000, 1)
+                return t_data
+            else:
+                return {"error": "Trade not found"}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/logs/tail")
+
 def get_logs_tail(lines: int = 100, source: str = "trade") -> Dict[str, Any]:
     """安全读取 VPS 服务端最新的日志切片，支持远程一键排查。"""
     import os

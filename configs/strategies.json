@@ -2,8 +2,8 @@
     {
         "strategy_id": "taker_maker_conservative",
         "name": "吃单+挂单 保守EV策略 (3U极小额演练)",
-        "entry_max_price": 0.40,
-        "entry_min_price": 0.30,
+        "entry_max_price": 0.4,
+        "entry_min_price": 0.3,
         "reentry_trigger": 0.35,
         "amount": 3.0,
         "is_live": false,
@@ -12,7 +12,7 @@
         "leg2_order_type": "GTC",
         "leg2_price_mode": "bid",
         "exit_mode": "dual_exit",
-        "initial_margin": 0.020,
+        "initial_margin": 0.02,
         "breakeven_margin": 0.005,
         "flip_timeout_sec": 35,
         "leg2_cancel_before_expiry": 30,
@@ -21,13 +21,19 @@
         "max_spread": 0.05,
         "obi_floor": -0.35,
         "base_opp_depth": 25.0,
-        "opp_depth_amp_mult": 1.5
+        "opp_depth_amp_mult": 1.5,
+        "leg1_max_unhedged_seconds": 85,
+        "circuit_breaker": {
+            "max_consecutive_force_closes": 3,
+            "max_daily_loss_usdc": 10.0,
+            "cooldown_minutes": 120
+        }
     },
     {
         "strategy_id": "taker_maker_standard",
         "name": "吃单+挂单 标准EV策略 (全盘口错配套利)",
         "entry_max_price": 0.42,
-        "entry_min_price": 0.30,
+        "entry_min_price": 0.3,
         "reentry_trigger": 0.35,
         "amount": 10.0,
         "is_live": false,
@@ -43,15 +49,21 @@
         "leg2_fallback_to_maker": true,
         "open_silence_sec": 15,
         "max_spread": 0.05,
-        "obi_floor": -0.40,
+        "obi_floor": -0.4,
         "base_opp_depth": 20.0,
-        "opp_depth_amp_mult": 1.5
+        "opp_depth_amp_mult": 1.5,
+        "leg1_max_unhedged_seconds": 85,
+        "circuit_breaker": {
+            "max_consecutive_force_closes": 3,
+            "max_daily_loss_usdc": 10.0,
+            "cooldown_minutes": 120
+        }
     },
     {
         "strategy_id": "taker_maker_aggressive",
         "name": "吃单+挂单 激进EV策略 (高敏全盘口捕捉)",
         "entry_max_price": 0.44,
-        "entry_min_price": 0.30,
+        "entry_min_price": 0.3,
         "reentry_trigger": 0.38,
         "amount": 10.0,
         "is_live": false,
@@ -69,13 +81,19 @@
         "max_spread": 0.06,
         "obi_floor": -0.45,
         "base_opp_depth": 15.0,
-        "opp_depth_amp_mult": 1.2
+        "opp_depth_amp_mult": 1.2,
+        "leg1_max_unhedged_seconds": 85,
+        "circuit_breaker": {
+            "max_consecutive_force_closes": 3,
+            "max_daily_loss_usdc": 10.0,
+            "cooldown_minutes": 120
+        }
     },
     {
         "strategy_id": "maker_maker_conservative",
         "name": "挂单+挂单 保守策略 (双边并发挂单)",
         "entry_max_price": 0.42,
-        "entry_min_price": 0.30,
+        "entry_min_price": 0.3,
         "reentry_trigger": 0.35,
         "amount": 3.0,
         "is_live": false,
@@ -92,13 +110,19 @@
         "leg2_fallback_to_maker": true,
         "open_silence_sec": 15,
         "max_spread": 0.05,
-        "mm_min_bid": 0.38
+        "mm_min_bid": 0.38,
+        "leg1_max_unhedged_seconds": 85,
+        "circuit_breaker": {
+            "max_consecutive_force_closes": 3,
+            "max_daily_loss_usdc": 10.0,
+            "cooldown_minutes": 120
+        }
     },
     {
         "strategy_id": "maker_maker_standard",
         "name": "挂单+挂单 标准策略 (双边并发挂单)",
-        "entry_max_price": 0.50,
-        "entry_min_price": 0.30,
+        "entry_max_price": 0.5,
+        "entry_min_price": 0.3,
         "reentry_trigger": 0.42,
         "amount": 10.0,
         "is_live": false,
@@ -115,6 +139,12 @@
         "leg2_fallback_to_maker": true,
         "open_silence_sec": 15,
         "max_spread": 0.06,
-        "mm_min_bid": 0.35
+        "mm_min_bid": 0.35,
+        "leg1_max_unhedged_seconds": 85,
+        "circuit_breaker": {
+            "max_consecutive_force_closes": 3,
+            "max_daily_loss_usdc": 10.0,
+            "cooldown_minutes": 120
+        }
     }
 ]

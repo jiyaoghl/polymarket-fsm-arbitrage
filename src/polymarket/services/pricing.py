@@ -341,22 +341,48 @@ class PricingEngine:
         return round(max(current_margin, min_margin), 4)
 
     @staticmethod
-    def calculate_flip_sell_price(
+    def calculate_breakeven_price(
         leg1_cost: float,
-        elapsed_seconds: float = 0.0,
-        initial_margin: float = 0.025,
-        min_margin: float = 0.002,
-        decay_duration: float = 30.0,
-        leg1_is_taker: bool = True
+        leg1_fee_rate: float,
+        leg2_fee_rate: float
     ) -> float:
         """
-        计算二腿同向做 T 高抛限价卖单价格 (Maker Sell Flip Price)。
-        公式: Sell Price = Leg1 Cost + Taker Fee + Decayed Margin
+        严格计算双边扣费后的盈亏平衡价 (BreakEven Price)
         """
-        margin = PricingEngine.calculate_decayed_margin(elapsed_seconds, initial_margin, min_margin, decay_duration)
-        fee_rate = TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE
-        leg1_fee = leg1_cost * fee_rate
-        target_sell_price = leg1_cost + leg1_fee + margin
+        # Formula: Sell_Price * (1 - leg2_fee_rate) = Cost * (1 + leg1_fee_rate)
+        if leg2_fee_rate >= 1.0:
+            return 1.0
+        be_price = (leg1_cost * (1.0 + leg1_fee_rate)) / (1.0 - leg2_fee_rate)
+        return be_price
+
+    @staticmethod
+    def calculate_smart_flip_ladder_price(
+        leg1_cost: float,
+        elapsed_seconds: float,
+        current_bid: float,
+        leg1_is_taker: bool = True,
+        leg2_is_taker: bool = False
+    ) -> float:
+        """
+        四阶梯智能降价脱手 (Smart Flip Ladder)
+        - 0~20s: 溢价高抛 (BreakEven + 0.015)
+        - 20~45s: 保费微利 (BreakEven + 0.003)
+        - 45~70s: 严格保本 (BreakEven + 0.000)
+        - 70~85s: 微亏抢跑 (max(BreakEven - 0.005, current_bid))
+        """
+        leg1_fee_rate = TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE
+        leg2_fee_rate = TAKER_FEE_RATE if leg2_is_taker else MAKER_FEE_RATE
+        be_price = PricingEngine.calculate_breakeven_price(leg1_cost, leg1_fee_rate, leg2_fee_rate)
+        
+        if elapsed_seconds < 20.0:
+            target_sell_price = be_price + 0.015
+        elif elapsed_seconds < 45.0:
+            target_sell_price = be_price + 0.003
+        elif elapsed_seconds < 70.0:
+            target_sell_price = be_price
+        else:
+            target_sell_price = max(be_price - 0.005, current_bid)
+            
         return round(min(max(target_sell_price, 0.001), 0.999), 4)
 
     @staticmethod

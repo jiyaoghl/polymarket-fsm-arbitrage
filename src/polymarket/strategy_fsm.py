@@ -179,6 +179,12 @@ class ArbitrageBotFSM(BaseStrategy):
     def execute_strategy(self, market: Dict[str, Any]) -> None:
         """入口调度方法：校验行情单边防爆盾并拉起市场监听"""
         market_id = market["id"]
+        
+        # 策略熔断校验
+        cb_config = self.config.get("circuit_breaker", {})
+        if not self.risk_manager.is_strategy_allowed(self.strategy_id, cb_config):
+            return
+            
         if self._is_market_processed(market_id):
             return
 
@@ -317,6 +323,13 @@ class ArbitrageBotFSM(BaseStrategy):
         self._add_trade_event(fsm.market_id, TradeState.SETTLED.value, msg)
         self._update_trade_status(fsm.market_id, TradeState.SETTLED.value)
         self.risk_manager.release_market_lock(self.strategy_id, fsm.market_id, is_live=self.is_live)
+        
+        # 上报策略级熔断统计
+        trade = self._get_trade(fsm.market_id) or {}
+        pnl = float(trade.get("profit_usdc", 0.0))
+        is_fc = trade.get("settlement_type") == "FORCE_CLOSED"
+        self.risk_manager.record_trade_result(self.strategy_id, pnl, is_fc)
+
         if self.is_live:
             self.risk_manager.refresh_balance_from_chain(self.client, min_interval=15.0)
 

@@ -23,19 +23,19 @@ def test_decayed_margin_calculation():
     assert m45 == 0.002
 
 
-def test_flip_sell_price_calculation():
-    """测试同向做 T 限价卖出价格计算"""
+def test_smart_flip_ladder_price_calculation():
+    """测试四阶梯智能降价脱手计算"""
     leg1_cost = 0.420
-    # 初始时刻卖价应高于成本 + 手续费
-    p0 = PricingEngine.calculate_flip_sell_price(leg1_cost, elapsed_seconds=0.0, initial_margin=0.025, decay_duration=30.0)
-    assert p0 > leg1_cost
-    assert p0 > 0.44
-
-    # 随着时间推移，卖价单调下调至保本卖价
-    p30 = PricingEngine.calculate_flip_sell_price(leg1_cost, elapsed_seconds=30.0, initial_margin=0.025, min_margin=0.002, decay_duration=30.0)
-    assert p30 < p0
-    # 扣除手续费后保本卖价仍略高于买入纯成本
-    assert p30 >= leg1_cost
+    # BreakEven = 0.42 * 1.01 / 1.0 = 0.4242 (假设 Taker-Maker)
+    p_0 = PricingEngine.calculate_smart_flip_ladder_price(leg1_cost, elapsed_seconds=0.0, current_bid=0.420, leg1_is_taker=True, leg2_is_taker=False)
+    p_30 = PricingEngine.calculate_smart_flip_ladder_price(leg1_cost, elapsed_seconds=30.0, current_bid=0.420, leg1_is_taker=True, leg2_is_taker=False)
+    p_60 = PricingEngine.calculate_smart_flip_ladder_price(leg1_cost, elapsed_seconds=60.0, current_bid=0.420, leg1_is_taker=True, leg2_is_taker=False)
+    p_80 = PricingEngine.calculate_smart_flip_ladder_price(leg1_cost, elapsed_seconds=80.0, current_bid=0.420, leg1_is_taker=True, leg2_is_taker=False)
+    
+    assert p_0 > p_30
+    assert p_30 > p_60
+    assert p_60 >= 0.4242  # 第三阶梯应保本
+    assert p_80 < p_60     # 第四阶梯破发抢跑
 
 
 def test_hedged_pair_price_calculation():

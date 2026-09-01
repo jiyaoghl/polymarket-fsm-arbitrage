@@ -287,26 +287,28 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 fsm.transition_to(TradeState.LOCKED)
                 return
 
-        # ── C. 阶梯式做 T 智能让价与追单保护 (Multi-Level Maker) ──
-        # 当订单挂出超过一定时间且交割临近时，按倒计时阶梯微调挂单价，降低强平率
+        # ── C. 四阶梯做 T 智能降价脱手 (Smart Flip Ladder) ──
         if not is_fill and leg2.side == "SELL":
             now_ts = tick.now_ts
             last_reprice = float(getattr(ctx, "last_reprice_time", None) or ctx.leg1_filled_time or now_ts)
-            time_to_exp = market.get("expiry", 0) - now_ts if market.get("expiry") else 120.0
-
-            if now_ts - last_reprice >= 15.0:
-                cur_bid = best_bid_yes if is_leg1_yes else best_bid_no
-                if cur_bid is not None and cur_bid > 0:
-                    target_reprice = leg2.cost
-                    if time_to_exp < 45.0:
-                        # 临近交割（<45s）：贴近当前买一价快速出场
-                        target_reprice = round(max(cur_bid, leg1.cost * 0.98), 4)
-                    elif time_to_exp < 75.0:
-                        # 中期阶梯（45~75s）：挂在买一 + 0.002
-                        target_reprice = round(max(cur_bid + 0.002, leg1.cost), 4)
+            elapsed_sec = max(0.0, now_ts - float(ctx.leg1_filled_time or now_ts))
+            
+            # 迟滞: 至少间隔 1.5s 才允许再次改价 (防互卷限流)
+            if now_ts - last_reprice >= 1.5:
+                cur_bid = float(best_bid_yes if is_leg1_yes else best_bid_no) if (best_bid_yes if is_leg1_yes else best_bid_no) is not None else 0.0
+                if cur_bid > 0:
+                    target_reprice = PricingEngine.calculate_smart_flip_ladder_price(
+                        leg1_cost=leg1.cost,
+                        elapsed_seconds=elapsed_sec,
+                        current_bid=cur_bid,
+                        leg1_is_taker=(params.leg1_order_type == "FOK"),
+                        leg2_is_taker=False
+                    )
 
                     safe_new_price, _ = OrderExecutionService.sanitize_order_params(target_reprice, target_reprice * leg1.size)
-                    if abs(safe_new_price - leg2.cost) >= 0.003 and safe_new_price >= leg1.cost * 0.95:
+                    
+                    # 避免微小改价，只有价差 >= 0.001 才改单
+                    if abs(safe_new_price - float(leg2.cost)) >= 0.001:
                         old_p = float(leg2.cost)
                         if params.is_live:
                             try:
@@ -315,10 +317,10 @@ class PendingLeg2TickHandler(BaseTickHandler):
                                 if new_order and new_order.get("status") not in ("ERROR", None):
                                     ctx.leg2.cost = safe_new_price
                                     ctx.leg2_order_id = new_order.get("orderID") or new_order.get("order_id")
-                                    ctx.record_reprice(old_p, safe_new_price, reason=f"LadderReprice (TTL: {time_to_exp:.0f}s)", token=str(leg2.token), timestamp=now_ts)
+                                    ctx.record_reprice(old_p, safe_new_price, reason=f"SmartLadder (Elapsed: {elapsed_sec:.1f}s)", token=str(leg2.token), timestamp=now_ts)
                                     deps.set_trade(market_id, ctx.to_dict())
                                 else:
-                                    logger.warning(f"[{params.strategy_id}] 做T改单挂单失败，尝试保底重发 @ {old_p}")
+                                    logger.warning(f"[{params.strategy_id}] 四阶梯做T改单失败，尝试保底重发 @ {old_p}")
                                     fallback = await deps.client.post_order_async(str(leg2.token), old_p, leg1.size, "SELL", "GTC")
                                     if fallback and fallback.get("status") not in ("ERROR", None):
                                         ctx.leg2_order_id = fallback.get("orderID") or fallback.get("order_id")
@@ -326,5 +328,5 @@ class PendingLeg2TickHandler(BaseTickHandler):
                                 logger.error(f"[{params.strategy_id}] 做T阶梯改单异常: {ex}")
                         else:
                             ctx.leg2.cost = safe_new_price
-                            ctx.record_reprice(old_p, safe_new_price, reason=f"LadderReprice (TTL: {time_to_exp:.0f}s)", token=str(leg2.token), timestamp=now_ts)
+                            ctx.record_reprice(old_p, safe_new_price, reason=f"SmartLadder (Elapsed: {elapsed_sec:.1f}s)", token=str(leg2.token), timestamp=now_ts)
                             deps.set_trade(market_id, ctx.to_dict())

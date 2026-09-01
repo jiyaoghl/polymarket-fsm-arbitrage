@@ -356,6 +356,51 @@ def cmd_clean_history(args):
     cmd_status(args)
 
 
+
+def cmd_inspect(args):
+    """透视单个市场的交易明细"""
+    import json
+    market_id = args.market_id
+    res = fetch_api(f"/api/trade_detail/{market_id}")
+    if not res:
+        return
+    if "error" in res:
+        print(f"{RED}未找到该市场的交易记录：{res['error']}{RESET}")
+        return
+        
+    print_banner(f"Trade Inspector: {market_id}")
+    print(f"[{BOLD}Status{RESET}] {res.get('status')} | [{BOLD}Settlement{RESET}] {res.get('settlement_type', '--')}")
+    
+    if res.get("profit_usdc") is not None:
+        pnl = float(res.get("profit_usdc"))
+        pnl_str = f"{GREEN}+${pnl:.4f}{RESET}" if pnl > 0 else (f"{RED}-${abs(pnl):.4f}{RESET}" if pnl < 0 else "$0.0000")
+        print(f"[{BOLD}Net PnL{RESET}] {pnl_str}")
+        
+    if res.get("latency_ms"):
+        print(f"[{BOLD}Latency{RESET}] {res.get('latency_ms')} ms")
+        
+    print("\n-- Leg 1 --")
+    if res.get("leg1"):
+        l = res["leg1"]
+        print(f"  {l.get('side')} {l.get('size')} @ {l.get('cost')}")
+    else:
+        print("  None")
+        
+    print("\n-- Leg 2 --")
+    if res.get("leg2"):
+        l = res["leg2"]
+        print(f"  {l.get('side')} {l.get('size')} @ {l.get('cost')}")
+    else:
+        print("  None")
+        
+    reprices = res.get("reprice_history", [])
+    if reprices:
+        print(f"\n-- Reprice History ({len(reprices)}) --")
+        for rp in reprices:
+            ts = time.strftime('%H:%M:%S', time.localtime(rp.get('timestamp', 0)))
+            print(f"  [{ts}] {rp.get('old_price')} -> {rp.get('new_price')} ({rp.get('reason')})")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket VPS 敏捷运维与闭环分析 CLI")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
@@ -382,6 +427,12 @@ def main():
     # clean-history
     p_clean = subparsers.add_parser("clean-history", help="远程清空 VPS 所有历史订单与交易数据并重置大盘")
     p_clean.set_defaults(func=cmd_clean_history)
+
+
+    # inspect
+    p_inspect = subparsers.add_parser("inspect", help="透视单笔历史交易明细 (生命周期、让价轨迹与滑点)")
+    p_inspect.add_argument("market_id", type=str, help="市场 ID")
+    p_inspect.set_defaults(func=cmd_inspect)
 
     # release
     p_release = subparsers.add_parser("release", help="一键运行单测 -> 提交 -> 推送 -> 远程动态热更")

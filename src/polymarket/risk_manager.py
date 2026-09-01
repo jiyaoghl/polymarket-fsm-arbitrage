@@ -56,6 +56,12 @@ class RiskManager:
         self.is_emergency_halted = False
 
         self.last_balance_refresh = 0.0
+        
+        # 策略级熔断保护数据 (Strategy Circuit Breakers)
+        self._strategy_daily_stats: Dict[str, Dict[str, Any]] = {}
+        self._strategy_cooldown_until: Dict[str, float] = {}
+        self._last_stats_reset_day = time.localtime().tm_mday
+        
         self._initialized = True
         logger.info(
             f"[风控中心] RiskManager 初始化完毕 | 模拟资金池: ${self.paper_max_exposure:.2f} | "
@@ -280,3 +286,50 @@ class RiskManager:
                 "adaptive_retry_success": self.adaptive_retry_success,
                 "adaptive_retry_failed": self.adaptive_retry_failed,
             }
+
+    def _reset_daily_stats_if_needed(self):
+        import time
+        current_day = time.localtime().tm_mday
+        if getattr(self, "_last_stats_reset_day", None) != current_day:
+            self._strategy_daily_stats.clear()
+            self._strategy_cooldown_until.clear()
+            self._last_stats_reset_day = current_day
+
+    def record_trade_result(self, strategy_id: str, pnl: float, is_force_closed: bool) -> None:
+        with self.lock:
+            self._reset_daily_stats_if_needed()
+            if strategy_id not in self._strategy_daily_stats:
+                self._strategy_daily_stats[strategy_id] = {'loss': 0.0, 'consecutive_fc': 0}
+            stats = self._strategy_daily_stats[strategy_id]
+            stats['loss'] -= pnl
+            if is_force_closed:
+                stats['consecutive_fc'] += 1
+            else:
+                stats['consecutive_fc'] = 0
+
+    def is_strategy_allowed(self, strategy_id: str, circuit_breaker_config: dict) -> bool:
+        import time
+        from polymarket.logger import logger
+        with self.lock:
+            self._reset_daily_stats_if_needed()
+            now = time.time()
+            if strategy_id in self._strategy_cooldown_until:
+                if now < self._strategy_cooldown_until[strategy_id]:
+                    return False
+                else:
+                    del self._strategy_cooldown_until[strategy_id]
+                    if strategy_id in self._strategy_daily_stats:
+                        self._strategy_daily_stats[strategy_id] = {'loss': 0.0, 'consecutive_fc': 0}
+            if not circuit_breaker_config:
+                return True
+            stats = self._strategy_daily_stats.get(strategy_id)
+            if not stats:
+                return True
+            max_fc = circuit_breaker_config.get('max_consecutive_force_closes', 3)
+            max_loss = circuit_breaker_config.get('max_daily_loss_usdc', 10.0)
+            cooldown_min = circuit_breaker_config.get('cooldown_minutes', 120)
+            if stats['consecutive_fc'] >= max_fc or stats['loss'] >= max_loss:
+                self._strategy_cooldown_until[strategy_id] = now + (cooldown_min * 60)
+                logger.warning(f'[{strategy_id}] 触发策略熔断! 连续强平: {stats["consecutive_fc"]}, 当日亏损: {stats["loss"]:.2f}。冷却 {cooldown_min} 分钟。')
+                return False
+            return True

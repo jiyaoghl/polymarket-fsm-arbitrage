@@ -792,7 +792,7 @@
               const feeVal = t.fee_usdc || 0;
               const feeBadge = feeVal > 0 ? `<div style="font-size:9px; color:#64748b; font-weight:normal;" title="毛利 +$${grossEV.toFixed(4)} / 费 -$${feeVal.toFixed(4)}">费 -$${feeVal.toFixed(4)}</div>` : '';
 
-              html += `<tr>
+              html += `<tr onclick="openInspector('${t.market_id}')" style="cursor:pointer; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background=''">
                 <td style="font-size:10px; color:#94a3b8;" title="${t.market_id}">${assetTag}${timeStr}</td>
                 <td>${statusPill(t.status)}</td>
                 <td>${leg1}</td>
@@ -958,5 +958,64 @@
     setInterval(updatePrices, 1000);   // 价格每秒更新
     setInterval(updateMetrics, 2000);  // 时序指标每2秒更新
   </script>
+
+  <dialog id="inspectorModal" style="width: 600px; max-width: 90vw; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #0f172a; color: #f8fafc; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;">
+      <h3 style="margin: 0; color: #a78bfa;">🔍 Trade Inspector</h3>
+      <button onclick="document.getElementById('inspectorModal').close()" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 16px;">✖</button>
+    </div>
+    <div id="inspectorContent" style="font-size: 13px; line-height: 1.5; font-family: monospace; max-height: 70vh; overflow-y: auto;">
+      Loading...
+    </div>
+  </dialog>
+  <script>
+    async function openInspector(marketId) {
+      const modal = document.getElementById('inspectorModal');
+      const content = document.getElementById('inspectorContent');
+      modal.showModal();
+      content.innerHTML = 'Loading...';
+      try {
+        const res = await fetch('/api/trade_detail/' + marketId);
+        const data = await res.json();
+        if (data.error) {
+          content.innerHTML = '<span style="color: #f87171">' + data.error + '</span>';
+          return;
+        }
+        
+        let html = '<div><strong>Market ID:</strong> ' + marketId + '</div>';
+        html += '<div><strong>Status:</strong> ' + data.status + '</div>';
+        html += '<div><strong>Settlement:</strong> ' + (data.settlement_type || '--') + '</div>';
+        if (data.profit_usdc !== undefined) {
+          html += '<div><strong>Net PnL:</strong> ' + Number(data.profit_usdc).toFixed(4) + '</div>';
+        }
+        if (data.latency_ms !== undefined) {
+          html += '<div><strong>Execution Latency:</strong> ' + data.latency_ms + ' ms</div>';
+        }
+        html += '<hr style="border-color: rgba(255,255,255,0.1); margin: 10px 0;">';
+        if (data.leg1) {
+          html += '<div><strong>Leg1:</strong> ' + data.leg1.side + ' ' + data.leg1.size.toFixed(2) + ' @ ' + data.leg1.cost.toFixed(4) + '</div>';
+        }
+        if (data.leg2) {
+          html += '<div><strong>Leg2:</strong> ' + data.leg2.side + ' ' + data.leg2.size.toFixed(2) + ' @ ' + data.leg2.cost.toFixed(4) + '</div>';
+        }
+        if (data.reprice_history && data.reprice_history.length > 0) {
+          html += '<hr style="border-color: rgba(255,255,255,0.1); margin: 10px 0;">';
+          html += '<div><strong>Reprice History:</strong></div>';
+          data.reprice_history.forEach(h => {
+             const ts = new Date(h.timestamp * 1000).toLocaleTimeString();
+             html += '<div style="color: #fbbf24; margin-left: 10px;">- [' + ts + '] ' + Number(h.old_price).toFixed(3) + ' -> ' + Number(h.new_price).toFixed(3) + ' (' + h.reason + ')</div>';
+          });
+        }
+        
+        html += '<hr style="border-color: rgba(255,255,255,0.1); margin: 10px 0;">';
+        html += '<pre style="color: #94a3b8; font-size: 11px; overflow-x: auto;">' + JSON.stringify(data, null, 2) + '</pre>';
+        
+        content.innerHTML = html;
+      } catch (e) {
+        content.innerHTML = '<span style="color: #f87171">Error: ' + e + '</span>';
+      }
+    }
+  </script>
 </body>
+
 </html>
