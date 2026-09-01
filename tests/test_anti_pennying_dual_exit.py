@@ -88,9 +88,10 @@ class TestAntiPennyingDualExit(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(buy_info["price"], 0.596)
 
     async def test_oco_sell_order_maintains_target_without_premature_discount(self):
-        """测试 OCO 卖单在倒计时 < 45s 时坚守目标价，不进行自杀式大幅降价"""
+        """测试 OCO 卖单在持仓时间 < 20s 时坚守初始高抛目标价 0.420，不进行过早降价"""
         now_ts = time.time()
-        self.ctx.last_reprice_time = now_ts - 12.0
+        self.ctx.leg1_filled_time = now_ts - 10.0  # 持仓仅 10 秒，处于 0~20s 坚守期
+        self.ctx.last_reprice_time = now_ts - 10.0
         
         # 距离到期只有 35 秒
         market = {"id": "test_m_pegging", "expiry": now_ts + 35.0, "__asset_type": "BTC"}
