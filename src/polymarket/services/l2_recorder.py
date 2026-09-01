@@ -78,12 +78,11 @@ class L2SnapshotRecorder:
 
     def _run_loop(self):
         """主循环：每隔 SNAPSHOT_INTERVAL_SEC 秒采集一帧全量快照。"""
-        # 延迟导入，避免模块级循环依赖
         from polymarket.services.grid import OrderbookMemoryGrid
         from polymarket.kline_analyzer import get_asset_status
 
         current_hour_key: Optional[str] = None
-        gz_file = None
+        current_file = None
         frame_count = 0
         last_cleanup_ts = time.time()
 
@@ -95,25 +94,29 @@ class L2SnapshotRecorder:
 
                 # 按小时滚动切换输出文件
                 if hour_key != current_hour_key:
-                    if gz_file is not None:
+                    if current_file is not None:
                         try:
-                            gz_file.close()
-                        except Exception:
-                            pass
-                    filepath = os.path.join(SNAPSHOT_DIR, f"{hour_key}.jsonl.gz")
-                    gz_file = gzip.open(filepath, "at", encoding="utf-8")
+                            current_file.close()
+                            # 后台异步压缩上一个小时的 jsonl 文件
+                            old_filepath = os.path.join(SNAPSHOT_DIR, f"{current_hour_key}.jsonl")
+                            threading.Thread(target=self._compress_file, args=(old_filepath,), daemon=True).start()
+                        except Exception as e:
+                            logger.warning(f"[L2Recorder] 关闭旧文件异常: {e}")
+
+                    filepath = os.path.join(SNAPSHOT_DIR, f"{hour_key}.jsonl")
+                    current_file = open(filepath, "a", encoding="utf-8", buffering=8192)
                     current_hour_key = hour_key
                     logger.info(f"[L2Recorder] 切换输出文件: {filepath}")
 
                 # 从内存网格零阻塞读取所有活跃 Token 快照
                 grid = OrderbookMemoryGrid.get_instance()
-                books = dict(grid._books)  # 浅拷贝引用，不可变快照无需深拷贝
+                books = dict(grid._books)
 
                 if not books:
                     time.sleep(SNAPSHOT_INTERVAL_SEC)
                     continue
 
-                # 构建资产到 K 线状态的映射缓存（每帧仅查一次）
+                # 构建资产到 K 线状态的映射缓存
                 kline_cache = {}
                 for asset in SUPPORTED_ASSETS:
                     try:
@@ -129,30 +132,30 @@ class L2SnapshotRecorder:
                 # 序列化每个 Token 的快照
                 for token_id, snap in books.items():
                     if snap.is_stale(30.0):
-                        continue  # 跳过陈旧快照
+                        continue
 
                     record = {
                         "ts": round(now, 3),
                         "token_id": token_id,
                         "best_bid": snap.best_bid,
                         "best_ask": snap.best_ask,
-                        "bids": list(snap.bids[:10]),  # 保留前 10 档，平衡精度与体积
+                        "bids": list(snap.bids[:10]),
                         "asks": list(snap.asks[:10]),
                         "spread": snap.spread,
                         "mid_price": snap.mid_price,
                         "obi": snap.obi,
                     }
                     try:
-                        gz_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        current_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                     except Exception as e:
                         logger.warning(f"[L2Recorder] 写入快照失败: {e}")
 
                 frame_count += 1
 
-                # 每 60 秒 flush 一次，确保数据持久化
-                if frame_count % max(1, int(60.0 / SNAPSHOT_INTERVAL_SEC)) == 0:
+                # 每 10 秒 flush 一次
+                if frame_count % max(1, int(10.0 / SNAPSHOT_INTERVAL_SEC)) == 0:
                     try:
-                        gz_file.flush()
+                        current_file.flush()
                     except Exception:
                         pass
 
@@ -167,17 +170,33 @@ class L2SnapshotRecorder:
                 logger.warning(f"[L2Recorder] 录包循环异常 (已安全兜底): {e}")
                 time.sleep(5.0)
 
+    @staticmethod
+    def _compress_file(src_path: str):
+        """将已归档的 jsonl 文件压缩为 jsonl.gz 并删除源文件。"""
+        if not os.path.exists(src_path):
+            return
+        dst_path = f"{src_path}.gz"
+        try:
+            with open(src_path, "rb") as f_in, gzip.open(dst_path, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.remove(src_path)
+            logger.info(f"[L2Recorder] 已成功压缩历史快照归档: {dst_path}")
+        except Exception as e:
+            logger.warning(f"[L2Recorder] 压缩归档文件 {src_path} 异常: {e}")
+
     def _cleanup_old_files(self):
-        """清理超过保留天数的历史快照文件。"""
+        """清理超过保留天数的历史快照文件 (支持 .jsonl 与 .jsonl.gz)。"""
         try:
             cutoff = datetime.now() - timedelta(days=SNAPSHOT_RETENTION_DAYS)
             cutoff_str = cutoff.strftime("%Y-%m-%d_%H")
             removed = 0
-            for f in Path(SNAPSHOT_DIR).glob("*.jsonl.gz"):
-                if f.stem < cutoff_str:
+            for f in Path(SNAPSHOT_DIR).glob("*.jsonl*"):
+                stem = f.name.replace(".gz", "").replace(".jsonl", "")
+                if stem < cutoff_str:
                     f.unlink()
                     removed += 1
             if removed > 0:
                 logger.info(f"[L2Recorder] 已清理 {removed} 个过期快照文件 (保留策略: {SNAPSHOT_RETENTION_DAYS} 天)")
         except Exception as e:
             logger.warning(f"[L2Recorder] 清理过期文件异常: {e}")
+

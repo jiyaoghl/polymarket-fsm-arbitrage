@@ -91,3 +91,21 @@ def test_snapshot_serialization_format():
     assert deserialized["spread"] == 0.16
     assert deserialized["mid_price"] == 0.50
     assert deserialized["obi"] == 0.12
+
+
+def test_l2_recorder_compression(temp_snapshot_dir):
+    """测试 jsonl 归档压缩为 gzip 文件。"""
+    raw_file = os.path.join(temp_snapshot_dir, "2026-09-01_18.jsonl")
+    with open(raw_file, "w", encoding="utf-8") as f:
+        f.write('{"ts": 12345, "token_id": "test"}\n')
+
+    assert os.path.exists(raw_file)
+    L2SnapshotRecorder._compress_file(raw_file)
+
+    assert not os.path.exists(raw_file)
+    assert os.path.exists(f"{raw_file}.gz")
+
+    with gzip.open(f"{raw_file}.gz", "rt", encoding="utf-8") as f:
+        content = f.read()
+        assert "12345" in content
+

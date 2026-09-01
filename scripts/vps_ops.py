@@ -404,10 +404,10 @@ def cmd_inspect(args):
 def cmd_sync_snapshots(args):
     """从 VPS 拉取 L2 盘口快照文件到本地 vps-logs/snapshots/。"""
     days = getattr(args, "days", 1)
-    print_header(f"VPS L2 快照同步 (最近 {days} 天)")
+    print_banner(f"VPS L2 快照同步 (最近 {days} 天)")
 
     # 1. 列出远端可用文件
-    data = _get(f"/api/snapshots/list?days={days}")
+    data = fetch_api(f"/api/snapshots/list?days={days}")
     if not data:
         print(f"{RED}[-] 无法连接到 VPS 或快照列表为空{RESET}")
         return

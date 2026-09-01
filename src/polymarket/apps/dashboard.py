@@ -654,8 +654,9 @@ def list_snapshots(days: int = 1) -> Dict[str, Any]:
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d_%H")
     files = []
     total_size = 0
-    for f in sorted(snapshot_dir.glob("*.jsonl.gz")):
-        if f.stem >= cutoff:
+    for f in sorted(snapshot_dir.glob("*.jsonl*")):
+        stem = f.name.replace(".gz", "").replace(".jsonl", "")
+        if stem >= cutoff:
             sz = f.stat().st_size
             files.append({"name": f.name, "size": sz})
             total_size += sz
@@ -664,17 +665,18 @@ def list_snapshots(days: int = 1) -> Dict[str, Any]:
 
 @app.get("/api/snapshots/download/{filename}")
 def download_snapshot(filename: str):
-    """下载单个快照文件（流式传输 gzip 文件）。"""
+    """下载单个快照文件（支持 .jsonl 与 .jsonl.gz）。"""
     from fastapi.responses import FileResponse
     from polymarket.config import SNAPSHOT_DIR
     filepath = Path(SNAPSHOT_DIR) / filename
-    if not filepath.exists() or not filepath.name.endswith(".jsonl.gz"):
+    if not filepath.exists() or not (filename.endswith(".jsonl") or filename.endswith(".jsonl.gz")):
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": "文件不存在"}, status_code=404)
+    media_type = "application/gzip" if filename.endswith(".gz") else "application/x-ndjson"
     return FileResponse(
         path=str(filepath),
         filename=filename,
-        media_type="application/gzip"
+        media_type=media_type
     )
 
 
