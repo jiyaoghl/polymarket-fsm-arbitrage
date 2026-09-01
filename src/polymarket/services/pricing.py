@@ -447,20 +447,21 @@ class PricingEngine:
                     max_net_margin = margin
                     best_opp = (True, "NO", best_ask_no, net_ev, f"NO侧EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃NO@{best_ask_no:.4f} 挂YES@{yes_hedge_p:.4f})")
 
-        # --- 保底分支: 单边超跌/极度超跌 ---
+        # --- 保底分支: 仅在具备明确正净 EV 或极度超跌做 T 空间时才触发 ---
         if not best_opp[0]:
             min_ask, min_side, opp_bid = (
                 (best_ask_yes, "YES", best_bid_no)
                 if (best_ask_yes is not None and (best_ask_no is None or best_ask_yes <= best_ask_no))
                 else (best_ask_no, "NO", best_bid_yes)
             )
-            # 1. 极度超跌 (0.02 <= min_ask <= 0.25 且对侧买一 >= 0.15 具备做 T 空间)
+            # 1. 极度超跌深度做 T 空间 (0.02 <= min_ask <= 0.25 且对侧买一 >= 0.15)
             if min_ask is not None and 0.02 <= min_ask <= 0.25:
                 if opp_bid is not None and opp_bid >= 0.15:
                     best_opp = (True, min_side, min_ask, 0.0, f"[极度超跌做T达标] 吃{min_side}@{min_ask:.4f} <= 0.25 (对侧买一 {opp_bid:.4f} >= 0.15)")
-            # 2. 单边常规超跌 (min_ask <= entry_max_price 且对侧买一 >= 0.25 具备真实对手盘)
+            # 2. 单边常规超跌: 必须满足 min_ask <= entry_max_price 且盘口不倒挂 ((min_ask + opp_bid) <= 1.0)
             elif min_ask is not None and min_ask <= entry_max_price and min_ask >= entry_min_price:
-                if opp_bid is not None and opp_bid >= 0.25:
+                if opp_bid is not None and opp_bid >= 0.25 and (min_ask + opp_bid) <= 1.0001:
                     best_opp = (True, min_side, min_ask, 0.0, f"单边超跌达标: 吃{min_side}@{min_ask:.4f} <= 门槛{entry_max_price:.4f} (对侧买一 {opp_bid:.4f} >= 0.25)")
 
         return best_opp
+
