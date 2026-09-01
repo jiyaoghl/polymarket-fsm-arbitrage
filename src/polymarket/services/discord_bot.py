@@ -387,27 +387,36 @@ if HAS_DISCORD_LIB and discord is not None:
                             color=0x8B5CF6,
                             timestamp=discord.utils.utcnow()
                         )
-                        embed.add_field(name="状态", value=f"`{detail.get('status')}`", inline=True)
-                        embed.add_field(name="结算方式", value=f"`{detail.get('settlement_type') or '--'}`", inline=True)
-                        if detail.get('profit_usdc') is not None:
-                            pnl = detail.get('profit_usdc')
+                        def _get(obj, key, default=None):
+                            if hasattr(obj, 'model_dump'): obj = obj.model_dump()
+                            if isinstance(obj, dict): return obj.get(key, default)
+                            return getattr(obj, key, default)
+
+                        embed.add_field(name="状态", value=f"`{_get(detail, 'status')}`", inline=True)
+                        embed.add_field(name="结算方式", value=f"`{_get(detail, 'settlement_type') or '--'}`", inline=True)
+                        
+                        pnl = _get(detail, 'profit_usdc')
+                        if pnl is not None:
                             embed.add_field(name="净收益", value=f"`{'+' if pnl>=0 else '-'}${abs(pnl):.4f}`", inline=True)
-                        if detail.get('latency_ms') is not None:
-                            embed.add_field(name="执行延迟", value=f"`{detail.get('latency_ms')} ms`", inline=True)
                             
-                        leg1 = detail.get('leg1')
+                        latency = _get(detail, 'latency_ms')
+                        if latency is not None:
+                            embed.add_field(name="执行延迟", value=f"`{latency} ms`", inline=True)
+                            
+                        leg1 = _get(detail, 'leg1')
                         if leg1:
-                            embed.add_field(name="Leg1 (首腿)", value=f"`{leg1.get('side')} {leg1.get('size',0):.2f}份 @ {leg1.get('cost',0):.4f}`", inline=False)
-                        leg2 = detail.get('leg2')
+                            embed.add_field(name="Leg1 (首腿)", value=f"`{_get(leg1, 'side')} {_get(leg1, 'size',0):.2f}份 @ {_get(leg1, 'cost',0):.4f}`", inline=False)
+                        
+                        leg2 = _get(detail, 'leg2')
                         if leg2:
-                            embed.add_field(name="Leg2 (二腿)", value=f"`{leg2.get('side')} {leg2.get('size',0):.2f}份 @ {leg2.get('cost',0):.4f}`", inline=False)
+                            embed.add_field(name="Leg2 (二腿)", value=f"`{_get(leg2, 'side')} {_get(leg2, 'size',0):.2f}份 @ {_get(leg2, 'cost',0):.4f}`", inline=False)
                             
-                        reprice = detail.get('reprice_history', [])
+                        reprice = _get(detail, 'reprice_history')
                         if reprice:
                             rp_str = ""
                             for rp in reprice[-5:]: 
-                                ts = time.strftime('%H:%M:%S', time.localtime(rp.get('timestamp',0)))
-                                rp_str += f"`[{ts}]` {rp.get('old_price')} -> **{rp.get('new_price')}** ({rp.get('reason')})\n"
+                                ts = time.strftime('%H:%M:%S', time.localtime(_get(rp, 'timestamp', 0)))
+                                rp_str += f"`[{ts}]` {_get(rp, 'old_price')} -> **{_get(rp, 'new_price')}** ({_get(rp, 'reason')})\n"
                             embed.add_field(name=f"改价轨迹 (共 {len(reprice)} 次)", value=rp_str[:1024], inline=False)
                             
                         await inter.response.send_message(embed=embed, ephemeral=True)
