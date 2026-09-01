@@ -403,3 +403,29 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.send_embed(embed, severity="INFO")
+
+
+class Notifier:
+    """向后兼容的轻量 Notifier，统一由 DiscordNotifier 处理"""
+    def __init__(self, *args, **kwargs):
+        self._discord = DiscordNotifier.get_instance()
+
+    def send_simple_alert(self, msg: str, urgent: bool = False):
+        self._discord.send_system_alert(title="系统警报" if urgent else "系统消息", message=msg, level="error" if urgent else "info")
+
+    def send_trade_alert(self, **kwargs):
+        pass
+
+    def send_risk_alert(self, **kwargs):
+        pass
+
+    def send_error_alert(self, **kwargs):
+        pass
+
+    def send_system_alert(self, **kwargs):
+        pass
+
+
+def get_notifier() -> Notifier:
+    return Notifier()
+
