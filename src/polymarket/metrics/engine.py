@@ -55,6 +55,8 @@ class MetricsEngine:
             # 初始化核心量化交易指标
             self.orders_total = self.register_counter("poly_orders_total", "累计下单总数")
             self.trades_locked_total = self.register_counter("poly_trades_locked_total", "累计套利锁仓成交数")
+            self.dual_exit_sells_total = self.register_counter("poly_dual_exit_sells_total", "累计做T卖单变现成交数")
+            self.expiry_resolved_total = self.register_counter("poly_expiry_resolved_total", "累计到期交割结算数")
             self.liquidations_total = self.register_counter("poly_liquidations_total", "累计强平触发数")
             self.api_errors_total = self.register_counter("poly_api_errors_total", "API 异常与限流拦截次数")
 
@@ -65,6 +67,7 @@ class MetricsEngine:
 
             self.order_latency_seconds = self.register_histogram("poly_order_latency_seconds", "下单请求往返耗时分布")
             self.tick_process_latency_seconds = self.register_histogram("poly_tick_process_latency_seconds", "Tick 状态机处理耗时分布")
+            self.unhedged_duration_seconds = self.register_histogram("poly_unhedged_duration_seconds", "单边持仓未对冲时长分布(秒)")
 
             self._initialized = True
             logger.info("[MetricsEngine] 轻量级时序指标引擎初始化完毕。")

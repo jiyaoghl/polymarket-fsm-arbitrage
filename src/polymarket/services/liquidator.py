@@ -248,6 +248,13 @@ class AdaptiveLiquidatorService:
                 actual_price = float(vwap_price or fok_order.get("price") or safe_price)
                 order_id = str(fok_order.get("orderID") or fok_order.get("order_id") or "fok_close")
                 logger.info(f"[强平引擎：{strategy_id}] 市价 FOK 平仓单发送成功: {order_id}, 最终成交价(VWAP): {actual_price} (保护价: {safe_price})")
+                
+                from polymarket.metrics import metrics
+                metrics.liquidations_total.inc()
+                if context.leg1_filled_time:
+                    hold_sec = max(0.0, time.time() - float(context.leg1_filled_time))
+                    metrics.unhedged_duration_seconds.observe(hold_sec)
+                
                 return True, actual_price, size, order_id
         except Exception as e:
             logger.warning(f"[强平引擎：{strategy_id}] 发送市价 FOK 平仓失败: {e}")

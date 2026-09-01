@@ -95,8 +95,12 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 )
                 deps.set_trade(market_id, ctx.to_dict())
 
+                from polymarket.metrics import metrics
+                hold_sec = max(0.0, time.time() - float(ctx.leg1_filled_time or time.time()))
+                metrics.unhedged_duration_seconds.observe(hold_sec)
+                metrics.dual_exit_sells_total.inc()
+
                 from polymarket.services.notifier import DiscordNotifier
-                hold_sec = time.time() - float(ctx.leg1_filled_time or time.time())
                 DiscordNotifier.get_instance().notify_flip_success(
                     market_id=market_id,
                     asset=ctx.asset or asset_type,
@@ -104,7 +108,7 @@ class PendingLeg2TickHandler(BaseTickHandler):
                     leg1_cost=leg1.cost,
                     sell_price=sell_price,
                     shares=leg1.size,
-                    hold_seconds=max(0.0, hold_sec),
+                    hold_seconds=hold_sec,
                     net_profit=realized_pnl,
                     gross_profit=gross_pnl,
                     fee_usdc=fee,
@@ -151,6 +155,11 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 ctx.gross_profit_usdc = gross_ev
                 ctx.fee_usdc = fee
                 ctx.settlement_type = "HEDGED_LOCKED"
+
+                from polymarket.metrics import metrics
+                hold_sec = max(0.0, time.time() - float(ctx.leg1_filled_time or time.time()))
+                metrics.unhedged_duration_seconds.observe(hold_sec)
+                metrics.trades_locked_total.inc()
 
                 deps.set_trade(market_id, ctx.to_dict())
                 fsm.transition_to(TradeState.LOCKED)

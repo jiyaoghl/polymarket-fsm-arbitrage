@@ -1390,12 +1390,85 @@ def get_diagnostics() -> Dict[str, Any]:
     except Exception as e:
         recent_history = [{"error": str(e)}]
 
+    # 2. 计算转化率与出场归因汇总 (Conversion & PnL Summary)
+    conversion_summary = {
+        "total_trades": 0,
+        "locked_count": 0,
+        "locked_rate_pct": 0.0,
+        "dual_exit_sells_count": 0,
+        "dual_exit_win_rate_pct": 0.0,
+        "force_close_count": 0,
+        "total_gross_pnl": 0.0,
+        "total_fees_usdc": 0.0,
+        "total_net_pnl": 0.0,
+        "by_strategy": {}
+    }
+
+    valid_trades = [t for t in recent_history if "error" not in t]
+    conversion_summary["total_trades"] = len(valid_trades)
+
+    for t in valid_trades:
+        sid = t.get("strategy_id") or "unknown"
+        net_pnl = float(t.get("profit_usdc") or t.get("ev") or 0.0)
+        gross = float(t.get("gross_profit_usdc") or 0.0)
+        fee = float(t.get("fee_usdc") or 0.0)
+        st = t.get("settlement_type") or ("FORCE_CLOSE" if t.get("status") == "failed" else "OTHER")
+
+        conversion_summary["total_net_pnl"] += net_pnl
+        conversion_summary["total_gross_pnl"] += gross
+        conversion_summary["total_fees_usdc"] += fee
+
+        if st == "HEDGED_LOCKED" or t.get("status") == "locked":
+            conversion_summary["locked_count"] += 1
+        elif st == "DUAL_EXIT_SELL_SETTLED":
+            conversion_summary["dual_exit_sells_count"] += 1
+        elif st == "FORCE_CLOSE" or t.get("status") in ("failed", "stopped"):
+            conversion_summary["force_close_count"] += 1
+
+        if sid not in conversion_summary["by_strategy"]:
+            conversion_summary["by_strategy"][sid] = {
+                "total": 0, "wins": 0, "losses": 0, "ties": 0, "win_rate_pct": 0.0,
+                "net_pnl": 0.0, "gross_pnl": 0.0, "fee_usdc": 0.0,
+                "routes": {}
+            }
+        
+        bs = conversion_summary["by_strategy"][sid]
+        bs["total"] += 1
+        bs["net_pnl"] += net_pnl
+        bs["gross_pnl"] += gross
+        bs["fee_usdc"] += fee
+        if net_pnl > 0.0001:
+            bs["wins"] += 1
+        elif net_pnl < -0.0001:
+            bs["losses"] += 1
+        else:
+            bs["ties"] += 1
+        
+        if st not in bs["routes"]:
+            bs["routes"][st] = {"count": 0, "net_pnl": 0.0, "gross_pnl": 0.0, "fee_usdc": 0.0}
+        bs["routes"][st]["count"] += 1
+        bs["routes"][st]["net_pnl"] += net_pnl
+        bs["routes"][st]["gross_pnl"] += gross
+        bs["routes"][st]["fee_usdc"] += fee
+
+    if conversion_summary["total_trades"] > 0:
+        tot = conversion_summary["total_trades"]
+        conversion_summary["locked_rate_pct"] = round(conversion_summary["locked_count"] / tot * 100, 1)
+        if conversion_summary["dual_exit_sells_count"] > 0:
+            dual_wins = sum(1 for t in valid_trades if t.get("settlement_type") == "DUAL_EXIT_SELL_SETTLED" and float(t.get("profit_usdc") or 0.0) > 0)
+            conversion_summary["dual_exit_win_rate_pct"] = round(dual_wins / conversion_summary["dual_exit_sells_count"] * 100, 1)
+
+    for sid, bs in conversion_summary["by_strategy"].items():
+        if bs["total"] > 0:
+            bs["win_rate_pct"] = round(bs["wins"] / bs["total"] * 100, 1)
+
     return {
         "timestamp": time.time(),
         "risk_metrics": RiskManager().get_status(),
         "asset_status": {a: get_asset_status(a) for a in SUPPORTED_ASSETS},
         "risk_events": get_recent_risk_events(),
         "performance_metrics": metrics.export_dashboard_json(),
+        "conversion_summary": conversion_summary,
         "recent_historical_trades": recent_history
     }
 

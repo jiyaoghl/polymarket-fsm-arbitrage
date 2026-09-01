@@ -180,72 +180,83 @@ def cmd_logs(args):
 
 
 def cmd_analyze(args):
-    """深度量化诊断与历史归因分析"""
+    """深度量化诊断与历史归因分析 (消费 VPS /api/diagnostics 转化率指标与出场路由)"""
     print_banner("VPS 深度量化与策略归因分析报告")
     diag = fetch_api("/api/diagnostics")
     if not diag:
         return
 
+    summary = diag.get("conversion_summary", {})
     recent_trades = diag.get("recent_historical_trades", [])
-    print(f"[*] 最近 50 笔历史交易诊断数据 (实取: {len(recent_trades)} 笔)")
+    perf_metrics = diag.get("performance_metrics", {})
+    unhedged_hist = perf_metrics.get("histograms", {}).get("poly_unhedged_duration_seconds", {})
 
-    if not recent_trades:
-        print("  (暂无历史交易数据)")
-        return
+    print(f"[*] 样本数据规模: 最近 {len(recent_trades)} 笔归档交易诊断记录\n")
 
-    stat_by_strat = {}
-    for t in recent_trades:
-        if "error" in t:
-            continue
-        sid = t.get("strategy_id", "unknown")
-        status = t.get("status", "unknown")
-        ev = float(t.get("profit_usdc") or t.get("ev") or 0.0)
-        fee = float(t.get("fee_usdc") or 0.0)
-        
-        k = (sid, status)
-        if k not in stat_by_strat:
-            stat_by_strat[k] = {"count": 0, "net_pnl": 0.0, "fee": 0.0, "examples": []}
-        stat_by_strat[k]["count"] += 1
-        stat_by_strat[k]["net_pnl"] += ev
-        stat_by_strat[k]["fee"] += fee
-        stat_by_strat[k]["examples"].append(t)
+    # 1. 北极星核心指标卡
+    tot_trades = summary.get("total_trades", 0)
+    locked_cnt = summary.get("locked_count", 0)
+    locked_pct = summary.get("locked_rate_pct", 0.0)
+    dual_cnt = summary.get("dual_exit_sells_count", 0)
+    dual_win_pct = summary.get("dual_exit_win_rate_pct", 0.0)
+    force_cnt = summary.get("force_close_count", 0)
+    net_pnl = summary.get("total_net_pnl", 0.0)
+    gross_pnl = summary.get("total_gross_pnl", 0.0)
+    total_fee = summary.get("total_fees_usdc", 0.0)
 
-    print("\n" + "=" * 75)
-    print(f"{'策略 ID':<26s} | {'状态':<8s} | {'笔数':<4s} | {'净净利润 (Net PnL)':<16s} | {'手续费磨损'}")
-    print("=" * 75)
-    
-    total_locked = 0
-    total_failed = 0
-    total_net = 0.0
+    net_color = GREEN if net_pnl > 0 else (RED if net_pnl < 0 else RESET)
+    p50_hold = unhedged_hist.get("p50", 0.0)
+    p90_hold = unhedged_hist.get("p90", 0.0)
 
-    for (sid, status), d in sorted(stat_by_strat.items(), key=lambda x: x[0][0]):
-        cnt = d["count"]
-        net = d["net_pnl"]
-        fee = d["fee"]
-        total_net += net
-        if status == "locked":
-            total_locked += cnt
-        elif status == "failed" or status == "stopped":
-            total_failed += cnt
+    print("┌" + "─" * 76 + "┐")
+    print(f"│  {BOLD}⭐ 北极星转化率与损益指标卡 (North Star Metrics){RESET}{' '*28}│")
+    print("├" + "─" * 76 + "┤")
+    print(f"│  • LOCKED 锁仓转化率  : {BOLD}{locked_pct:5.1f}%{RESET} ({locked_cnt} 笔成功锁仓 / {tot_trades} 笔总开仓){' '*17}│")
+    print(f"│  • OCO 做T卖出脱手率  : {BOLD}{dual_win_pct:5.1f}%{RESET} ({dual_cnt} 笔做T变现成交){' '*32}│")
+    print(f"│  • 强平 / 止损次数    : {BOLD}{force_cnt}{RESET} 次{' '*57}│")
+    print(f"│  • 未对冲时长分布     : P50={p50_hold:.2f}s | P90={p90_hold:.2f}s{' '*38}│")
+    print(f"│  • 组合总毛利润       : ${gross_pnl:+.4f}{' '*54}│")
+    print(f"│  • 总费率磨损 (Fee)   : ${total_fee:.4f}{' '*55}│")
+    print(f"│  • 扣费净净利润 (Net) : {BOLD}{net_color}${net_pnl:+.4f}{RESET}{' '*54}│")
+    print("└" + "─" * 76 + "┘")
 
-        pnl_str = f"{GREEN}+${net:.4f}{RESET}" if net > 0 else (f"{RED}-${abs(net):.4f}{RESET}" if net < 0 else "$0.0000")
-        print(f"[{sid:<24s}] | {status:<8s} | {cnt:<4d} | {pnl_str:<25s} | ${fee:.4f}")
+    # 2. 分策略与出场路径透视表
+    by_strat = summary.get("by_strategy", {})
+    if by_strat:
+        print("\n" + "=" * 80)
+        print(f"{'策略 ID':<26s} | {'总笔数':<6s} | {'胜/负/平':<10s} | {'胜率':<8s} | {'毛利 (Gross)':<12s} | {'手续费':<10s} | {'净盈亏 (Net PnL)'}")
+        print("=" * 80)
 
-    total_trades = total_locked + total_failed
-    win_rate = (total_locked / total_trades * 100) if total_trades > 0 else 0.0
+        for sid, s in by_strat.items():
+            w_l_t = f"{s.get('wins',0)}/{s.get('losses',0)}/{s.get('ties',0)}"
+            s_net = s.get("net_pnl", 0.0)
+            s_gross = s.get("gross_pnl", 0.0)
+            s_fee = s.get("fee_usdc", 0.0)
+            s_win_r = s.get("win_rate_pct", 0.0)
+            p_color = GREEN if s_net > 0 else (RED if s_net < 0 else RESET)
+            print(f"{sid:<26s} | {s.get('total',0):^6d} | {w_l_t:<10s} | {s_win_r:6.1f}% | ${s_gross:+10.4f} | ${s_fee:8.4f} | {p_color}${s_net:+.4f}{RESET}")
 
-    print("=" * 75)
-    print(f"[*] 综合套利胜率 (Locked Win Rate): {BOLD}{win_rate:.1f}%{RESET} (锁利: {total_locked} 笔 / 强平: {total_failed} 笔)")
-    net_total_str = f"{GREEN}+${total_net:.4f}{RESET}" if total_net > 0 else (f"{RED}-${abs(total_net):.4f}{RESET}" if total_net < 0 else "$0.0000")
-    print(f"[*] 累计总已实现净收益 (Net PnL)   : {BOLD}{net_total_str}{RESET}")
+        print("=" * 80)
 
-    # 失败案例深挖
-    print("\n[*] 强平止损案例深度原因透析 (Recent Stop-Losses):")
-    failed_cases = [t for t in recent_trades if t.get("status") in ("failed", "stopped")]
-    for t in failed_cases[:3]:
-        print(f"  - [{t.get('strategy_id')}] 市场: {t.get('market_id')[:14]}... | 时间: {t.get('archived_at')}")
-        print(f"    首腿开仓: {t.get('leg1')} -> 二腿平仓: {t.get('leg2')}")
-        print(f"    单笔净亏: {RED}${float(t.get('profit_usdc', 0)):.4f}{RESET} (手续费: ${float(t.get('fee_usdc', 0)):.4f}, 动态TTL: {t.get('dynamic_ttl')}s)")
+        print("\n>>> 各策略微观出场路径拆解 (Settlement Route Breakdown):")
+        for sid, s in by_strat.items():
+            print(f"\n【策略: {sid}】:")
+            for st, r in sorted(s.get("routes", {}).items(), key=lambda x: x[1].get("count", 0), reverse=True):
+                r_cnt = r.get("count", 0)
+                r_net = r.get("net_pnl", 0.0)
+                r_gross = r.get("gross_pnl", 0.0)
+                r_fee = r.get("fee_usdc", 0.0)
+                r_color = GREEN if r_net > 0 else (RED if r_net < 0 else RESET)
+                print(f"  - 出场模式 [{st:<24s}]: {r_cnt:2d} 笔 | 净净利润: {r_color}${r_net:+9.4f}{RESET} (毛利: ${r_gross:+9.4f}, 费率: ${r_fee:6.4f})")
+
+    # 3. 失败案例深挖
+    failed_cases = [t for t in recent_trades if t.get("status") in ("failed", "stopped") or t.get("settlement_type") == "FORCE_CLOSE"]
+    if failed_cases:
+        print("\n[*] 强平止损案例深度原因透析 (Recent Stop-Losses):")
+        for t in failed_cases[:3]:
+            print(f"  - [{t.get('strategy_id')}] 市场: {str(t.get('market_id'))[:14]}... | 时间: {t.get('archived_at')}")
+            print(f"    首腿开仓: {t.get('leg1')} -> 二腿平仓: {t.get('leg2')}")
+            print(f"    单笔净亏: {RED}${float(t.get('profit_usdc', 0)):.4f}{RESET} (手续费: ${float(t.get('fee_usdc', 0)):.4f}, 动态TTL: {t.get('dynamic_ttl')}s)")
 
 
 def trigger_vps_update():
