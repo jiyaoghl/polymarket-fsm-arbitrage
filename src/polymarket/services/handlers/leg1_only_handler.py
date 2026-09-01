@@ -54,10 +54,10 @@ class Leg1OnlyTickHandler(BaseTickHandler):
         # ── 模式 A: OCO 双出口同时并发挂单 (Dual Exit) ──
         if params.exit_mode == "dual_exit":
             ctx.exit_stage = "dual_active"
-            sell_price = PricingEngine.calculate_flip_sell_price(
-                leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
-                initial_margin=params.initial_margin, min_margin=params.breakeven_margin,
-                decay_duration=flip_timeout, leg1_is_taker=(params.leg1_order_type == "FOK")
+            sell_price = PricingEngine.calculate_smart_flip_ladder_price(
+                leg1_cost=leg1.cost, 
+                elapsed_seconds=elapsed_since_leg1,
+                current_bid=(tick.best_bid_yes if is_leg1_yes else tick.best_bid_no) or 0.0
             )
             pair_price = PricingEngine.calculate_hedged_pair_price(
                 leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
