@@ -176,14 +176,22 @@ class IdleTickHandler(BaseTickHandler):
                     )
                     return
 
-            # [对侧买盘 OBI 承接深度壁垒] 对侧买盘前 5 档深度必须 >= 20.0 份
+            # [波动率联动对侧买盘 OBI 承接深度壁垒] 根据当前 K 线波幅动态提升对侧深度要求 (20.0 ~ 50.0 份)
+            from polymarket.kline_analyzer import get_asset_status
+            from polymarket.config import ASSET_CHOP_THRESHOLDS, CRYPTO_CHOP_MAX_AMPLITUDE
+            asset_status = get_asset_status(asset_type)
+            asset_amp = float(asset_status.get("amplitude", 0.0))
+            max_amp = float(ASSET_CHOP_THRESHOLDS.get(asset_type.upper(), {}).get("max_amplitude", CRYPTO_CHOP_MAX_AMPLITUDE))
+            amp_ratio = min(max(asset_amp / max_amp if max_amp > 0 else 0.0, 0.0), 1.0)
+            required_opp_depth = round(20.0 * (1.0 + amp_ratio * 1.5), 1)
+
             if opp_snap and not opp_snap.is_stale(10.0):
                 opp_bids = list(opp_snap.bids)
                 opp_bid_depth = sum(float(b[1] if isinstance(b, (list, tuple)) else b.get("size", 0.0)) for b in opp_bids[:5])
-                if opp_bid_depth < 20.0:
+                if opp_bid_depth < required_opp_depth:
                     filter_logger.intercept(
                         market_id, asset_type,
-                        f"对侧买盘承接深度不足 (前5档买盘={opp_bid_depth:.1f}份 < 20.0份)，拦截吃单",
+                        f"对侧买盘承接深度不足 (前5档买盘={opp_bid_depth:.1f}份 < 动态要求 {required_opp_depth:.1f}份 [振幅利用率 {amp_ratio*100:.0f}%])，拦截吃单",
                         ctx, deps
                     )
                     return

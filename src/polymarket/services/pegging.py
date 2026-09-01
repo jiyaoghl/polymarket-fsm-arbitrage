@@ -17,19 +17,38 @@ class MakerPeggingService:
     """
 
     @staticmethod
+    def calculate_adaptive_pegging_params(spread: float) -> Tuple[float, float, float]:
+        """
+        根据盘口实时价差 (Spread = BestAsk - BestBid) 计算自适应反卷参数：
+        - 宽价差 (Spread >= 0.010): 冷却时间缩短至 1.5s，跃迁步长 0.003~0.005 (极速抢买一)
+        - 紧凑价差 (Spread < 0.010): 冷却时间维持 3.0s，跃迁步长 0.002~0.004 (防高频抖动)
+        
+        Returns:
+            (delay_seconds, step_min, step_max)
+        """
+        if spread >= 0.010:
+            return 1.5, 0.003, 0.005
+        return 3.0, 0.002, 0.004
+
+    @staticmethod
     def calculate_pegged_price(
         current_best_bid: float,
         our_current_price: float,
         entry_max_price: float,
         step_min: float = 0.002,
-        step_max: float = 0.004
+        step_max: float = 0.004,
+        spread: Optional[float] = None
     ) -> Tuple[bool, float, str]:
         """
-        计算反卷挂单新价格。
+        计算反卷挂单新价格 (支持基于价差自动调整步长)。
         
         Returns:
             (should_repeg, new_price, reason)
         """
+        if spread is not None:
+            _, s_min, s_max = MakerPeggingService.calculate_adaptive_pegging_params(spread)
+            step_min, step_max = s_min, s_max
+
         # 如果当前买一价高于我们挂出的价格，说明排位被反超
         if current_best_bid > our_current_price:
             # 阶梯式跳跃反卷
@@ -37,7 +56,7 @@ class MakerPeggingService:
             new_target = round(min(current_best_bid + step, entry_max_price), 4)
             
             if new_target > our_current_price:
-                return True, new_target, f"被反超 (买一 {current_best_bid:.4f} > 我方 {our_current_price:.4f})，阶梯追价至 {new_target:.4f}"
+                return True, new_target, f"被反超 (买一 {current_best_bid:.4f} > 我方 {our_current_price:.4f})，阶梯追价至 {new_target:.4f} (步长: +{step:.4f})"
             else:
                 return False, our_current_price, f"目标追价 {new_target:.4f} 已触顶上限 {entry_max_price:.4f}"
 

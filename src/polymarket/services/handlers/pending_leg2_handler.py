@@ -161,11 +161,15 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 now_ts = tick.now_ts
                 last_reprice = float(getattr(ctx, "last_reprice_time", None) or ctx.leg1_filled_time or now_ts)
                 
-                # 间隔 >= 3.0s 允许跟单一次，防高频撤挂惩罚
-                if now_ts - last_reprice >= 3.0:
-                    cur_opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
-                    cur_buy_price = float(buy_info.get("price", 0.0))
-                    
+                cur_opp_bid = best_bid_no if is_leg1_yes else best_bid_yes
+                cur_opp_ask = best_ask_no if is_leg1_yes else best_ask_yes
+                cur_buy_price = float(buy_info.get("price", 0.0))
+                
+                opp_spread = max(0.0, (cur_opp_ask - cur_opp_bid)) if (cur_opp_ask is not None and cur_opp_bid is not None) else 0.005
+                adaptive_delay, _, _ = MakerPeggingService.calculate_adaptive_pegging_params(opp_spread)
+                
+                # 依据对侧价差自适应迟滞冷却 (宽价差 >=0.010 时 1.5s 极速抢位，紧凑价差时 3.0s 防抖)
+                if now_ts - last_reprice >= adaptive_delay:
                     if cur_opp_bid is not None and cur_buy_price > 0:
                         # 计算保利买入最高上限 (保证扣除手续费后净利差 >= 0.002)
                         fee_buffer = (leg1.cost * 0.001) + (1.0 - leg1.cost) * 0.001
@@ -175,8 +179,7 @@ class PendingLeg2TickHandler(BaseTickHandler):
                             current_best_bid=cur_opp_bid,
                             our_current_price=cur_buy_price,
                             entry_max_price=max_allowed_buy_price,
-                            step_min=0.002,
-                            step_max=0.004
+                            spread=opp_spread
                         )
                         
                         if should_repeg and new_target > cur_buy_price:
