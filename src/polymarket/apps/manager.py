@@ -255,7 +255,7 @@ class StrategyManager:
                 if market:
                     markets_found.append(market)
                     logger.info(
-                        f"⚡ 已定位 5min 市场 [{asset.upper()}]：{market['description']}，expiry={market['expiry']:.0f}，"
+                        f"[*] 已定位 5min 市场 [{asset.upper()}]：{market['description']}，expiry={market['expiry']:.0f}，"
                         f"YES={market['tokens']['YES'][:10]}... NO={market['tokens']['NO'][:10]}..."
                     )
 
