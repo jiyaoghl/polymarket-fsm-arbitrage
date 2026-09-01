@@ -103,6 +103,18 @@ def get_unified_dashboard_metrics() -> Dict[str, Any]:
             "total_cnt": len(strat_trades)
         })
 
+    # 追加熔断属性
+    from polymarket.risk_manager import RiskManager
+    rm = RiskManager()
+    for s_item in strategy_items:
+        sid = s_item["strategy_id"]
+        with rm.lock:
+            stats = rm._strategy_daily_stats.get(sid, {})
+            cd = rm._strategy_cooldown_until.get(sid, 0.0)
+            s_item["daily_loss"] = stats.get('loss', 0.0)
+            s_item["consecutive_fc"] = stats.get('consecutive_fc', 0)
+            s_item["cooldown_until"] = cd
+
     win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
 
     return {
@@ -320,9 +332,23 @@ if HAS_DISCORD_LIB and discord is not None:
                 pnl = float(s.get("total_pnl", 0.0))
                 pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"
 
+
+                import time
+                cd_until = s.get("cooldown_until", 0.0)
+                is_halted = cd_until > time.time()
+                halt_str = ""
+                if is_halted:
+                    rem = int(cd_until - time.time())
+                    halt_str = f"\n⚠️ **[策略熔断中]** 剩余冷却: `{rem//60}分{rem%60}秒`"
+                else:
+                    daily_loss = s.get("daily_loss", 0.0)
+                    consecutive_fc = s.get("consecutive_fc", 0)
+                    if daily_loss > 0 or consecutive_fc > 0:
+                        halt_str = f"\n🛡️ 熔断水位: 连续强平 `{consecutive_fc}` 次 | 累计亏损 `${daily_loss:.2f}`"
+
                 embed.add_field(
-                    name=f"{mode} | {sname}",
-                    value=f"• 活跃持仓: `{s.get('active_cnt', 0)}` 笔 | 历史单: `{s.get('total_cnt', 0)}` 笔\n• 策略净净收益: `{pnl_str}` USDC\n• 入场门槛: `≤{s.get('entry_max_price', 0):.3f}` | 单笔: `${s.get('amount', 0):.1f}`",
+                    name=f"{mode} | {sname}{' ⛔(冷却中)' if is_halted else ''}",
+                    value=f"• 活跃持仓: `{s.get('active_cnt', 0)}` 笔 | 历史单: `{s.get('total_cnt', 0)}` 笔\n• 策略净净收益: `{pnl_str}` USDC\n• 入场门槛: `≤{s.get('entry_max_price', 0):.3f}` | 单笔: `${s.get('amount', 0):.1f}`{halt_str}",
                     inline=False
                 )
 
@@ -510,6 +536,63 @@ if HAS_DISCORD_LIB and discord is not None:
                 await interaction.followup.send(f"❌ 链上赎回执行异常: {e}", ephemeral=True)
 
         # ---------------- 行 2：风控熔断与数据管理 ----------------
+        @discord.ui.button(label="🛡️ 熔断管理", style=discord.ButtonStyle.primary, custom_id="btn_circuit_breaker", row=2)
+        async def on_circuit_breaker(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not is_admin(interaction.user.id):
+                await interaction.response.send_message("❌ 权限不足。", ephemeral=True)
+                return
+                
+            metrics = get_unified_dashboard_metrics()
+            strategy_items = metrics.get("strategies", [])
+            options = []
+            import time
+            now = time.time()
+            for s in strategy_items:
+                sid = s.get("strategy_id")
+                name = s.get("name", sid)
+                cd = s.get("cooldown_until", 0.0)
+                is_halted = cd > now
+                status = "🔴 熔断中" if is_halted else "🟢 运行中"
+                options.append(discord.SelectOption(
+                    label=f"{status} | {name}"[:100],
+                    value=sid
+                ))
+                
+            if not options:
+                await interaction.response.send_message("❌ 无可用策略。", ephemeral=True)
+                return
+                
+            class CBSelect(discord.ui.Select):
+                def __init__(self):
+                    super().__init__(placeholder="请选择要 强制冷却/恢复 的策略...", options=options)
+                    
+                async def callback(self, inter: discord.Interaction):
+                    sid = self.values[0]
+                    from polymarket.risk_manager import RiskManager
+                    rm = RiskManager()
+                    import time
+                    now = time.time()
+                    with rm.lock:
+                        cd = rm._strategy_cooldown_until.get(sid, 0.0)
+                        if cd > now:
+                            # 恢复
+                            del rm._strategy_cooldown_until[sid]
+                            if sid in rm._strategy_daily_stats:
+                                rm._strategy_daily_stats[sid] = {'loss': 0.0, 'consecutive_fc': 0}
+                            msg = f"✅ 已为您强制恢复策略 `{sid}`，熔断冷却和水位已清零！"
+                        else:
+                            # 手动熔断 2 小时
+                            rm._strategy_cooldown_until[sid] = now + 7200
+                            msg = f"⛔ 已为您强制熔断策略 `{sid}` 2 小时！"
+                    await inter.response.send_message(msg, ephemeral=True)
+                    
+            class CBView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=60)
+                    self.add_item(CBSelect())
+                    
+            await interaction.response.send_message("🛡️ **单策略精细化熔断控制**：\n选中运行中的策略可将其强制熔断 2 小时；\n选中冷却中的策略可一键解除封印并清空风险水位。", view=CBView(), ephemeral=True)
+
         @discord.ui.button(label="⏸️ 紧急暂停", style=discord.ButtonStyle.danger, custom_id="btn_emergency_pause", row=2)
         async def on_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not is_admin(interaction.user.id):

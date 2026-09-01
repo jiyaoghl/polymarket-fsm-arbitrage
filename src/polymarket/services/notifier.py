@@ -216,7 +216,8 @@ class DiscordNotifier:
         net_profit: float,
         gross_profit: float,
         fee_usdc: float,
-        is_live: bool = False
+        is_live: bool = False,
+        ladder_stage: int = 0
     ):
         """同向做 T 高抛止盈战报"""
         mode_tag = "🔴 [LIVE 实盘]" if is_live else "🔵 [PAPER 模拟]"
@@ -298,10 +299,11 @@ class DiscordNotifier:
         mode_tag = "🔴 [LIVE 实盘]" if is_live else "🔵 [PAPER 模拟]"
         pnl_str = f"+${realized_pnl:.4f} USDC" if realized_pnl >= 0 else f"-${abs(realized_pnl):.4f} USDC"
 
+        ttl_desc = "触发 95s 硬兜底" if hold_seconds >= 94.0 else "触发 85s 自适应强平"
         fields = [
             {"name": "🎯 策略名称", "value": f"`{strategy_name}`", "inline": True},
             {"name": "🪙 标的资产", "value": f"`{asset}` 5min", "inline": True},
-            {"name": "⏱️ 未对冲时长", "value": f"`{hold_seconds:.1f}s` (触发 TTL 红线)", "inline": True},
+            {"name": "⏱️ 未对冲时长", "value": f"`{hold_seconds:.1f}s` ({ttl_desc})", "inline": True},
             {"name": "📥 入场成本", "value": f"`${leg1_cost:.4f}` × {shares:.1f}份", "inline": True},
             {"name": "📉 VWAP平仓均价", "value": f"`${vwap_close_price:.4f}` × {shares:.1f}份", "inline": True},
             {"name": "⚠️ 最终实现损益", "value": f"**{pnl_str}**", "inline": False},

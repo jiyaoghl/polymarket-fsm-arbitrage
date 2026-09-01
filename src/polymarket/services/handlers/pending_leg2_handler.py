@@ -112,7 +112,8 @@ class PendingLeg2TickHandler(BaseTickHandler):
                     net_profit=realized_pnl,
                     gross_profit=gross_pnl,
                     fee_usdc=fee,
-                    is_live=params.is_live
+                    is_live=params.is_live,
+                    ladder_stage=4 if hold_sec >= 70.0 else (3 if hold_sec >= 45.0 else (2 if hold_sec >= 20.0 else 1))
                 )
 
                 fsm.transition_to(TradeState.SETTLED, reason=f"OCO 做T卖出率先成交变现，净锁定 ${realized_pnl:.4f}")
@@ -268,7 +269,8 @@ class PendingLeg2TickHandler(BaseTickHandler):
                     net_profit=realized_pnl,
                     gross_profit=gross_pnl,
                     fee_usdc=fee,
-                    is_live=params.is_live
+                    is_live=params.is_live,
+                    ladder_stage=4 if hold_sec >= 70.0 else (3 if hold_sec >= 45.0 else (2 if hold_sec >= 20.0 else 1))
                 )
 
                 fsm.transition_to(TradeState.SETTLED, reason=f"智能做T高抛成交变现，净锁定 ${realized_pnl:.4f}")
