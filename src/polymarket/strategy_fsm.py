@@ -512,9 +512,19 @@ class ArbitrageBotFSM(BaseStrategy):
                     if is_timed_out:
                         fsm = self.fsms.get(market_id)
                         if fsm and fsm.current_state in (TradeState.LEG1_ONLY, TradeState.PENDING_LEG2):
+                            time_to_exp = max(0.0, ctx.end_time - time.time()) if ctx.end_time > 0 else 999.0
+                            prev_grace = getattr(ctx, "ttl_grace_extended", False)
+                            
                             success, close_price, close_size, close_order_id = AdaptiveLiquidatorService.execute_force_close(
                                 self.client, ctx, self.strategy_id, allow_grace=True
                             )
+
+                            # 场景 1: 触发了弹性延期缓冲 (非失败，继续等待下一轮)
+                            if not success and not prev_grace and getattr(ctx, "ttl_grace_extended", False):
+                                self._set_trade(market_id, ctx.to_dict())
+                                continue
+
+                            # 场景 2: 强平平仓单成交成功
                             if success and close_price is not None and ctx.leg1:
                                 leg1_is_taker = (self.leg1_order_type == "FOK")
                                 realized_pnl, gross_pnl, fee = AdaptiveLiquidatorService.calculate_realized_pnl(
@@ -550,9 +560,14 @@ class ArbitrageBotFSM(BaseStrategy):
                                 )
 
                                 fsm.transition_to(TradeState.SETTLED, reason=f"自适应 TTL 强平完成 (平仓卖出价: {close_price}, PnL: ${realized_pnl:.4f})")
+                            
+                            # 场景 3: 平仓单暂时未成交，但距离交割还有时间 (>5s)，保持持仓继续重试
+                            elif time_to_exp > 5.0:
+                                logger.warning(f"[策略FSM：{self.strategy_id}] 强平单暂未撮合，剩余 {time_to_exp:.1f}s，下一轮守护继续重试平仓")
+                                continue
+
+                            # 场景 4: 真正临期交割 (<5s) 且平仓未果，执行最终交割清算
                             else:
-                                # 二腿市价平仓失败 (如临期流动性枯竭或直接进入交割锁定)
-                                # 评估最终到期交割结算价格 (Settlement Price)
                                 leg1 = ctx.leg1
                                 if leg1 and leg1.token:
                                     try:
@@ -582,7 +597,11 @@ class ArbitrageBotFSM(BaseStrategy):
                                         size=leg1.size
                                     )
                                     self._set_trade(market_id, ctx.to_dict())
-                                    fsm.transition_to(TradeState.SETTLED, reason=f"市价平仓失败，按到期结算价 {settle_price} 结算 (PnL: ${settled_pnl:.4f})")
+
+                                    from polymarket.metrics import metrics
+                                    metrics.expiry_resolved_total.inc()
+
+                                    fsm.transition_to(TradeState.FAILED, reason=f"单边敞口持有至到期交割 (交割价: {settle_price}, PnL: ${settled_pnl:.4f})")
                                 else:
                                     fsm.transition_to(TradeState.FAILED, reason="自适应 TTL 平仓失败且无首腿持仓")
                             
