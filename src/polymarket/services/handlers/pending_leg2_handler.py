@@ -234,24 +234,24 @@ class PendingLeg2TickHandler(BaseTickHandler):
                             leg1_is_taker=(params.leg1_order_type == "FOK"),
                             leg2_is_taker=False
                         )
-                    # 如果目标阶梯价低于当前挂单价，且两者差距 >= 0.002，执行平滑让价改单
-                    if target_ladder_p < cur_sell_p and (cur_sell_p - target_ladder_p) >= 0.002:
-                        old_sp = cur_sell_p
-                        if params.is_live and sell_id:
-                            try:
-                                await deps.client.cancel_order_async(sell_id)
-                                new_s_order = await deps.client.post_order_async(str(leg1.token), target_ladder_p, leg1.size, "SELL", "GTC")
-                                if new_s_order and new_s_order.get("status") not in ("ERROR", None):
-                                    sell_info["price"] = target_ladder_p
-                                    sell_info["order_id"] = new_s_order.get("orderID") or new_s_order.get("order_id")
-                                    ctx.record_reprice(old_sp, target_ladder_p, reason=f"SmartFlipLadder(Hold {hold_sec:.0f}s)", token=str(leg1.token), timestamp=now_ts)
-                                    deps.set_trade(market_id, ctx.to_dict())
-                            except Exception as ex:
-                                logger.error(f"[{params.strategy_id}] 实盘做T卖单让价改单异常: {ex}")
-                        elif not params.is_live:
-                            sell_info["price"] = target_ladder_p
-                            ctx.record_reprice(old_sp, target_ladder_p, reason=f"SmartFlipLadder(Hold {hold_sec:.0f}s)", token=str(leg1.token), timestamp=now_ts)
-                            deps.set_trade(market_id, ctx.to_dict())
+                        # 如果目标阶梯价低于当前挂单价，且两者差距 >= 0.002，执行平滑让价改单
+                        if target_ladder_p < cur_sell_p and (cur_sell_p - target_ladder_p) >= 0.002:
+                            old_sp = cur_sell_p
+                            if params.is_live and sell_id:
+                                try:
+                                    await deps.client.cancel_order_async(sell_id)
+                                    new_s_order = await deps.client.post_order_async(str(leg1.token), target_ladder_p, leg1.size, "SELL", "GTC")
+                                    if new_s_order and new_s_order.get("status") not in ("ERROR", None):
+                                        sell_info["price"] = target_ladder_p
+                                        sell_info["order_id"] = new_s_order.get("orderID") or new_s_order.get("order_id")
+                                        ctx.record_reprice(old_sp, target_ladder_p, reason=f"SmartFlipLadder(Hold {hold_sec:.0f}s)", token=str(leg1.token), timestamp=now_ts)
+                                        deps.set_trade(market_id, ctx.to_dict())
+                                except Exception as ex:
+                                    logger.error(f"[{params.strategy_id}] 实盘做T卖单让价改单异常: {ex}")
+                            elif not params.is_live:
+                                sell_info["price"] = target_ladder_p
+                                ctx.record_reprice(old_sp, target_ladder_p, reason=f"SmartFlipLadder(Hold {hold_sec:.0f}s)", token=str(leg1.token), timestamp=now_ts)
+                                deps.set_trade(market_id, ctx.to_dict())
 
             return
 
