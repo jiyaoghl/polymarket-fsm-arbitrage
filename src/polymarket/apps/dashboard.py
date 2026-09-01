@@ -435,6 +435,8 @@ def get_diagnostics() -> Dict[str, Any]:
                     "fee_usdc": t_data.get("fee_usdc"),
                     "dynamic_ttl": t_data.get("dynamic_ttl"),
                     "settlement_type": t_data.get("settlement_type"),
+                    "reprice_count": t_data.get("reprice_count", 0),
+                    "reprice_history": t_data.get("reprice_history", []),
                     "leg1": t_data.get("leg1"),
                     "leg2": t_data.get("leg2")
                 })
@@ -449,6 +451,8 @@ def get_diagnostics() -> Dict[str, Any]:
         "dual_exit_sells_count": 0,
         "dual_exit_win_rate_pct": 0.0,
         "force_close_count": 0,
+        "total_reprice_count": 0,
+        "avg_reprice_per_trade": 0.0,
         "total_gross_pnl": 0.0,
         "total_fees_usdc": 0.0,
         "total_net_pnl": 0.0,
@@ -457,6 +461,9 @@ def get_diagnostics() -> Dict[str, Any]:
 
     valid_trades = [t for t in recent_history if "error" not in t]
     conversion_summary["total_trades"] = len(valid_trades)
+    tot_reprices = sum(int(t.get("reprice_count") or 0) for t in valid_trades)
+    conversion_summary["total_reprice_count"] = tot_reprices
+    conversion_summary["avg_reprice_per_trade"] = round(tot_reprices / len(valid_trades), 2) if valid_trades else 0.0
 
     for t in valid_trades:
         sid = t.get("strategy_id") or "unknown"
