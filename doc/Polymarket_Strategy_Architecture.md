@@ -165,14 +165,17 @@ flowchart TD
 
 ---
 
-## 7. 动态自适应强平引擎 (Adaptive TTL)
+## 7. 动态自适应强平引擎与 Bid VWAP 保护 (Adaptive TTL & Liquidation)
 
-针对单边库存敞口风险（`LEG1_ONLY`），系统引入多维动态 TTL 调节机制：
+针对单边库存敞口风险（`LEG1_ONLY`），系统引入多维动态 TTL 调节与买盘深度加权防穿透机制：
 * **行情平稳期**：维持基础 `90s`，给二腿挂单留出充足的对手盘撮合与吃单回落时间。
 * **高波动联动收紧**：当 K 线振幅接近阈值警戒线（≥70%）时，动态将 TTL 压缩至 `35s ~ 60s` 提前强平逃命。
 * **临期截断**：距离到期交割不足 `60s` 时，强制截断至 `max(15s, time_to_expiry - 10s)`，确保在交割前完成离场。
 * **单调递减防抖动 (Monotonic TTL)**：持仓期间 TTL 只允许变短，绝不反向延长，彻底消除临界振荡导致的误强平。
-* **FOK + GTC 双重止损兜底**：强平前先撤二腿挂单，随后发送市价 FOK 平仓；若 FOK 快速确认未成交，自动以 `GTC @ 0.99` 紧急挂单兜底，杜绝单边遗弃。
+* **多档买盘穿透与边际价保护限价**：穿透 L2 买盘多档深度计算吞没全部持仓份数所需的最低边际价 $P_{\text{marginal}}$ 与加权均价 $P_{\text{vwap}}$，以 $\max(P_{\text{marginal}} - 0.002, 0.001)$ 发送 FOK，确保 100% 一次性吃满；
+* **本地网格 5.0s 严格防陈旧守门**：本地快照超过 5.0s 自动降级至 REST 深度拉取；
+* **10s 均值回归弹性缓冲**：若穿透估损 $> 5\%$ 且未曾延期过，自动给予一次性 10 秒弹性缓冲；
+* **FOK + GTC 双重止损兜底**：强平前先撤二腿挂单，随后发送市价 FOK 平仓；若 FOK 快速确认未成交，自动以 `GTC @ 0.001` 紧急挂单兜底，杜绝单边遗弃。
 
 ---
 
@@ -181,11 +184,11 @@ flowchart TD
 ```mermaid
 graph TD
     A[单边持仓触发自适应强平] --> B[撤销二腿未成交挂单]
-    B --> C[穿透本地盘口网格深度计算 Bid VWAP 均价]
-    C --> D[发送市价 FOK 平仓单]
+    B --> C["穿透买盘深度计算 Bid VWAP 均价与边际价 P_marginal"]
+    C --> D["发送市价 FOK 平仓单 (限价: P_marginal - 0.002)"]
     
     D -->|✅ 平仓成功| E["生成平仓卖出明细: LegPosition(side='SELL', cost=VWAP)"]
-    E --> F["核算 Realized PnL = (close_price - leg1_cost) * size - fees"]
+    E --> F["核算 Realized PnL = (VWAP - leg1_cost) * size - fees"]
     
     D -->|❌ 平仓失败/临期锁定| G[自动捕获到期最终结算价 settlement_price (1.0 或 0.0)]
     G --> H["核算 Settled PnL = (settlement_price - leg1_cost) * size - entry_fee"]
