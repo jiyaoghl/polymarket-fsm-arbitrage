@@ -11,6 +11,7 @@ L2 盘口深度快照录包守护进程 (L2 Snapshot Recorder Daemon)。
 import gzip
 import json
 import os
+import shutil
 import threading
 import time
 from datetime import datetime, timedelta
