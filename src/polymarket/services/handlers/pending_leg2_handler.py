@@ -190,21 +190,30 @@ class PendingLeg2TickHandler(BaseTickHandler):
                             entry_max_price=max_allowed_buy_price,
                             spread=opp_spread
                         )
-                        
                         if should_repeg and new_target > cur_buy_price:
                             safe_new_price, _ = OrderExecutionService.sanitize_order_params(new_target, new_target * leg1.size)
                             if safe_new_price > cur_buy_price and safe_new_price <= max_allowed_buy_price:
+                                old_p = float(cur_buy_price)
                                 if params.is_live and buy_id:
-                                    await deps.client.cancel_order_async(buy_id)
-                                    new_order = await deps.client.post_order_async(str(opp_token), safe_new_price, leg1.size, "BUY", "GTC")
-                                    if new_order and new_order.get("status") not in ("ERROR", None):
-                                        buy_info["price"] = safe_new_price
-                                        buy_info["order_id"] = new_order.get("orderID") or new_order.get("order_id")
-                                        ctx.last_reprice_time = now_ts
-                                        deps.set_trade(market_id, ctx.to_dict())
+                                    try:
+                                        await deps.client.cancel_order_async(buy_id)
+                                        new_order = await deps.client.post_order_async(str(opp_token), safe_new_price, leg1.size, "BUY", "GTC")
+                                        if new_order and new_order.get("status") not in ("ERROR", None):
+                                            buy_info["price"] = safe_new_price
+                                            buy_info["order_id"] = new_order.get("orderID") or new_order.get("order_id")
+                                            ctx.record_reprice(old_p, safe_new_price, reason=f"MakerPegging: {reason}", token=str(opp_token), timestamp=now_ts)
+                                            deps.set_trade(market_id, ctx.to_dict())
+                                        else:
+                                            # 发新单失败，尝试以原价格紧急补回对冲挂单，防止敞口裸奔
+                                            logger.critical(f"[{params.strategy_id}] 实盘追单挂单失败，启动保底重新挂单 @ {old_p}")
+                                            fallback = await deps.client.post_order_async(str(opp_token), old_p, leg1.size, "BUY", "GTC")
+                                            if fallback and fallback.get("status") not in ("ERROR", None):
+                                                buy_info["order_id"] = fallback.get("orderID") or fallback.get("order_id")
+                                    except Exception as ex:
+                                        logger.error(f"[{params.strategy_id}] 实盘二腿追单改单异常: {ex}")
                                 elif not params.is_live:
                                     buy_info["price"] = safe_new_price
-                                    ctx.last_reprice_time = now_ts
+                                    ctx.record_reprice(old_p, safe_new_price, reason=f"MakerPegging: {reason}", token=str(opp_token), timestamp=now_ts)
                                     deps.set_trade(market_id, ctx.to_dict())
 
             return
@@ -294,15 +303,24 @@ class PendingLeg2TickHandler(BaseTickHandler):
 
                     safe_new_price, _ = OrderExecutionService.sanitize_order_params(target_reprice, target_reprice * leg1.size)
                     if abs(safe_new_price - leg2.cost) >= 0.003 and safe_new_price >= leg1.cost * 0.95:
+                        old_p = float(leg2.cost)
                         if params.is_live:
-                            await deps.client.cancel_order_async(ctx.leg2_order_id)
-                            new_order = await deps.client.post_order_async(str(leg2.token), safe_new_price, leg1.size, "SELL", "GTC")
-                            if new_order and new_order.get("status") not in ("ERROR", None):
-                                ctx.leg2.cost = safe_new_price
-                                ctx.leg2_order_id = new_order.get("orderID") or new_order.get("order_id")
-                                ctx.last_reprice_time = now_ts
-                                deps.set_trade(market_id, ctx.to_dict())
+                            try:
+                                await deps.client.cancel_order_async(ctx.leg2_order_id)
+                                new_order = await deps.client.post_order_async(str(leg2.token), safe_new_price, leg1.size, "SELL", "GTC")
+                                if new_order and new_order.get("status") not in ("ERROR", None):
+                                    ctx.leg2.cost = safe_new_price
+                                    ctx.leg2_order_id = new_order.get("orderID") or new_order.get("order_id")
+                                    ctx.record_reprice(old_p, safe_new_price, reason=f"LadderReprice (TTL: {time_to_exp:.0f}s)", token=str(leg2.token), timestamp=now_ts)
+                                    deps.set_trade(market_id, ctx.to_dict())
+                                else:
+                                    logger.warning(f"[{params.strategy_id}] 做T改单挂单失败，尝试保底重发 @ {old_p}")
+                                    fallback = await deps.client.post_order_async(str(leg2.token), old_p, leg1.size, "SELL", "GTC")
+                                    if fallback and fallback.get("status") not in ("ERROR", None):
+                                        ctx.leg2_order_id = fallback.get("orderID") or fallback.get("order_id")
+                            except Exception as ex:
+                                logger.error(f"[{params.strategy_id}] 做T阶梯改单异常: {ex}")
                         else:
                             ctx.leg2.cost = safe_new_price
-                            ctx.last_reprice_time = now_ts
+                            ctx.record_reprice(old_p, safe_new_price, reason=f"LadderReprice (TTL: {time_to_exp:.0f}s)", token=str(leg2.token), timestamp=now_ts)
                             deps.set_trade(market_id, ctx.to_dict())

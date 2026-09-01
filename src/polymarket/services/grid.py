@@ -324,8 +324,9 @@ class OrderbookMemoryGrid:
         return purged
 
     def _maybe_gc(self, now_ts: float) -> None:
-        """定期触发垃圾回收（每 5 分钟检查一次）"""
-        if now_ts - self._last_gc_ts > 300.0:
+        """定期触发垃圾回收（每 3 分钟检查一次）"""
+        if now_ts - self._last_gc_ts > 180.0:
             self._last_gc_ts = now_ts
-            if len(self._books) > 50:
-                self.purge_stale_tokens(ttl_seconds=900.0)
+            if len(self._books) > 20:
+                self.purge_stale_tokens(ttl_seconds=600.0)
+

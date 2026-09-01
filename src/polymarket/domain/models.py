@@ -70,6 +70,8 @@ class TradeContext:
     dynamic_ttl: Optional[float] = None
     dynamic_flip_timeout: Optional[float] = None
     last_reprice_time: Optional[float] = None
+    reprice_count: int = 0
+    reprice_history: List[Dict[str, Any]] = field(default_factory=list)
     filter_reason: Optional[str] = None
     exit_mode: str = "smart_flip"  # smart_flip | pair_only
     exit_stage: str = "init"       # init | flip_active | hedge_fallback | settled
@@ -82,6 +84,20 @@ class TradeContext:
             "state": state,
             "description": description
         })
+
+    def record_reprice(self, old_price: float, new_price: float, reason: str, token: str = "", timestamp: Optional[float] = None):
+        """结构化记录二腿追单改价轨迹"""
+        self.reprice_count += 1
+        ts = timestamp if timestamp is not None else time.time()
+        self.last_reprice_time = ts
+        self.reprice_history.append({
+            "timestamp": ts,
+            "old_price": round(old_price, 4),
+            "new_price": round(new_price, 4),
+            "reason": reason,
+            "token": str(token)
+        })
+
 
     def to_dict(self) -> Dict[str, Any]:
         """向后兼容转换为旧版字典结构，供 Dashboard 和 DB 存储无缝读取"""
@@ -114,6 +130,8 @@ class TradeContext:
             "dynamic_ttl": self.dynamic_ttl,
             "dynamic_flip_timeout": self.dynamic_flip_timeout,
             "last_reprice_time": self.last_reprice_time,
+            "reprice_count": self.reprice_count,
+            "reprice_history": self.reprice_history,
             "filter_reason": self.filter_reason,
             "exit_mode": self.exit_mode,
             "exit_stage": self.exit_stage,
@@ -148,10 +166,13 @@ class TradeContext:
             dynamic_ttl=data.get("dynamic_ttl"),
             dynamic_flip_timeout=data.get("dynamic_flip_timeout"),
             last_reprice_time=data.get("last_reprice_time"),
+            reprice_count=int(data.get("reprice_count", 0)),
+            reprice_history=data.get("reprice_history", []),
             filter_reason=data.get("filter_reason"),
             exit_mode=data.get("exit_mode", "smart_flip"),
             exit_stage=data.get("exit_stage", "init"),
             events=data.get("events", [])
         )
         return ctx
+
 
