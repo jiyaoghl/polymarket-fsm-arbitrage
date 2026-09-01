@@ -170,11 +170,15 @@ python -m polymarket.apps.dashboard
 # 自动执行【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】
 python scripts/vps_ops.py release "feat: 中文提交说明"
 
-# 常用运维指令
+# 常用运维与量化标定指令
 python scripts/vps_ops.py status         # 查看远程 VPS 运行大盘、各策略盈亏与延迟快照
 python scripts/vps_ops.py logs -n 50     # 查看远程 VPS 实时业务与风控日志流
 python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与出场路径透视表
 python scripts/vps_ops.py sync-snapshots # 从 VPS 同步真实 L2 盘口快照到本地 vps-logs/snapshots/
+
+# 离线高保真参数标定与 Optuna 贝叶斯寻优 (纯离线零网络开销)
+python scripts/calibrate_params.py --mode optuna --trials 150 # 运行 150 轮连续贝叶斯寻优并产出报告
+python scripts/calibrate_params.py --mode grid                 # 运行 8 维网格参数搜索
 ```
 
 启动成功后，在浏览器中访问 `http://<你的IP>:8888` 即可进入实时量化大盘。
