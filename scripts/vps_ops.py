@@ -401,6 +401,58 @@ def cmd_inspect(args):
             print(f"  [{ts}] {rp.get('old_price')} -> {rp.get('new_price')} ({rp.get('reason')})")
 
 
+def cmd_sync_snapshots(args):
+    """从 VPS 拉取 L2 盘口快照文件到本地 vps-logs/snapshots/。"""
+    days = getattr(args, "days", 1)
+    print_header(f"VPS L2 快照同步 (最近 {days} 天)")
+
+    # 1. 列出远端可用文件
+    data = _get(f"/api/snapshots/list?days={days}")
+    if not data:
+        print(f"{RED}[-] 无法连接到 VPS 或快照列表为空{RESET}")
+        return
+
+    files = data.get("files", [])
+    total_mb = data.get("total_size_mb", 0)
+    if not files:
+        print(f"{YELLOW}[*] VPS 上没有最近 {days} 天的快照文件。录包守护进程可能尚未启动。{RESET}")
+        return
+
+    print(f"{GREEN}[+] 发现 {len(files)} 个快照文件，总计 {total_mb:.2f} MB{RESET}")
+
+    # 2. 确保本地目录存在
+    local_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vps-logs", "snapshots")
+    os.makedirs(local_dir, exist_ok=True)
+
+    # 3. 逐个下载
+    downloaded = 0
+    skipped = 0
+    for finfo in files:
+        fname = finfo["name"]
+        remote_size = finfo["size"]
+        local_path = os.path.join(local_dir, fname)
+
+        # 跳过已存在且大小一致的文件
+        if os.path.exists(local_path) and os.path.getsize(local_path) == remote_size:
+            skipped += 1
+            continue
+
+        url = f"{DEFAULT_VPS_HOST.rstrip('/')}/api/snapshots/download/{fname}"
+        try:
+            r = requests.get(url, timeout=30, stream=True)
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            downloaded += 1
+            print(f"  {GREEN}↓{RESET} {fname} ({remote_size / 1024:.1f} KB)")
+        except Exception as e:
+            print(f"  {RED}✗{RESET} {fname} 下载失败: {e}")
+
+    print(f"\n{GREEN}[+] 同步完成：下载 {downloaded} 个，跳过 {skipped} 个 (已存在){RESET}")
+    print(f"[*] 本地路径: {local_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket VPS 敏捷运维与闭环分析 CLI")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
@@ -439,6 +491,11 @@ def main():
     p_release.add_argument("message", type=str, help="Git 提交信息 (全中文)")
     p_release.add_argument("--no-deploy", action="store_true", help="仅推送仓库，不触发远程 VPS 热更")
     p_release.set_defaults(func=cmd_release)
+
+    # sync-snapshots
+    p_sync = subparsers.add_parser("sync-snapshots", help="从 VPS 拉取 L2 盘口快照到本地 vps-logs/snapshots/")
+    p_sync.add_argument("--days", type=int, default=1, help="拉取最近 N 天的快照 (默认: 1)")
+    p_sync.set_defaults(func=cmd_sync_snapshots)
 
     args = parser.parse_args()
     if not args.command:

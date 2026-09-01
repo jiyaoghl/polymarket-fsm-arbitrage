@@ -31,6 +31,13 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         pass
 
+    # 启动 L2 盘口深度快照录包守护进程 (阶段 3: 真实 L2 录包)
+    try:
+        from polymarket.services.l2_recorder import L2SnapshotRecorder
+        L2SnapshotRecorder.get_instance().start()
+    except Exception as e:
+        pass
+
     yield
 
 
@@ -634,6 +641,41 @@ def remote_clean_history() -> Dict[str, Any]:
         "message": "已成功清理所有历史交易与订单数据，VPS 正在重新加载服务...",
         "timestamp": time.time()
     }
+
+
+@app.get("/api/snapshots/list")
+def list_snapshots(days: int = 1) -> Dict[str, Any]:
+    """列出最近 N 天内的 L2 快照文件（用于 sync-snapshots 拉取）。"""
+    from polymarket.config import SNAPSHOT_DIR
+    from datetime import datetime, timedelta
+    snapshot_dir = Path(SNAPSHOT_DIR)
+    if not snapshot_dir.exists():
+        return {"files": [], "total_size_mb": 0}
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d_%H")
+    files = []
+    total_size = 0
+    for f in sorted(snapshot_dir.glob("*.jsonl.gz")):
+        if f.stem >= cutoff:
+            sz = f.stat().st_size
+            files.append({"name": f.name, "size": sz})
+            total_size += sz
+    return {"files": files, "total_size_mb": round(total_size / 1024 / 1024, 2)}
+
+
+@app.get("/api/snapshots/download/{filename}")
+def download_snapshot(filename: str):
+    """下载单个快照文件（流式传输 gzip 文件）。"""
+    from fastapi.responses import FileResponse
+    from polymarket.config import SNAPSHOT_DIR
+    filepath = Path(SNAPSHOT_DIR) / filename
+    if not filepath.exists() or not filepath.name.endswith(".jsonl.gz"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    return FileResponse(
+        path=str(filepath),
+        filename=filename,
+        media_type="application/gzip"
+    )
 
 
 if __name__ == "__main__":

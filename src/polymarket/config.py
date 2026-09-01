@@ -148,4 +148,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 DISCORD_ADMIN_IDS = [x.strip() for x in os.getenv("DISCORD_ADMIN_IDS", "").split(",") if x.strip()]
 DISCORD_COMMAND_PREFIX = os.getenv("DISCORD_COMMAND_PREFIX", "!").strip() or "!"
 
-
+# L2 盘口快照录包配置 (阶段 3: 真实 L2 录包与离线参数标定)
+SNAPSHOT_ENABLED = os.getenv("SNAPSHOT_ENABLED", "true").lower() in ("true", "1")
+SNAPSHOT_INTERVAL_SEC = float(os.getenv("SNAPSHOT_INTERVAL_SEC", "1.0"))       # 采样频率：1 帧/秒
+SNAPSHOT_RETENTION_DAYS = int(os.getenv("SNAPSHOT_RETENTION_DAYS", "7"))        # 保留最近 7 天
+SNAPSHOT_DIR = str(paths.data_dir() / "snapshots")
