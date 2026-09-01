@@ -372,8 +372,12 @@ if HAS_DISCORD_LIB and discord is not None:
             for s in status_model.strategies:
                 trades.extend(s.active_trades)
                 
-            trades.sort(key=lambda t: t.end_time or 0, reverse=True)
-            valid_trades = [t for t in trades if t.status != "pending"][:25]
+            def get_attr(obj, k, d=None):
+                if isinstance(obj, dict): return obj.get(k, d)
+                return getattr(obj, k, d)
+                
+            trades.sort(key=lambda t: get_attr(t, 'end_time') or 0, reverse=True)
+            valid_trades = [t for t in trades if get_attr(t, 'status') != "pending"][:25]
             
             if not valid_trades:
                 await interaction.response.send_message("⏳ 当前没有任何有效的订单记录可供透视。", ephemeral=True)
@@ -381,16 +385,17 @@ if HAS_DISCORD_LIB and discord is not None:
 
             options = []
             for t in valid_trades:
-                asset = t.asset or "UNKNOWN"
-                status = t.status.upper()
-                pnl = t.profit_usdc
+                asset = get_attr(t, 'asset') or "UNKNOWN"
+                status = str(get_attr(t, 'status', '')).upper()
+                pnl = get_attr(t, 'profit_usdc')
                 pnl_str = f" [${pnl:.3f}]" if pnl is not None else ""
                 label = f"{asset} | {status}{pnl_str}"
-                desc = f"ID: {t.market_id[:20]} | Strat: {t.strategy_id}"[:100]
+                market_id = get_attr(t, 'market_id', '')
+                desc = f"ID: {market_id[:20]} | Strat: {get_attr(t, 'strategy_id')}"[:100]
                 options.append(discord.SelectOption(
                     label=label[:100],
                     description=desc,
-                    value=t.market_id
+                    value=market_id
                 ))
 
             class InspectorSelect(discord.ui.Select):
