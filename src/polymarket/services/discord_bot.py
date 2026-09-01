@@ -416,8 +416,8 @@ if HAS_DISCORD_LIB and discord is not None:
                     try:
                         detail = get_trade_detail(market_id)
                         if isinstance(detail, dict) and "error" in detail:
-                            await inter.response.defer(ephemeral=True)
-                    await inter.followup.send(f"❌ {detail['error']}", ephemeral=True)
+                            if not inter.response.is_done(): await inter.response.defer(ephemeral=True)
+                            await inter.followup.send(f"❌ {detail['error']}", ephemeral=True)
                             return
                         
                         embed = discord.Embed(
@@ -458,11 +458,11 @@ if HAS_DISCORD_LIB and discord is not None:
                                 rp_str += f"`[{ts}]` {_get(rp, 'old_price')} -> **{_get(rp, 'new_price')}** ({_get(rp, 'reason')})\n"
                             embed.add_field(name=f"改价轨迹 (共 {len(reprice)} 次)", value=rp_str[:1024], inline=False)
                             
-                        await inter.response.defer(ephemeral=True)
-                    await inter.followup.send(embed=embed, ephemeral=True)
+                        if not inter.response.is_done(): await inter.response.defer(ephemeral=True)
+                        await inter.followup.send(embed=embed, ephemeral=True)
                     except Exception as e:
-                        await inter.response.defer(ephemeral=True)
-                    await inter.followup.send(f"❌ 透视失败: {e}", ephemeral=True)
+                        if not inter.response.is_done(): await inter.response.defer(ephemeral=True)
+                        await inter.followup.send(f"❌ 透视失败: {e}", ephemeral=True)
 
             class InspectorView(discord.ui.View):
                 def __init__(self):
@@ -604,7 +604,7 @@ if HAS_DISCORD_LIB and discord is not None:
                             # 手动熔断 2 小时
                             rm._strategy_cooldown_until[sid] = now + 7200
                             msg = f"⛔ 已为您强制熔断策略 `{sid}` 2 小时！"
-                    await inter.response.defer(ephemeral=True)
+                    if not inter.response.is_done(): await inter.response.defer(ephemeral=True)
                     await inter.followup.send(msg, ephemeral=True)
                     
             class CBView(discord.ui.View):
