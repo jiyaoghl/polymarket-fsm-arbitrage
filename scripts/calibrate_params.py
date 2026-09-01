@@ -215,6 +215,10 @@ class MultiMarketSimulator:
         return res
 
 
+# 向后兼容别名
+MathSandbox = MultiMarketSimulator
+
+
 class OptunaOptimizer:
     """基于 Optuna TPE 贝叶斯采样器的连续参数标定器"""
 

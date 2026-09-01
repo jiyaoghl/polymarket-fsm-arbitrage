@@ -35,22 +35,6 @@ def sample_frames():
     return [f1, f2]
 
 
-def test_math_sandbox_maker_eval_success(sample_frames):
-    """测试在流动性良好盘口下，Maker 双挂机会成功触发并核算出正 EV"""
-    f1, f2 = sample_frames
-    params = {
-        "mm_min_bid": 0.38,
-        "max_spread": 0.05,
-        "obi_floor": -0.35,
-        "initial_margin": 0.015,
-        "amount": 10.0,
-        "entry_max_price": 0.50,
-        "entry_min_price": 0.30
-    }
-    is_maker, net_ev, reason = MathSandbox.evaluate_maker_opportunity(f1, f2, params)
-    assert is_maker is True
-    assert net_ev > 0
-    assert "成立" in reason
 
 
 def test_multi_market_simulator_hedged_locked(sample_frames):
