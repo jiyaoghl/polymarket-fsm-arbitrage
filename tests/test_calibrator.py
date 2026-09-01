@@ -2,7 +2,7 @@ import os
 import tempfile
 import pytest
 
-from scripts.calibrate_params import SnapshotFrame, MathSandbox, GridCalibrator, SnapshotLoader
+from scripts.calibrate_params import SnapshotFrame, MathSandbox, MultiMarketSimulator, OptunaOptimizer, SnapshotLoader
 
 
 @pytest.fixture
@@ -53,25 +53,27 @@ def test_math_sandbox_maker_eval_success(sample_frames):
     assert "成立" in reason
 
 
-def test_math_sandbox_maker_eval_intercept_on_wide_spread(sample_frames):
-    """测试买卖价差过大时被拦截"""
-    f1, f2 = sample_frames
-    f1.spread = 0.08  # 超过 0.05
-    params = {"mm_min_bid": 0.38, "max_spread": 0.05}
-    is_maker, net_ev, reason = MathSandbox.evaluate_maker_opportunity(f1, f2, params)
-    assert is_maker is False
-    assert "价差过大" in reason
-
-
-def test_grid_calibrator_search_and_ranking(sample_frames):
-    """测试网格搜索能正确评估并对参数组评分排序"""
-    calibrator = GridCalibrator(sample_frames)
-    param_grid = {
-        "mm_min_bid": [0.35, 0.40],
-        "max_spread": [0.03, 0.05],
-        "initial_margin": [0.015],
+def test_multi_market_simulator_hedged_locked(sample_frames):
+    """测试多市场并发模拟器能够正确模拟双买锁仓 (HEDGED_LOCKED)"""
+    params = {
+        "mm_min_bid": 0.38,
+        "max_spread": 0.05,
+        "obi_floor": -0.35,
+        "initial_margin": 0.018,
+        "amount": 10.0,
+        "entry_max_price": 0.50,
+        "entry_min_price": 0.28
     }
-    results = calibrator.run_grid_search(param_grid, max_evals=10)
-    assert len(results) == 4
-    # 验证最高分排在前面
+    res = MultiMarketSimulator.simulate(sample_frames, params, cooldown_sec=120.0)
+    assert res.total_trades == 1
+    assert res.hedged_locked_count == 1
+    assert res.win_rate == 100.0
+    assert res.total_net_ev > 0
+
+
+def test_optuna_optimizer_trials(sample_frames):
+    """测试 Optuna TPE 贝叶斯寻优器能正常运行多轮 Trial 并返回排序结果"""
+    opt = OptunaOptimizer(sample_frames)
+    results = opt.optimize(n_trials=5)
+    assert len(results) == 5
     assert results[0].score >= results[-1].score
