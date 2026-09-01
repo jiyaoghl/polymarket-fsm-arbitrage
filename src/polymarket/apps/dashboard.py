@@ -209,33 +209,13 @@ def api_status() -> DashboardStatusModel:
             if (has_no_leg1 and is_inactive and not trade.get("filter_reason")) or is_expired:
                 continue
                 
-            profit_usdc = float(trade.get("profit_usdc", 0.0))
-            gross_usdc = float(trade.get("gross_profit_usdc", 0.0))
-            fee_usdc = float(trade.get("fee_usdc", 0.0))
+            # 优先提取结构化交易中记录的净损益与手续费
+            profit_usdc = float(trade.get("profit_usdc") if trade.get("profit_usdc") is not None else (trade.get("ev") or 0.0))
+            gross_usdc = float(trade.get("gross_profit_usdc") if trade.get("gross_profit_usdc") is not None else profit_usdc)
+            fee_usdc = float(trade.get("fee_usdc", 0.0) or 0.0)
             dynamic_ttl = trade.get("dynamic_ttl")
             leg1 = trade.get("leg1")
             leg2 = trade.get("leg2")
-            if (gross_usdc == 0.0 or fee_usdc == 0.0 or profit_usdc == 0.0) and isinstance(leg1, dict) and isinstance(leg2, dict):
-                try:
-                    c1 = float(leg1.get("cost", 0.0))
-                    s1 = float(leg1.get("size", 0.0))
-                    c2 = float(leg2.get("cost", 0.0))
-                    s2 = float(leg2.get("size", 0.0))
-                    if s1 > 0 and s2 > 0:
-                        from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-                        leg1_type = getattr(bot, "leg1_order_type", "FOK")
-                        leg2_type = getattr(bot, "leg2_order_type", "GTC")
-                        fee1 = c1 * s1 * (TAKER_FEE_RATE if leg1_type == "FOK" else MAKER_FEE_RATE)
-                        fee2 = c2 * s2 * (TAKER_FEE_RATE if leg2_type == "FOK" else MAKER_FEE_RATE)
-                        gross_usdc = s1 - (c1 * s1 + c2 * s2)
-                        fee_usdc = fee1 + fee2
-                        profit_usdc = gross_usdc - fee_usdc
-                        trade["gross_profit_usdc"] = round(gross_usdc, 4)
-                        trade["fee_usdc"] = round(fee_usdc, 4)
-                        trade["profit_usdc"] = round(profit_usdc, 4)
-                except Exception as e:
-                    import logging
-                    logging.warning(f"Failed to calc EV: {e}")
                     
             active_trades.append(
                 TradeModel(
@@ -283,25 +263,10 @@ def api_status() -> DashboardStatusModel:
                 h_leg2 = trade.get("leg2")
                 if status_str == "failed" or (not h_leg1 and not h_leg2):
                     continue
-                h_gross = float(trade.get("gross_profit_usdc", 0.0))
-                h_fee = float(trade.get("fee_usdc", 0.0))
-                if (h_gross == 0.0 or h_fee == 0.0) and isinstance(h_leg1, dict) and isinstance(h_leg2, dict):
-                    try:
-                        c1 = float(h_leg1.get("cost", 0.0))
-                        s1 = float(h_leg1.get("size", 0.0))
-                        c2 = float(h_leg2.get("cost", 0.0))
-                        s2 = float(h_leg2.get("size", 0.0))
-                        if s1 > 0 and s2 > 0:
-                            from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-                            leg1_type = getattr(bot, "leg1_order_type", "FOK")
-                            leg2_type = getattr(bot, "leg2_order_type", "GTC")
-                            fee1 = c1 * s1 * (TAKER_FEE_RATE if leg1_type == "FOK" else MAKER_FEE_RATE)
-                            fee2 = c2 * s2 * (TAKER_FEE_RATE if leg2_type == "FOK" else MAKER_FEE_RATE)
-                            h_gross = s1 - (c1 * s1 + c2 * s2)
-                            h_fee = fee1 + fee2
-                            profit_usdc = h_gross - h_fee
-                    except Exception:
-                        pass
+                # 优先提取数据库/快照中已准确核算的权威净损益与手续费
+                profit_usdc = float(trade.get("profit_usdc") if trade.get("profit_usdc") is not None else (row.get("ev") or 0.0))
+                h_gross = float(trade.get("gross_profit_usdc") if trade.get("gross_profit_usdc") is not None else profit_usdc)
+                h_fee = float(trade.get("fee_usdc", 0.0) or 0.0)
                         
                 active_trades.append(
                     TradeModel(
