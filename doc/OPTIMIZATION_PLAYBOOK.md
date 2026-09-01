@@ -108,16 +108,33 @@ python scripts/vps_ops.py release "<中文提交>"  # 自动化全量测试 -> �
 
 ### 阶段 C（已完成 ✅）— 工程健康度与架构解耦
 - [x] **统一依赖管理**：以 `pyproject.toml` 为单一依赖源；
-- [x] **主亏损路径与改单测试补齐**：全量 **183 项单测 100% 绿灯覆盖**；
+- [x] **主亏损路径与改单测试补齐**：全量 **184 项单测 100% 绿灯覆盖**；
 - [x] **合并清理 Notifier**：废除三套分散实现，统一合并至 `polymarket.services.notifier`；
 - [x] **清理 `manager.py` 重复代码**：移除重复定义；
 - [x] **拆分 `apps/dashboard.py`**：提取 `templates/dashboard.html` 独立前端模板；
 - [x] **K 线拉取后台守护化**：`KlineRefresherDaemon` 纯内存零阻塞读取；
-- [x] **内存网格自适应 GC**：`OrderbookMemoryGrid` 定期自动清理过期快照。
+- [x] **内存网格自适应 GC**：`OrderbookMemoryGrid` 定期自动清理过期快照；
+- [x] **全视图盈亏绝对对齐**：修复 Web 大盘与 Discord 中 0 费率及做 T 订单重算失真，100% 对齐 SQLite 权威账本。
 
 ---
 
-## 5. 明确不做清单 (Explicit Non-Goals)
+## 5. 长效持续演进五维体系 (Long-Term Evolution Framework)
+
+1. **策略范式跃迁 (Maker First)**：
+   - 重点倾斜资源与资金至 **0 手续费、100% 实盘胜率的 Maker-Maker** 做市策略；
+   - Taker-Maker 严格聚焦于超跌或大净 EV 捕捉，放弃薄利吃单以消除双边手续费磨损。
+2. **阶梯式做 T 降价脱手 (Smart Flip Ladder)**：
+   - 首腿成交后按持有时间阶梯式动态让价高抛（溢价 -> 平价 -> 保本 -> 微亏抢跑），优先通过做 T 脱手保全本金，杜绝超时市价强平。
+3. **真实盘口离线网格标定 (Offline Calibration)**：
+   - 归档 VPS 真实 L2 快照，以“扣费净 EV 最大化”为目标函数离线标定入场参数。
+4. **资金梯度与链上 CTF 自动赎回 (Capital Scaling)**：
+   - 从 3U/5U 演练梯度放宽至 10U/20U，结合 `OnChainRedeemer` 实现 24/7 链上自动结算资金回流。
+5. **工程纪律与极速交付 (Agile Dev-Ops)**：
+   - 坚持 VPS 单一真理源，本地 184+ 项单测全绿，敏捷流水线秒级热更。
+
+---
+
+## 6. 明确不做清单 (Explicit Non-Goals)
 
 1. ❌ **严禁在本地开发机进行策略盈亏统计、胜率归因或延迟评估**；
 2. ❌ **严禁为了提高开仓频率而随意放宽入场四重守门（15s 静默/价差/深度/OBI）**；
@@ -128,11 +145,11 @@ python scripts/vps_ops.py release "<中文提交>"  # 自动化全量测试 -> �
 
 ---
 
-## 6. Agent 执行铁律与协作准则
+## 7. Agent 执行铁律与协作准则
 
 1. **先查 VPS，后做决策**：需要数据时一律先跑 `python scripts/vps_ops.py status / logs / analyze`，严禁打开本地 `trading.db` 或 `logs/` 做推论；
 2. **一次变更只服务一个核心目标**：每次改动清晰说明预期影响的北极星指标；
 3. **策略调参只改 `configs/strategies.json`**：严禁在代码中写死魔法数；
-4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 174+ 项测试 100% 绿灯；
+4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 184+ 项测试 100% 绿灯；
 5. **规范化流水线交付**：代码提交必须使用中文 Commit Message，并统一通过 `python scripts/vps_ops.py release "<中文提交>"` 触发 VPS 秒级热更新；
 6. **调参或复盘后及时同步基线**：在 `OPTIMIZATION_PLAYBOOK.md` 中更新最新日期与量化成果。

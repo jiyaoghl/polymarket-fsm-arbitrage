@@ -139,9 +139,9 @@ flowchart TD
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.40** | dual_exit OCO | **极小额演练观察 (3U)**，严苛入场门槛，高保利安全空间 | 🟢 活跃模拟 |
 | `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.42** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 | 🟢 活跃模拟 |
-| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，快速捕捉盘口微小价差 | 🟢 活跃模拟 |
-| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **极小额做市观察 (3U)**，严苛盘口成熟度守门 (买一 $\ge 0.38$) | 🟢 活跃模拟 |
-| `maker_maker_standard` | 挂单 + 挂单 | - | - | 避免单边行情接飞刀失血，资源让渡给 Taker-Maker | ⏹️ **已停用下线** |
+| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，严格扣费净 EV 守门 | 🟢 活跃模拟 |
+| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **零手续费做市 (3U/5U)**，100% 实盘胜率，双边买一 $\ge 0.38$ 守门 | 🟢 活跃模拟 |
+| `maker_maker_standard` | 挂单 + 挂单 | - | - | 避免单边行情接飞刀失血，资源让渡给稳健做市 | ⏹️ **已停用下线** |
 
 ---
 
@@ -156,24 +156,24 @@ pip install -r requirements.txt
 cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
-# 3. 运行自动化单元测试套件 (170 项测试 100% 绿灯通过)
-python -m pytest tests/
+# 3. 运行自动化单元测试套件 (184 项测试 100% 绿灯通过)
+pytest -s tests/
 
 # 4. 启动 Dashboard 仪表盘
 python -m polymarket.apps.dashboard
 ```
 
 ### 2. 敏捷发布流水线 (Agile Release Pipeline)
-本地开发调试完毕并通过 170 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
+本地开发调试完毕并通过 184 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
 
 ```bash
 # 自动执行【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】
 python scripts/vps_ops.py release "feat: 中文提交说明"
 
 # 常用运维指令
-python scripts/vps_ops.py status         # 查看远程 VPS 运行大盘与各策略盈亏
-python scripts/vps_ops.py logs -n 50     # 查看远程 VPS 实时运行日志流
-python scripts/vps_ops.py analyze        # 查看远程诊断与归因分析报告
+python scripts/vps_ops.py status         # 查看远程 VPS 运行大盘、各策略盈亏与延迟快照
+python scripts/vps_ops.py logs -n 50     # 查看远程 VPS 实时业务与风控日志流
+python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与出场路径透视表
 ```
 
 启动成功后，在浏览器中访问 `http://<你的IP>:8888` 即可进入实时量化大盘。

@@ -38,14 +38,14 @@
 ---
 
 ## 3. 策略模型与微观执行 (Strategy & Execution Engine)
-- **全面聚焦 Taker-Maker 净 EV 套利**：
-  - 核心算力与资金倾注于 `Taker-Maker`（吃一挂二）全盘口净 EV 驱动套利（VPS 实盘验证具备 100% 胜率），彻底放弃纯双边吃单（Taker-Taker）。
-  - 双边做市（Maker-Maker）必须具备极严苛的盘口成熟度守门（双边买一 $\ge 0.35$），防止在 5min 盘口单边行情中接飞刀失血。
-- **买盘 VWAP 订单簿深度加权平仓**：
-  - 单边持仓强平市价 FOK 平仓时，必须调用 `PricingEngine.calculate_bid_vwap` 穿透买盘深度逐档加权核算均价，杜绝仅按买一价估算导致的流动性穿透亏损。
+- **Maker-Maker 零手续费做市与 Taker 净 EV 严格守门双引擎**：
+  - **Maker-Maker (双边挂单)**：VPS 实盘验证具备 100% 胜率与 0 手续费磨损，作为系统主盈利引擎，严格施加双边买一 $\ge 0.35$ 盘口成熟度守门。
+  - **Taker-Maker (吃一挂二)**：首腿入场必须严格扣除双边真实手续费且净利差 $\text{Net EV} \ge \$0.005$，并施加 $(P_{\text{leg1}} + P_{\text{opp\_bid}}) \le 1.0$ 防倒挂保护；彻底放弃薄利润吃单。
+  - **二腿追单保利天花板**：最高买入价动态钳制在 $P_{\text{max}} = 1.0 - \text{cost} - \text{fees} - \text{breakeven\_margin}$，严禁向上盲目让价。
+- **做 T 优先于超时强平 (Smart Flip Priority)**：
+  - 单边持仓建立后，优先坚守 OCO 保利高抛变现；超时强平时调用 `PricingEngine.calculate_bid_vwap` 穿透买盘深度逐档加权核算均价。
 - **防恶意插针与一分钱互卷 (Anti-Pennying)**：
-  - Maker 挂单跟单严禁无脑 `+0.001` 互卷。必须结合“随机装死迟滞 (1.5~3.5s)”与“阶梯式跃迁 (0.002~0.004)”反卷。
-  - 入场前提取 Orderbook 深网计算 OBI，遇到极端单边压迫主动拦截入场。
+  - Maker 挂单跟单严禁无脑 `+0.001` 互卷。必须结合“价差自适应迟滞 (1.5~3.0s)”与“阶梯式跃迁 (0.002~0.005)”反卷。
 
 ---
 
@@ -77,8 +77,8 @@
   - 自动结算废除向 CLOB 发送 REST 请求的失效路径，统一由 `OnChainRedeemer` 直接向 Polygon 主网 `ConditionalTokens` 官方合约（`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`）调用 `redeemPositions`。
 - **多 RPC 节点故障转移与 35 Gwei 保底**：
   - 链上通信严禁依赖单一 RPC，必须构建候选列表（`[RPC_URL, polygon-rpc.com, 1rpc.io/matic, tenderly, ankr]`）并在遇到 403 或超时时自动无缝轮换；发交易施加 `max(int(gas_price * 1.25), 35_000_000_000)` 最低 Gas 保底防广播拦截。
-- **真实损益闭环与额度归还**：
-  - 强平、做 T 或锁仓结算后必须精确核算扣除双方真实手续费后的净损益 `realized_pnl` / `profit_usdc`，严禁在账本中记录 `$0.0000` 造成失真；赎回后必须无条件流转 `SETTLED` 并 100% 归还风控预扣额度。
+- **三种出场路径真实损益闭环**：
+  - 严格区分三种出场形态：`HEDGED_LOCKED`（双买锁仓）、`DUAL_EXIT_SELL_SETTLED`（买卖做 T 变现）、`FORCE_CLOSED`（超时强平）。严禁在 Web/Discord 视图层使用单一双买公式错误重算损益；赎回后必须无条件流转 `SETTLED` 并 100% 归还风控预扣额度。
 
 ---
 
@@ -96,7 +96,7 @@
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
 - **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 135+ 项全量单元测试与离线推理。
-  - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
+  - 本地严禁跑主网连网脚本，依赖本地 **184+ 项全量单元测试** 与离线推理。
+  - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【全量单测 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
