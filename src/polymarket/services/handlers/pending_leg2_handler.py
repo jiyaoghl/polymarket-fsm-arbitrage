@@ -216,22 +216,24 @@ class PendingLeg2TickHandler(BaseTickHandler):
                                                 buy_info["order_id"] = fallback.get("orderID") or fallback.get("order_id")
                                     except Exception as ex:
                                         logger.error(f"[{params.strategy_id}] 实盘二腿追单改单异常: {ex}")
+                                elif not params.is_live:
                                     buy_info["price"] = safe_new_price
                                     ctx.record_reprice(old_p, safe_new_price, reason=f"MakerPegging: {reason}", token=str(opp_token), timestamp=now_ts)
                                     deps.set_trade(market_id, ctx.to_dict())
 
-                # ── A.2 OCO 卖单四阶梯动态让价做 T 脱手 (Smart Flip Ladder) ────────
+                # ── A.2 OCO 卖单四阶梯动态让价做 T 脱手 (Smart Flip Ladder, 20s+ 介入) ──
                 if sell_info and not sell_filled and not buy_filled:
                     hold_sec = max(0.0, now_ts - float(ctx.leg1_filled_time or now_ts))
-                    cur_sell_p = float(sell_info.get("price", 0.0))
-                    cur_same_bid = best_bid_yes if is_leg1_yes else best_bid_no
-                    target_ladder_p = PricingEngine.calculate_smart_flip_ladder_price(
-                        leg1_cost=leg1.cost,
-                        elapsed_seconds=hold_sec,
-                        current_bid=cur_same_bid if cur_same_bid is not None else 0.01,
-                        leg1_is_taker=(params.leg1_order_type == "FOK"),
-                        leg2_is_taker=False
-                    )
+                    if hold_sec >= 20.0:  # 0~20s 内坚守初始溢价高抛，20s 后开启动态阶梯降价
+                        cur_sell_p = float(sell_info.get("price", 0.0))
+                        cur_same_bid = best_bid_yes if is_leg1_yes else best_bid_no
+                        target_ladder_p = PricingEngine.calculate_smart_flip_ladder_price(
+                            leg1_cost=leg1.cost,
+                            elapsed_seconds=hold_sec,
+                            current_bid=cur_same_bid if cur_same_bid is not None else 0.01,
+                            leg1_is_taker=(params.leg1_order_type == "FOK"),
+                            leg2_is_taker=False
+                        )
                     # 如果目标阶梯价低于当前挂单价，且两者差距 >= 0.002，执行平滑让价改单
                     if target_ladder_p < cur_sell_p and (cur_sell_p - target_ladder_p) >= 0.002:
                         old_sp = cur_sell_p
