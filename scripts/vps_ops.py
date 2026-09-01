@@ -205,8 +205,17 @@ def cmd_analyze(args):
     total_fee = summary.get("total_fees_usdc", 0.0)
 
     net_color = GREEN if net_pnl > 0 else (RED if net_pnl < 0 else RESET)
-    p50_hold = unhedged_hist.get("p50", 0.0)
-    p90_hold = unhedged_hist.get("p90", 0.0)
+    
+    # 安全解析 Histogram 结构
+    p50_hold = 0.0
+    p90_hold = 0.0
+    if isinstance(unhedged_hist, list) and unhedged_hist:
+        sum_dict = unhedged_hist[0].get("summary", {})
+        p50_hold = sum_dict.get("p50", 0.0)
+        p90_hold = sum_dict.get("p90", 0.0)
+    elif isinstance(unhedged_hist, dict):
+        p50_hold = unhedged_hist.get("p50", 0.0)
+        p90_hold = unhedged_hist.get("p90", 0.0)
 
     print("┌" + "─" * 76 + "┐")
     print(f"│  {BOLD}⭐ 北极星转化率与损益指标卡 (North Star Metrics){RESET}{' '*28}│")
