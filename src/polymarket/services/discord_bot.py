@@ -245,8 +245,9 @@ if HAS_DISCORD_LIB and discord is not None:
 
         @discord.ui.button(label="🔴 确认彻底清空历史", style=discord.ButtonStyle.danger, custom_id="btn_confirm_clean_yes")
         async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
                 return
 
             await interaction.response.defer(ephemeral=True)
@@ -261,6 +262,7 @@ if HAS_DISCORD_LIB and discord is not None:
 
         @discord.ui.button(label="🟢 取消返回", style=discord.ButtonStyle.secondary, custom_id="btn_confirm_clean_cancel")
         async def on_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             for child in self.children:
                 child.disabled = True
             await interaction.response.edit_message(content="🛡️ 操作已取消，历史数据保持完好。", view=self)
@@ -281,12 +283,14 @@ if HAS_DISCORD_LIB and discord is not None:
         # ---------------- 行 0：数据看板与盈亏查询 ----------------
         @discord.ui.button(label="🔄 刷新大盘", style=discord.ButtonStyle.success, custom_id="btn_refresh_status", row=0)
         async def on_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             embed = generate_dashboard_embed()
             if embed:
                 await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="💰 资金明细", style=discord.ButtonStyle.primary, custom_id="btn_view_balance", row=0)
         async def on_balance(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             from polymarket.risk_manager import RiskManager
             rm = RiskManager()
             st = rm.get_status()
@@ -312,10 +316,11 @@ if HAS_DISCORD_LIB and discord is not None:
             embed.add_field(name="🔵 模拟资金池使用率", value=f"`${paper_avail:.2f} / ${paper_max:.0f}` USDC\n`{paper_bar}`", inline=False)
             embed.add_field(name="📈 净净收益 (NET EV)", value=f"`{'+' if total_ev >= 0 else '-'}${abs(total_ev):.4f}` USDC", inline=True)
             embed.add_field(name="⛽ 累计手续费消耗", value=f"`-${total_fee:.4f}` USDC", inline=True)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         @discord.ui.button(label="📈 策略盈亏", style=discord.ButtonStyle.primary, custom_id="btn_view_strategies", row=0)
         async def on_strategies(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             metrics = get_unified_dashboard_metrics()
             strategy_items = metrics.get("strategies", [])
 
@@ -355,17 +360,19 @@ if HAS_DISCORD_LIB and discord is not None:
             total_ev = float(metrics.get("total_net_ev", 0.0))
             tot_str = f"+${total_ev:.4f}" if total_ev >= 0 else f"-${abs(total_ev):.4f}"
             embed.set_footer(text=f"全组合净净收益: {tot_str} USDC | 手续费: -${metrics.get('total_fee', 0.0):.4f} | 胜率: {metrics.get('win_rate', 0.0):.1f}%")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         # ---------------- 行 1：微观盘口、日志与链上结算 ----------------
         
         @discord.ui.button(label="🔍 订单透视", style=discord.ButtonStyle.secondary, custom_id="btn_inspector", row=0)
         async def on_inspect(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
             from polymarket.apps.dashboard import api_status
             try:
                 status_model = api_status()
             except Exception:
-                await interaction.response.send_message("❌ 获取状态失败。", ephemeral=True)
+                await interaction.followup.send("❌ 获取状态失败。", ephemeral=True)
                 return
 
             trades = []
@@ -380,7 +387,7 @@ if HAS_DISCORD_LIB and discord is not None:
             valid_trades = [t for t in trades if get_attr(t, 'status') != "pending"][:25]
             
             if not valid_trades:
-                await interaction.response.send_message("⏳ 当前没有任何有效的订单记录可供透视。", ephemeral=True)
+                await interaction.followup.send("⏳ 当前没有任何有效的订单记录可供透视。", ephemeral=True)
                 return
 
             options = []
@@ -409,7 +416,8 @@ if HAS_DISCORD_LIB and discord is not None:
                     try:
                         detail = get_trade_detail(market_id)
                         if isinstance(detail, dict) and "error" in detail:
-                            await inter.response.send_message(f"❌ {detail['error']}", ephemeral=True)
+                            await inter.response.defer(ephemeral=True)
+                    await inter.followup.send(f"❌ {detail['error']}", ephemeral=True)
                             return
                         
                         embed = discord.Embed(
@@ -450,25 +458,28 @@ if HAS_DISCORD_LIB and discord is not None:
                                 rp_str += f"`[{ts}]` {_get(rp, 'old_price')} -> **{_get(rp, 'new_price')}** ({_get(rp, 'reason')})\n"
                             embed.add_field(name=f"改价轨迹 (共 {len(reprice)} 次)", value=rp_str[:1024], inline=False)
                             
-                        await inter.response.send_message(embed=embed, ephemeral=True)
+                        await inter.response.defer(ephemeral=True)
+                    await inter.followup.send(embed=embed, ephemeral=True)
                     except Exception as e:
-                        await inter.response.send_message(f"❌ 透视失败: {e}", ephemeral=True)
+                        await inter.response.defer(ephemeral=True)
+                    await inter.followup.send(f"❌ 透视失败: {e}", ephemeral=True)
 
             class InspectorView(discord.ui.View):
                 def __init__(self):
                     super().__init__(timeout=60)
                     self.add_item(InspectorSelect())
 
-            await interaction.response.send_message("🔍 请选择您想透视溯源的订单记录：", view=InspectorView(), ephemeral=True)
+            await interaction.followup.send("🔍 请选择您想透视溯源的订单记录：", view=InspectorView(), ephemeral=True)
 
         @discord.ui.button(label="🎯 活跃盘口"
 , style=discord.ButtonStyle.primary, custom_id="btn_view_markets", row=1)
         async def on_markets(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             from polymarket.apps.dashboard import manager
             current_markets = getattr(manager, "current_markets", [])
             
             if not current_markets:
-                await interaction.response.send_message("⏳ 当前处于 5min 盘口交割切换期，系统正在滚动探测下期盘口...", ephemeral=True)
+                await interaction.followup.send("⏳ 当前处于 5min 盘口交割切换期，系统正在滚动探测下期盘口...", ephemeral=True)
                 return
 
             embed = discord.Embed(
@@ -492,12 +503,13 @@ if HAS_DISCORD_LIB and discord is not None:
                     value=f"• 距离交割: `{remaining}s` ({remaining//60}分{remaining%60}秒) | 状态: `🟢 活跃追踪`\n• YES Token: `{yes_tok[:12]}...`\n• NO Token: `{no_tok[:12]}...`",
                     inline=False
                 )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         @discord.ui.button(label="📜 最新日志", style=discord.ButtonStyle.secondary, custom_id="btn_view_logs", row=1)
         async def on_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以查看控制台日志。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以查看控制台日志。", ephemeral=True)
                 return
 
             await interaction.response.defer(ephemeral=True)
@@ -525,8 +537,9 @@ if HAS_DISCORD_LIB and discord is not None:
 
         @discord.ui.button(label="🎉 链上赎回", style=discord.ButtonStyle.primary, custom_id="btn_onchain_redeem", row=1)
         async def on_redeem(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以触发链上赎回。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以触发链上赎回。", ephemeral=True)
                 return
 
             await interaction.response.defer(ephemeral=True)
@@ -543,8 +556,10 @@ if HAS_DISCORD_LIB and discord is not None:
         # ---------------- 行 2：风控熔断与数据管理 ----------------
         @discord.ui.button(label="🛡️ 熔断管理", style=discord.ButtonStyle.primary, custom_id="btn_circuit_breaker", row=2)
         async def on_circuit_breaker(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足。", ephemeral=True)
                 return
                 
             metrics = get_unified_dashboard_metrics()
@@ -564,7 +579,7 @@ if HAS_DISCORD_LIB and discord is not None:
                 ))
                 
             if not options:
-                await interaction.response.send_message("❌ 无可用策略。", ephemeral=True)
+                await interaction.followup.send("❌ 无可用策略。", ephemeral=True)
                 return
                 
             class CBSelect(discord.ui.Select):
@@ -589,19 +604,21 @@ if HAS_DISCORD_LIB and discord is not None:
                             # 手动熔断 2 小时
                             rm._strategy_cooldown_until[sid] = now + 7200
                             msg = f"⛔ 已为您强制熔断策略 `{sid}` 2 小时！"
-                    await inter.response.send_message(msg, ephemeral=True)
+                    await inter.response.defer(ephemeral=True)
+                    await inter.followup.send(msg, ephemeral=True)
                     
             class CBView(discord.ui.View):
                 def __init__(self):
                     super().__init__(timeout=60)
                     self.add_item(CBSelect())
                     
-            await interaction.response.send_message("🛡️ **单策略精细化熔断控制**：\n选中运行中的策略可将其强制熔断 2 小时；\n选中冷却中的策略可一键解除封印并清空风险水位。", view=CBView(), ephemeral=True)
+            await interaction.followup.send("🛡️ **单策略精细化熔断控制**：\n选中运行中的策略可将其强制熔断 2 小时；\n选中冷却中的策略可一键解除封印并清空风险水位。", view=CBView(), ephemeral=True)
 
         @discord.ui.button(label="⏸️ 紧急暂停", style=discord.ButtonStyle.danger, custom_id="btn_emergency_pause", row=2)
         async def on_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以执行熔断操作。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以执行熔断操作。", ephemeral=True)
                 return
 
             from polymarket.risk_manager import RiskManager
@@ -614,8 +631,9 @@ if HAS_DISCORD_LIB and discord is not None:
 
         @discord.ui.button(label="▶️ 恢复开仓", style=discord.ButtonStyle.success, custom_id="btn_resume_trading", row=2)
         async def on_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以执行恢复操作。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以执行恢复操作。", ephemeral=True)
                 return
 
             from polymarket.risk_manager import RiskManager
@@ -628,12 +646,13 @@ if HAS_DISCORD_LIB and discord is not None:
 
         @discord.ui.button(label="🧹 清空历史", style=discord.ButtonStyle.danger, custom_id="btn_clean_history", row=2)
         async def on_clean(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
-                await interaction.response.send_message("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
+                await interaction.followup.send("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
                 return
 
             confirm_view = ConfirmCleanHistoryView(parent_view=self)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "⚠️ **高危操作防误触确认**\n您确定要彻底清空 SQLite 数据库中的所有历史订单、已实现盈亏统计和缓存吗？\n（此操作不可逆，30 秒未操作将自动失效）",
                 view=confirm_view,
                 ephemeral=True
