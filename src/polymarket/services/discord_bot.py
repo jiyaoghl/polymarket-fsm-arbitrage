@@ -250,7 +250,6 @@ if HAS_DISCORD_LIB and discord is not None:
                 await interaction.followup.send("❌ 权限不足：只有管理员可以清空历史数据。", ephemeral=True)
                 return
 
-            await interaction.response.defer(ephemeral=True)
             try:
                 from polymarket.db import clean_all_historical_trades
                 counts = clean_all_historical_trades()
@@ -265,7 +264,7 @@ if HAS_DISCORD_LIB and discord is not None:
             if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
             for child in self.children:
                 child.disabled = True
-            await interaction.response.edit_message(content="🛡️ 操作已取消，历史数据保持完好。", view=self)
+            await interaction.edit_original_response(content="🛡️ 操作已取消，历史数据保持完好。", view=self)
 
 
     class DashboardControlView(discord.ui.View):
@@ -367,7 +366,6 @@ if HAS_DISCORD_LIB and discord is not None:
         @discord.ui.button(label="🔍 订单透视", style=discord.ButtonStyle.secondary, custom_id="btn_inspector", row=0)
         async def on_inspect(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
-            await interaction.response.defer(ephemeral=True)
             from polymarket.apps.dashboard import api_status
             try:
                 status_model = api_status()
@@ -512,7 +510,6 @@ if HAS_DISCORD_LIB and discord is not None:
                 await interaction.followup.send("❌ 权限不足：只有管理员可以查看控制台日志。", ephemeral=True)
                 return
 
-            await interaction.response.defer(ephemeral=True)
             from polymarket.config import paths
             from collections import deque
             log_path = paths.logs_dir() / "trade.log"
@@ -542,7 +539,6 @@ if HAS_DISCORD_LIB and discord is not None:
                 await interaction.followup.send("❌ 权限不足：只有管理员可以触发链上赎回。", ephemeral=True)
                 return
 
-            await interaction.response.defer(ephemeral=True)
             try:
                 from polymarket.services.onchain_redeemer import OnChainRedeemer
                 from polymarket.client import get_client
@@ -557,7 +553,6 @@ if HAS_DISCORD_LIB and discord is not None:
         @discord.ui.button(label="🛡️ 熔断管理", style=discord.ButtonStyle.primary, custom_id="btn_circuit_breaker", row=2)
         async def on_circuit_breaker(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True)
-            await interaction.response.defer(ephemeral=True)
             if not is_admin(interaction.user.id):
                 await interaction.followup.send("❌ 权限不足。", ephemeral=True)
                 return
