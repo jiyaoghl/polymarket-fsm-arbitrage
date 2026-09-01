@@ -78,6 +78,7 @@ def test_snapshot_serialization_format():
         "spread": snap.spread,
         "mid_price": snap.mid_price,
         "obi": snap.obi,
+        "kline": {"BTC": {"amplitude": 0.15, "net_change": 0.05, "is_choppy": True}}
     }
 
     serialized = json.dumps(record, ensure_ascii=False)
@@ -91,6 +92,8 @@ def test_snapshot_serialization_format():
     assert deserialized["spread"] == 0.16
     assert deserialized["mid_price"] == 0.50
     assert deserialized["obi"] == 0.12
+    assert "BTC" in deserialized["kline"]
+    assert deserialized["kline"]["BTC"]["amplitude"] == 0.15
 
 
 def test_l2_recorder_compression(temp_snapshot_dir):

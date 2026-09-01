@@ -145,6 +145,7 @@ class L2SnapshotRecorder:
                         "spread": snap.spread,
                         "mid_price": snap.mid_price,
                         "obi": snap.obi,
+                        "kline": kline_cache,  # 附带当时三大资产的实时波动率矩阵，赋能高保真离线回测
                     }
                     try:
                         current_file.write(json.dumps(record, ensure_ascii=False) + "\n")
