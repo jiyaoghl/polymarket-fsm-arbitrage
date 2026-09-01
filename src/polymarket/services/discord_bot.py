@@ -332,7 +332,97 @@ if HAS_DISCORD_LIB and discord is not None:
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         # ---------------- 行 1：微观盘口、日志与链上结算 ----------------
-        @discord.ui.button(label="🎯 活跃盘口", style=discord.ButtonStyle.primary, custom_id="btn_view_markets", row=1)
+        
+        @discord.ui.button(label="🔍 订单透视", style=discord.ButtonStyle.secondary, custom_id="btn_inspector", row=0)
+        async def on_inspect(self, interaction: discord.Interaction, button: discord.ui.Button):
+            from polymarket.apps.dashboard import api_status
+            try:
+                status_model = api_status()
+            except Exception:
+                await interaction.response.send_message("❌ 获取状态失败。", ephemeral=True)
+                return
+
+            trades = []
+            for s in status_model.strategies:
+                trades.extend(s.active_trades)
+                
+            trades.sort(key=lambda t: t.end_time or 0, reverse=True)
+            valid_trades = [t for t in trades if t.status != "pending"][:25]
+            
+            if not valid_trades:
+                await interaction.response.send_message("⏳ 当前没有任何有效的订单记录可供透视。", ephemeral=True)
+                return
+
+            options = []
+            for t in valid_trades:
+                asset = t.asset or "UNKNOWN"
+                status = t.status.upper()
+                pnl = t.profit_usdc
+                pnl_str = f" [${pnl:.3f}]" if pnl is not None else ""
+                label = f"{asset} | {status}{pnl_str}"
+                desc = f"ID: {t.market_id[:20]} | Strat: {t.strategy_id}"[:100]
+                options.append(discord.SelectOption(
+                    label=label[:100],
+                    description=desc,
+                    value=t.market_id
+                ))
+
+            class InspectorSelect(discord.ui.Select):
+                def __init__(self):
+                    super().__init__(placeholder="请选择要透视的订单...", min_values=1, max_values=1, options=options)
+
+                async def callback(self, inter: discord.Interaction):
+                    market_id = self.values[0]
+                    from polymarket.apps.dashboard import get_trade_detail
+                    import time
+                    try:
+                        detail = get_trade_detail(market_id)
+                        if isinstance(detail, dict) and "error" in detail:
+                            await inter.response.send_message(f"❌ {detail['error']}", ephemeral=True)
+                            return
+                        
+                        embed = discord.Embed(
+                            title="🔍 交易生命周期透视 (Trade Inspector)",
+                            description=f"市场 ID: `{market_id}`",
+                            color=0x8B5CF6,
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.add_field(name="状态", value=f"`{detail.get('status')}`", inline=True)
+                        embed.add_field(name="结算方式", value=f"`{detail.get('settlement_type') or '--'}`", inline=True)
+                        if detail.get('profit_usdc') is not None:
+                            pnl = detail.get('profit_usdc')
+                            embed.add_field(name="净收益", value=f"`{'+' if pnl>=0 else '-'}${abs(pnl):.4f}`", inline=True)
+                        if detail.get('latency_ms') is not None:
+                            embed.add_field(name="执行延迟", value=f"`{detail.get('latency_ms')} ms`", inline=True)
+                            
+                        leg1 = detail.get('leg1')
+                        if leg1:
+                            embed.add_field(name="Leg1 (首腿)", value=f"`{leg1.get('side')} {leg1.get('size',0):.2f}份 @ {leg1.get('cost',0):.4f}`", inline=False)
+                        leg2 = detail.get('leg2')
+                        if leg2:
+                            embed.add_field(name="Leg2 (二腿)", value=f"`{leg2.get('side')} {leg2.get('size',0):.2f}份 @ {leg2.get('cost',0):.4f}`", inline=False)
+                            
+                        reprice = detail.get('reprice_history', [])
+                        if reprice:
+                            rp_str = ""
+                            for rp in reprice[-5:]: 
+                                ts = time.strftime('%H:%M:%S', time.localtime(rp.get('timestamp',0)))
+                                rp_str += f"`[{ts}]` {rp.get('old_price')} -> **{rp.get('new_price')}** ({rp.get('reason')})\n"
+                            embed.add_field(name=f"改价轨迹 (共 {len(reprice)} 次)", value=rp_str[:1024], inline=False)
+                            
+                        await inter.response.send_message(embed=embed, ephemeral=True)
+                    except Exception as e:
+                        await inter.response.send_message(f"❌ 透视失败: {e}", ephemeral=True)
+
+            class InspectorView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=60)
+                    self.add_item(InspectorSelect())
+
+            await interaction.response.send_message("🔍 请选择您想透视溯源的订单记录：", view=InspectorView(), ephemeral=True)
+
+        @discord.ui.button(label="🎯 活跃盘口"
+, style=discord.ButtonStyle.primary, custom_id="btn_view_markets", row=1)
         async def on_markets(self, interaction: discord.Interaction, button: discord.ui.Button):
             from polymarket.apps.dashboard import manager
             current_markets = getattr(manager, "current_markets", [])
