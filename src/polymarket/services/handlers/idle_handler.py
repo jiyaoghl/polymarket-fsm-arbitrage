@@ -101,6 +101,35 @@ class IdleTickHandler(BaseTickHandler):
                 )
                 return
 
+            # [高级盘口成熟度综合打分 & 动态 OBI 深度壁垒]
+            from polymarket.services.grid import OrderbookMemoryGrid
+            from polymarket.kline_analyzer import get_asset_status
+            
+            asset_status = get_asset_status(asset_type)
+            asset_amp = float(asset_status.get("amplitude", 0.0))
+            
+            # 基础 OBI 门槛为 -0.35 (允许适度卖盘)，但当波动率变大时，该门槛线性收紧，最高甚至防范至 0.0 以上
+            dynamic_obi_floor = min(max(-0.35 + (asset_amp * 2.0), -0.35), 0.0)
+            
+            grid = OrderbookMemoryGrid.get_instance()
+            snap_yes = grid.get_snapshot(str(tick.yes_token))
+            snap_no = grid.get_snapshot(str(tick.no_token))
+            
+            if not snap_yes or not snap_no or snap_yes.is_stale(15.0) or snap_no.is_stale(15.0):
+                filter_logger.intercept(market_id, asset_type, "做市盘口拦截: 缺失近期 L2 深度快照", ctx, deps)
+                return
+                
+            obi_y, dep_y, valid_y = PricingEngine.calculate_obi(list(snap_yes.bids), list(snap_yes.asks), 5, 25.0)
+            obi_n, dep_n, valid_n = PricingEngine.calculate_obi(list(snap_no.bids), list(snap_no.asks), 5, 25.0)
+            
+            if not valid_y or not valid_n:
+                filter_logger.intercept(market_id, asset_type, f"做市盘口拦截: 买盘承接深度极贫瘠 (Y={dep_y:.1f}, N={dep_n:.1f} < 25.0)", ctx, deps)
+                return
+                
+            if obi_y < dynamic_obi_floor or obi_n < dynamic_obi_floor:
+                filter_logger.intercept(market_id, asset_type, f"做市盘口拦截: 卖盘压迫严重 (Y OBI={obi_y:.2f}, N OBI={obi_n:.2f} < 动态下限 {dynamic_obi_floor:.2f})", ctx, deps)
+                return
+
             yes_p, no_p, err = PricingEngine.calculate_dual_bracket_prices(
                 best_bid_yes=tick.best_bid_yes,
                 best_bid_no=tick.best_bid_no,
