@@ -246,6 +246,12 @@ class PendingLeg2TickHandler(BaseTickHandler):
                                         sell_info["order_id"] = new_s_order.get("orderID") or new_s_order.get("order_id")
                                         ctx.record_reprice(old_sp, target_ladder_p, reason=f"SmartFlipLadder(Hold {hold_sec:.0f}s)", token=str(leg1.token), timestamp=now_ts)
                                         deps.set_trade(market_id, ctx.to_dict())
+                                    else:
+                                        # 卖单发新单失败，尝试以原价补挂保底，防止做T出场单悬空
+                                        logger.critical(f"[{params.strategy_id}] 实盘做T卖单改单失败，启动保底重新挂单 @ {old_sp}")
+                                        fallback_s = await deps.client.post_order_async(str(leg1.token), old_sp, leg1.size, "SELL", "GTC")
+                                        if fallback_s and fallback_s.get("status") not in ("ERROR", None):
+                                            sell_info["order_id"] = fallback_s.get("orderID") or fallback_s.get("order_id")
                                 except Exception as ex:
                                     logger.error(f"[{params.strategy_id}] 实盘做T卖单让价改单异常: {ex}")
                             elif not params.is_live:

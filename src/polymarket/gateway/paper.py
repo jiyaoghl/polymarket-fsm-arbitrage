@@ -126,9 +126,17 @@ class PaperTradingGateway(ITradingGateway):
         return resp.json()
 
     def _inject_latency_and_slippage(self, price: float, side: str) -> float:
-        """注入延迟与滑点"""
+        """注入同步延迟与滑点 (用于同步接口)"""
         latency_ms = random.randint(SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS)
         time.sleep(latency_ms / 1000.0)
+        slippage = round(random.uniform(0, SIM_SLIPPAGE_MAX), 4)
+        sim_price = round(price + slippage, 4) if side.upper() == "BUY" else round(price - slippage, 4)
+        return sim_price
+
+    async def _inject_latency_and_slippage_async(self, price: float, side: str) -> float:
+        """注入异步非阻塞延迟与滑点 (用于 async 协程，零阻塞 EventLoop)"""
+        latency_ms = random.randint(SIM_LATENCY_MIN_MS, SIM_LATENCY_MAX_MS)
+        await asyncio.sleep(latency_ms / 1000.0)
         slippage = round(random.uniform(0, SIM_SLIPPAGE_MAX), 4)
         sim_price = round(price + slippage, 4) if side.upper() == "BUY" else round(price - slippage, 4)
         return sim_price
@@ -171,7 +179,27 @@ class PaperTradingGateway(ITradingGateway):
         side: str = "BUY",
         order_type: str = "GTC",
     ) -> Optional[Dict[str, Any]]:
-        return self.post_order(token_id, price, amount, side, order_type)
+        now_ms = int(time.time() * 1000)
+        sim_price = await self._inject_latency_and_slippage_async(price, side)
+        order_id = f"sim_{now_ms}"
+        zero_bytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+        order = {
+            "order_id": order_id,
+            "status": "LIVE",
+            "token_id": str(token_id),
+            "side": side.upper(),
+            "price": sim_price,
+            "amount": float(amount),
+            "order_type": order_type.upper(),
+            "timestamp": now_ms,
+            "metadata": zero_bytes32,
+            "builder": zero_bytes32,
+        }
+        self._ledger.add_order(order)
+        metrics.orders_total.inc(labels={"strategy": "paper", "side": side.upper(), "order_type": order_type.upper(), "status": "LIVE"})
+        logger.info(f"[模拟] (PaperGateway) 异步下单成功：{side} {token_id} @ {sim_price} x {amount} ({order_type}) -> {order_id}")
+        return order
 
     def post_batch_orders(self, orders: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         now_ms = int(time.time() * 1000)
