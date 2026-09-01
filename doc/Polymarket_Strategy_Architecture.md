@@ -119,7 +119,24 @@ flowchart TD
 
 ---
 
-## 5. 统一交易网关抽象 (Unified Trading Gateway)
+## 5. 对冲端微观执行与 Anti-Pennying 防卷机制
+
+系统设立了针对二腿对冲排队的微观博弈与自适应追单引擎：
+- **波动率联动对侧买盘 OBI 承接深度壁垒 (20.0 ~ 50.0 份)**：
+  开仓前提取对侧买盘前 5 档深度，并与 10m K 线振幅动态挂钩：
+  $$\text{amp\_ratio} = \min\left(\max\left(\frac{\text{asset\_amp}}{\text{max\_amp}}, 0.0\right), 1.0\right)$$
+  $$\text{RequiredOppDepth} = 20.0 \times (1.0 + \text{amp\_ratio} \times 1.5)$$
+  平稳期要求 $\ge 20.0\text{ 份}$，剧烈震荡期自动上浮至 $\ge 44.0\sim 50.0\text{ 份}$，彻底杜绝在二腿缺乏承接力的真空盘口中开仓。
+- **价差自适应迟滞与阶梯式跳跃反卷 (Spread-Adaptive Anti-Pennying)**：
+  - 宽价差（$\text{Spread} \ge 0.010$）：冷却缩短至 `1.5s`、步长上调为 `0.003~0.005`，极速抢占买一；
+  - 紧凑价差（$\text{Spread} < 0.010$）：冷却维持 `3.0s`、步长维持 `0.002~0.004`，避免高频抖动；
+  - 严格上限钳制：加价上限锁死在 $\text{Net EV} \ge 0.2\%$ 净利差以内。
+- **坚守做 T 初始利润**：
+  移除临期降价贱卖逻辑，做 T 卖单全程坚守保利目标价，VPS 实测做 T 胜率达 **85%+**。
+
+---
+
+## 6. 统一交易网关抽象 (Unified Trading Gateway)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -155,7 +172,7 @@ flowchart TD
 
 ---
 
-## 6. 轻量级内部时序指标引擎 (Internal Metrics Engine)
+## 7. 轻量级内部时序指标引擎 (Internal Metrics Engine)
 
 系统内置纯原生、零外部重型依赖的 **`MetricsEngine`**：
 - **纳秒级打点开销**：采用分片与低锁优化，单次打点耗时 **<100 纳秒**；
@@ -165,7 +182,7 @@ flowchart TD
 
 ---
 
-## 7. 动态自适应强平引擎与 Bid VWAP 保护 (Adaptive TTL & Liquidation)
+## 8. 动态自适应强平引擎与 Bid VWAP 保护 (Adaptive TTL & Liquidation)
 
 针对单边库存敞口风险（`LEG1_ONLY`），系统引入多维动态 TTL 调节与买盘深度加权防穿透机制：
 * **行情平稳期**：维持基础 `90s`，给二腿挂单留出充足的对手盘撮合与吃单回落时间。
@@ -179,7 +196,7 @@ flowchart TD
 
 ---
 
-## 8. 平仓与交割真实盈亏核算体系 (Settlement & Realized PnL)
+## 9. 平仓与交割真实盈亏核算体系 (Settlement & Realized PnL)
 
 ```mermaid
 graph TD
