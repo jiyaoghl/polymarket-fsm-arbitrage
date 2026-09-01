@@ -4,6 +4,15 @@
 
 ---
 
+## 0. 核心数据源铁律 (VPS Single Source of Truth)
+- **只分析 VPS，严禁本地策略统计**：
+  - 本地开发环境网络延迟巨大，成交、盘口、LEG1 转化、盈亏计算均无实战参考价值。**任何关于胜率、转化率、PnL、未对冲时长的归因分析必须通过 VPS 统一入口（`python scripts/vps_ops.py status / logs / analyze` 或 VPS Dashboard API）获取**。
+  - **严禁**直接读取本地 `data/trading.db` 或本地 `logs/` 进行策略盈亏与胜率统计；若需离线深挖，必须先将 VPS 数据同步到 `vps-logs/` 且只读该目录。
+- **持续优化手册唯一优先级 ([`OPTIMIZATION_PLAYBOOK.md`](file:///d:/生活/Trading/polymarket/doc/OPTIMIZATION_PLAYBOOK.md))**：
+  - 调参优化遵循北极星指标：`LEG1_ONLY -> LOCKED 转化率` > `压低强平亏损` > `扣费净 EV` > `未对冲时长与额度闭环` > `工程健康度`。
+
+---
+
 ## 1. 最高交互与决策铁律 (High-Confidence Directive & Persona)
 - **95% 置信度红线 (95% Confidence Threshold)**：
   - 在执行任何可能影响交易逻辑、风控阈值、状态机流转或涉及复杂系统重构的任务前，AI Agent 必须进行自我置信度评估。
