@@ -58,7 +58,7 @@ def test_hedged_profitability_verification():
         leg2_order_type="GTC"
     )
     assert ok1 is True
-    assert round(ev1, 2) == 1.26  # 1.30 - 0.042(Taker fee) = 1.258 -> 1.26
+    assert round(ev1, 2) == 1.13  # 1.30 - 0.1705(7% Parabolic Taker fee) = 1.1295 -> 1.13
 
 
     # 案例 2: 滑点击穿导致总成本 >= 1.00 (锁亏场景 0.52 + 0.50 = 1.02)
