@@ -98,17 +98,17 @@ class AdaptiveLiquidatorService:
         Returns:
             (realized_pnl, gross_pnl, total_fee)
         """
-        from polymarket import config
+        from polymarket.services.pricing import PricingEngine
         buy_notional = leg1_cost * leg1_size
         sell_notional = close_price * leg1_size
         gross_pnl = sell_notional - buy_notional
 
-        leg1_fee_rate = config.TAKER_FEE_RATE if leg1_is_taker else config.MAKER_FEE_RATE
-        close_fee_rate = config.TAKER_FEE_RATE if close_is_taker else config.MAKER_FEE_RATE
+        fee_buy = PricingEngine.calculate_parabolic_fee(leg1_cost, leg1_size) if leg1_is_taker else 0.0
+        fee_sell = PricingEngine.calculate_parabolic_fee(close_price, leg1_size) if close_is_taker else 0.0
 
-        total_fee = (buy_notional * leg1_fee_rate) + (sell_notional * close_fee_rate)
+        total_fee = round(fee_buy + fee_sell, 4)
         realized_pnl = round(gross_pnl - total_fee, 4)
-        return realized_pnl, round(gross_pnl, 4), round(total_fee, 4)
+        return realized_pnl, round(gross_pnl, 4), total_fee
 
     @staticmethod
     def calculate_expiry_settled_pnl(
@@ -124,16 +124,15 @@ class AdaptiveLiquidatorService:
         Returns:
             (settled_pnl, gross_pnl, entry_fee)
         """
-        from polymarket import config
+        from polymarket.services.pricing import PricingEngine
         buy_notional = leg1_cost * leg1_size
         settled_revenue = settlement_price * leg1_size
         gross_pnl = settled_revenue - buy_notional
 
-        leg1_fee_rate = config.TAKER_FEE_RATE if leg1_is_taker else config.MAKER_FEE_RATE
-        entry_fee = buy_notional * leg1_fee_rate
+        entry_fee = PricingEngine.calculate_parabolic_fee(leg1_cost, leg1_size) if leg1_is_taker else 0.0
 
         settled_pnl = round(gross_pnl - entry_fee, 4)
-        return settled_pnl, round(gross_pnl, 4), round(entry_fee, 4)
+        return settled_pnl, round(gross_pnl, 4), entry_fee
 
     @staticmethod
     def execute_force_close(

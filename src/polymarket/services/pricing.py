@@ -1,12 +1,66 @@
 from typing import Dict, Any, Tuple, Optional, List
-from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
+from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE, POLY_CRYPTO_FEE_RATE, POLY_MAKER_REBATE_RATE
 from polymarket.logger import logger
 
 class PricingEngine:
     """
     纯数学计算与定价引擎 (Stateless Pure Math Service)。
     不产生任何 I/O 与网络请求，纯粹基于盘口与头寸进行确定性数学核算。
+    完全适配 Polymarket 2026 官方非线性抛物线动态手续费机制。
     """
+
+    @staticmethod
+    def calculate_parabolic_fee(price: float, size: float, fee_rate: float = POLY_CRYPTO_FEE_RATE) -> float:
+        """
+        Polymarket 2026 官方非线性抛物线动态手续费纯函数：
+        Formula: Fee = C * feeRate * p * (1 - p)
+        - C: 交易份数 (size)
+        - p: 价格 [0, 1]
+        - feeRate: 加密货币预测市场基准为 0.07 (7%)
+        - 特性: 在 50¢ 时达到峰值 (100份收 $1.75)，两端对称递减。
+        """
+        p = min(max(float(price), 0.001), 0.999)
+        raw_fee = float(size) * float(fee_rate) * p * (1.0 - p)
+        return round(max(raw_fee, 0.0), 4)
+
+    @staticmethod
+    def calculate_net_ev(
+        leg1_cost: float,
+        leg1_size: float,
+        leg2_cost: float,
+        leg2_size: float,
+        leg1_order_type: str = "FOK",
+        leg2_order_type: str = "GTC",
+        crypto_fee_rate: float = POLY_CRYPTO_FEE_RATE
+    ) -> Tuple[float, float, float]:
+        """
+        精确核算双腿扣费净 EV (基于 Polymarket 2026 官方抛物线费率与 Maker 返利)。
+        
+        Returns:
+            (gross_profit, total_fee, net_ev)
+        """
+        if leg1_size <= 0 or leg2_size <= 0:
+            return 0.0, 0.0, 0.0
+
+        # 首腿手续费 (FOK/IOC 吃单产生抛物线费率，GTC 挂单为 0 费率)
+        if str(leg1_order_type).upper() in ("FOK", "IOC", "TAKER"):
+            fee1 = PricingEngine.calculate_parabolic_fee(leg1_cost, leg1_size, crypto_fee_rate)
+        else:
+            fee1 = 0.0
+
+        # 二腿手续费
+        if str(leg2_order_type).upper() in ("FOK", "IOC", "TAKER"):
+            fee2 = PricingEngine.calculate_parabolic_fee(leg2_cost, leg2_size, crypto_fee_rate)
+        else:
+            fee2 = 0.0
+
+        total_fee = round(fee1 + fee2, 4)
+
+        # 1.00 到期满额兑付保证收益
+        gross_profit = min(leg1_size, leg2_size) - (leg1_cost * leg1_size + leg2_cost * leg2_size)
+        net_ev = gross_profit - total_fee
+
+        return round(gross_profit, 4), total_fee, round(net_ev, 4)
 
     @staticmethod
     def calculate_vwap(orderbook_asks: List[Any], target_shares: float) -> Optional[float]:
@@ -116,37 +170,6 @@ class PricingEngine:
         """
         vwap, _, _ = PricingEngine.calculate_bid_vwap_and_marginal(orderbook_bids, target_shares, allow_partial=False)
         return vwap
-
-    @staticmethod
-    def calculate_net_ev(
-        leg1_cost: float,
-        leg1_size: float,
-        leg2_cost: float,
-        leg2_size: float,
-        leg1_order_type: str = "FOK",
-        leg2_order_type: str = "GTC"
-    ) -> Tuple[float, float, float]:
-        """
-        精确核算双腿扣费净 EV。
-        
-        Returns:
-            (gross_profit, total_fee, net_ev)
-        """
-        if leg1_size <= 0 or leg2_size <= 0:
-            return 0.0, 0.0, 0.0
-
-        fee1_rate = TAKER_FEE_RATE if leg1_order_type == "FOK" else MAKER_FEE_RATE
-        fee2_rate = TAKER_FEE_RATE if leg2_order_type == "FOK" else MAKER_FEE_RATE
-
-        fee1 = leg1_cost * leg1_size * fee1_rate
-        fee2 = leg2_cost * leg2_size * fee2_rate
-        total_fee = fee1 + fee2
-
-        # Guaranteed payout is min(leg1_size, leg2_size) * $1.00
-        gross_profit = min(leg1_size, leg2_size) - (leg1_cost * leg1_size + leg2_cost * leg2_size)
-        net_ev = gross_profit - total_fee
-
-        return round(gross_profit, 4), round(total_fee, 4), round(net_ev, 4)
 
     @staticmethod
     def verify_hedged_profitability(
@@ -343,17 +366,24 @@ class PricingEngine:
     @staticmethod
     def calculate_breakeven_price(
         leg1_cost: float,
-        leg1_fee_rate: float,
-        leg2_fee_rate: float
+        leg1_is_taker: bool = True,
+        leg2_is_taker: bool = False,
+        fee_rate: float = POLY_CRYPTO_FEE_RATE
     ) -> float:
         """
-        严格计算双边扣费后的盈亏平衡价 (BreakEven Price)
+        严格计算双边扣费后的盈亏平衡卖出价 (BreakEven Price)。
+        - 若首腿吃单，需补回首腿抛物线手续费 Fee1 = feeRate * p1 * (1 - p1)
+        - 若二腿挂单脱手 (Maker)，二腿 0 费率，保本价 = leg1_cost + Fee1
+        - 若二腿市价吃盘脱手 (Taker)，需额外覆盖二腿卖出抛物线手续费
         """
-        # Formula: Sell_Price * (1 - leg2_fee_rate) = Cost * (1 + leg1_fee_rate)
-        if leg2_fee_rate >= 1.0:
-            return 1.0
-        be_price = (leg1_cost * (1.0 + leg1_fee_rate)) / (1.0 - leg2_fee_rate)
-        return be_price
+        fee1 = PricingEngine.calculate_parabolic_fee(leg1_cost, 1.0, fee_rate) if leg1_is_taker else 0.0
+        if not leg2_is_taker:
+            be_price = leg1_cost + fee1
+        else:
+            # 二腿吃单卖出时费率近似覆盖
+            approx_fee2 = PricingEngine.calculate_parabolic_fee(leg1_cost + fee1, 1.0, fee_rate)
+            be_price = leg1_cost + fee1 + approx_fee2
+        return round(min(max(be_price, 0.001), 0.999), 4)
 
     @staticmethod
     def calculate_smart_flip_ladder_price(
@@ -370,9 +400,7 @@ class PricingEngine:
         - 45~70s: 严格保本 (BreakEven + 0.000)
         - 70~85s: 微亏抢跑 (max(BreakEven - 0.005, current_bid))
         """
-        leg1_fee_rate = TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE
-        leg2_fee_rate = TAKER_FEE_RATE if leg2_is_taker else MAKER_FEE_RATE
-        be_price = PricingEngine.calculate_breakeven_price(leg1_cost, leg1_fee_rate, leg2_fee_rate)
+        be_price = PricingEngine.calculate_breakeven_price(leg1_cost, leg1_is_taker, leg2_is_taker)
         
         if elapsed_seconds < 20.0:
             target_sell_price = be_price + 0.015
@@ -393,19 +421,20 @@ class PricingEngine:
         min_margin: float = 0.002,
         decay_duration: float = 30.0,
         leg1_is_taker: bool = True,
-        leg2_is_taker: bool = False
+        leg2_is_taker: bool = False,
+        fee_rate: float = POLY_CRYPTO_FEE_RATE
     ) -> float:
         """
         计算二腿反向配对限价买单价格 (Pair Hedging Buy Price)。
-        公式: Pair Price = 1.0 - Leg1 Cost - Total Fees - Decayed Margin
+        公式: Pair Price = 1.0 - Leg1 Cost - Total Parabolic Fees - Decayed Margin
         """
         margin = PricingEngine.calculate_decayed_margin(elapsed_seconds, initial_margin, min_margin, decay_duration)
-        fee1 = leg1_cost * (TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE)
-        # 预估二腿费率
-        fee2_rate = TAKER_FEE_RATE if leg2_is_taker else MAKER_FEE_RATE
-        # 预估二腿成本基准
-        approx_leg2_cost = max(0.0, 1.0 - leg1_cost)
-        total_fees = fee1 + (approx_leg2_cost * fee2_rate)
+        fee1 = PricingEngine.calculate_parabolic_fee(leg1_cost, 1.0, fee_rate) if leg1_is_taker else 0.0
+        
+        # 预估二腿价格与费率
+        approx_leg2_cost = max(0.001, min(0.999, 1.0 - leg1_cost))
+        fee2 = PricingEngine.calculate_parabolic_fee(approx_leg2_cost, 1.0, fee_rate) if leg2_is_taker else 0.0
+        total_fees = fee1 + fee2
         
         target_pair_price = 1.0 - leg1_cost - total_fees - margin
         return round(min(max(target_pair_price, 0.001), 0.999), 4)

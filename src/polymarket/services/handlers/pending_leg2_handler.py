@@ -181,10 +181,9 @@ class PendingLeg2TickHandler(BaseTickHandler):
                 # 依据对侧价差自适应迟滞冷却 (宽价差 >=0.010 时 1.5s 极速抢位，紧凑价差时 3.0s 防抖)
                 if now_ts - last_reprice >= adaptive_delay:
                     if cur_opp_bid is not None and cur_buy_price > 0:
-                        # 计算保利买入最高上限 (严格扣除首腿与二腿真实手续费，并保留 breakeven_margin 净利安全垫)
-                        from polymarket.config import TAKER_FEE_RATE, MAKER_FEE_RATE
-                        fee1 = leg1.cost * (TAKER_FEE_RATE if params.leg1_order_type == "FOK" else MAKER_FEE_RATE)
-                        fee2 = (1.0 - leg1.cost) * (MAKER_FEE_RATE if params.leg2_order_type != "FOK" else TAKER_FEE_RATE)
+                        from polymarket.services.pricing import PricingEngine
+                        fee1 = PricingEngine.calculate_parabolic_fee(leg1.cost, 1.0) if params.leg1_order_type == "FOK" else 0.0
+                        fee2 = PricingEngine.calculate_parabolic_fee(max(0.001, 1.0 - leg1.cost), 1.0) if params.leg2_order_type == "FOK" else 0.0
                         fee_buffer = fee1 + fee2
                         target_margin = getattr(params, "breakeven_margin", 0.003)
                         max_allowed_buy_price = round(max(0.01, 1.0 - leg1.cost - target_margin - fee_buffer), 4)

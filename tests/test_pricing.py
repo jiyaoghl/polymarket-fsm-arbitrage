@@ -17,6 +17,17 @@ def test_calculate_vwap_insufficient_depth():
     vwap = PricingEngine.calculate_vwap(asks, target_shares=10.0)
     assert vwap is None
 
+def test_calculate_parabolic_fee_official_benchmark():
+    # 1. 官方白皮书基准: 100 份 @ 50¢ 加密货币市场费用为 $1.75
+    fee_50c = PricingEngine.calculate_parabolic_fee(price=0.50, size=100.0, fee_rate=0.07)
+    assert fee_50c == 1.75
+
+    # 2. 抛物线对称性: 10¢ 与 90¢ 费用完全对称 (100 * 0.07 * 0.1 * 0.9 = 0.63)
+    fee_10c = PricingEngine.calculate_parabolic_fee(price=0.10, size=100.0, fee_rate=0.07)
+    fee_90c = PricingEngine.calculate_parabolic_fee(price=0.90, size=100.0, fee_rate=0.07)
+    assert fee_10c == 0.63
+    assert fee_90c == 0.63
+
 def test_calculate_net_ev_gtc_gtc():
     # 双方均为 GTC (Maker: 0% 费率)
     # 买入 YES: 10 份 @ 0.45 = $4.50
@@ -32,8 +43,8 @@ def test_calculate_net_ev_gtc_gtc():
     assert net == 0.50
 
 def test_calculate_net_ev_fok_gtc():
-    # 首腿 FOK (1% 费率)，二腿 GTC (0% 费率)
-    # YES: 10 @ 0.45 -> fee = 0.045
+    # 首腿 FOK (7% 抛物线费率)，二腿 GTC (0% 费率)
+    # YES: 10 @ 0.45 -> fee = 10 * 0.07 * 0.45 * 0.55 = 0.17325 -> 0.1733
     # NO: 10 @ 0.50 -> fee = 0.0
     gross, fee, net = PricingEngine.calculate_net_ev(
         leg1_cost=0.45, leg1_size=10.0,
@@ -41,8 +52,8 @@ def test_calculate_net_ev_fok_gtc():
         leg1_order_type="FOK", leg2_order_type="GTC"
     )
     assert gross == 0.50
-    assert fee == 0.045
-    assert net == 0.455
+    assert fee == 0.1733
+    assert net == 0.3267
 
 def test_verify_hedged_profitability_pass():
     is_prof, net_ev, msg = PricingEngine.verify_hedged_profitability(

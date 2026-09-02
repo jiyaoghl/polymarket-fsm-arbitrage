@@ -47,8 +47,8 @@ class TestNetEVAndPeggingCeiling(unittest.TestCase):
         leg2_is_taker = False
         breakeven_margin = 0.005
 
-        fee1 = leg1_cost * (TAKER_FEE_RATE if leg1_is_taker else MAKER_FEE_RATE)
-        fee2 = (1.0 - leg1_cost) * (TAKER_FEE_RATE if leg2_is_taker else MAKER_FEE_RATE)
+        fee1 = PricingEngine.calculate_parabolic_fee(leg1_cost, 1.0) if leg1_is_taker else 0.0
+        fee2 = PricingEngine.calculate_parabolic_fee(max(0.001, 1.0 - leg1_cost), 1.0) if leg2_is_taker else 0.0
         fee_buffer = fee1 + fee2
         max_allowed_buy_price = round(max(0.01, 1.0 - leg1_cost - breakeven_margin - fee_buffer), 4)
 

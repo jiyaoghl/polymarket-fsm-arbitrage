@@ -41,9 +41,11 @@ LEG1_MAX_UNHEDGED_SECONDS = int(os.getenv("LEG1_MAX_UNHEDGED_SECONDS", "90"))  #
 MAX_CONCURRENT_UNHEDGED_TRADES = int(os.getenv("MAX_CONCURRENT_UNHEDGED_TRADES", "3"))  # 全账户最大允许未对冲单腿数
 MIN_TIME_TO_EXPIRY_ENTRY = int(os.getenv("MIN_TIME_TO_EXPIRY_ENTRY", "45"))  # 临近交割禁止开仓阈值（秒）
 
-# 手续费配置（用于 EV 计算与模拟盘仿真）
-TAKER_FEE_RATE = float(os.getenv("TAKER_FEE_RATE", "0.01"))   # Taker 手续费率 1%
-MAKER_FEE_RATE = float(os.getenv("MAKER_FEE_RATE", "0.00"))   # Maker 手续费率 0%
+# 手续费配置 (Polymarket 2026 官方微观规则: Fee = C * feeRate * p * (1 - p))
+POLY_CRYPTO_FEE_RATE = float(os.getenv("POLY_CRYPTO_FEE_RATE", "0.07"))     # 加密货币 Taker 基准费率 7%
+POLY_MAKER_REBATE_RATE = float(os.getenv("POLY_MAKER_REBATE_RATE", "0.20")) # 成交 Maker 享受 20% 手续费返还补贴
+TAKER_FEE_RATE = POLY_CRYPTO_FEE_RATE   # 兼容旧字段别名 (7%)
+MAKER_FEE_RATE = float(os.getenv("MAKER_FEE_RATE", "0.00"))   # Maker 做市手续费率 0%
 
 # 模拟盘仿真参数（仅 PAPER 模式生效）
 SIM_BASE_FILL_RATE = float(os.getenv("SIM_BASE_FILL_RATE", "0.65"))       # 模拟 FOK 基础成交率 65%

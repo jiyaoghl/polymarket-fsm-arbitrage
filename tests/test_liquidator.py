@@ -56,3 +56,20 @@ def test_evaluate_timeout():
     assert is_timed_out is True
     assert elapsed >= 95.0
     assert ttl == 90.0
+
+def test_liquidator_realized_pnl_parabolic():
+    # 首腿买入 10 份 @ 0.40 (Taker: 10 * 0.07 * 0.4 * 0.6 = 0.168)
+    # 市价平仓 10 份 @ 0.35 (Taker: 10 * 0.07 * 0.35 * 0.65 = 0.15925 -> 0.1593)
+    # gross_pnl = 3.5 - 4.0 = -0.5
+    # total_fee = 0.168 + 0.1593 = 0.3273
+    # realized_pnl = -0.5 - 0.3273 = -0.8273
+    realized_pnl, gross_pnl, total_fee = AdaptiveLiquidatorService.calculate_realized_pnl(
+        leg1_cost=0.40,
+        leg1_size=10.0,
+        close_price=0.35,
+        leg1_is_taker=True,
+        close_is_taker=True
+    )
+    assert gross_pnl == -0.50
+    assert total_fee == 0.3273
+    assert realized_pnl == -0.8273
