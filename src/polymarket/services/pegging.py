@@ -63,21 +63,76 @@ class MakerPeggingService:
         return False, our_current_price, "排位领先或持平，维持当前挂单"
 
     @staticmethod
-    def should_wait_delay(
-        last_overtaken_time: Optional[float],
-        delay_seconds: float = 2.0
-    ) -> Tuple[bool, float]:
+    def calculate_dual_bracket_repeg_prices(
+        current_yes_price: float,
+        current_no_price: float,
+        best_bid_yes: Optional[float],
+        best_bid_no: Optional[float],
+        best_ask_yes: Optional[float],
+        best_ask_no: Optional[float],
+        entry_max_price: float = 0.45,
+        entry_min_price: float = 0.28,
+        min_profit_margin: float = 0.020,
+        anti_penny_step: float = 0.001
+    ) -> Tuple[bool, float, float, str]:
         """
-        检查是否处于装死迟滞期。
+        核算 Maker-Maker 双挂单是否需要执行动态 Re-peg 贴盘跟价 (纯无状态数学函数)。
+        
+        触发条件：
+        1. YES 或 NO 买一向上漂移反超当前挂单价；
+        2. 重新核算后的双边新价格 (P_yes + P_no) 严格满足保利底线 <= 1.0 - min_profit_margin；
+        3. 至少有一边价格发生 >= 0.002 的阶梯跃迁，且未触顶 entry_max_price 与卖一防穿透保护。
         
         Returns:
-            (is_in_delay, remaining_delay)
+            (should_repeg, new_yes_price, new_no_price, reason_msg)
         """
-        if not last_overtaken_time:
-            return False, 0.0
+        if best_bid_yes is None or best_bid_no is None:
+            return False, current_yes_price, current_no_price, "盘口买一数据缺失"
 
-        elapsed = time.time() - last_overtaken_time
-        if elapsed < delay_seconds:
-            return True, round(delay_seconds - elapsed, 2)
+        # 检查是否有一边被反超
+        is_yes_overtaken = (best_bid_yes > current_yes_price)
+        is_no_overtaken = (best_bid_no > current_no_price)
 
-        return False, 0.0
+        if not is_yes_overtaken and not is_no_overtaken:
+            return False, current_yes_price, current_no_price, "双边排位均领先或持平，维持原单"
+
+        from polymarket.services.pricing import PricingEngine
+        new_yes, new_no, err = PricingEngine.calculate_dual_bracket_prices(
+            best_bid_yes=best_bid_yes,
+            best_bid_no=best_bid_no,
+            entry_max_price=entry_max_price,
+            entry_min_price=entry_min_price,
+            min_profit_margin=min_profit_margin,
+            best_ask_yes=best_ask_yes,
+            best_ask_no=best_ask_no,
+            anti_penny_step=anti_penny_step
+        )
+
+        if err or new_yes is None or new_no is None:
+            return False, current_yes_price, current_no_price, f"跟价计算未通过: {err}"
+
+        # 严格校验保利天花板
+        is_prof, _, p_msg = PricingEngine.verify_hedged_profitability(
+            new_yes, 10.0, new_no, 10.0,
+            min_profit_margin=min_profit_margin,
+            leg1_order_type="GTC", leg2_order_type="GTC"
+        )
+        if not is_prof:
+            return False, current_yes_price, current_no_price, f"跟价后利差不足: {p_msg}"
+
+        # 校验是否有 >= 0.002 的实质性改价
+        diff_yes = round(new_yes - current_yes_price, 4)
+        diff_no = round(new_no - current_no_price, 4)
+        if abs(diff_yes) < 0.002 and abs(diff_no) < 0.002:
+            return False, current_yes_price, current_no_price, "价格变动不足 0.002 阶梯阈值，忽略微小抖动"
+
+        # 校验卖一防穿透
+        if best_ask_yes is not None and new_yes >= best_ask_yes:
+            return False, current_yes_price, current_no_price, f"YES 目标跟价 {new_yes:.4f} 触碰卖一 {best_ask_yes:.4f}"
+        if best_ask_no is not None and new_no >= best_ask_no:
+            return False, current_yes_price, current_no_price, f"NO 目标跟价 {new_no:.4f} 触碰卖一 {best_ask_no:.4f}"
+
+        return (
+            True, new_yes, new_no,
+            f"双挂贴盘跟价触发 (YES: {current_yes_price:.4f}->{new_yes:.4f} [{diff_yes:+.4f}], NO: {current_no_price:.4f}->{new_no:.4f} [{diff_no:+.4f}])"
+        )

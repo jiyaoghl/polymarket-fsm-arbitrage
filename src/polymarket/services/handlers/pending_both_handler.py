@@ -60,19 +60,19 @@ class PendingBothLegsTickHandler(BaseTickHandler):
         no_size = float(no_order_info.get("size") or no_order_info.get("amount") or 0.0)
         no_id = no_order_info.get("order_id") or no_order_info.get("orderID")
 
-        # 判定 YES 挂单成交情况
+        # 判定 YES 挂买单成交情况 (只有卖盘打穿至挂买价时才成交)
         yes_filled = False
         if not params.is_live:
-            yes_filled = (best_bid_yes is not None and best_bid_yes >= yes_price) or (best_ask_yes is not None and best_ask_yes <= yes_price)
+            yes_filled = (best_ask_yes is not None and best_ask_yes <= yes_price)
         elif yes_id:
             yes_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
                 deps.client, yes_id, str(yes_token), yes_size, params.strategy_id, timeout=2.0
             )
 
-        # 判定 NO 挂单成交情况
+        # 判定 NO 挂买单成交情况 (只有卖盘打穿至挂买价时才成交)
         no_filled = False
         if not params.is_live:
-            no_filled = (best_bid_no is not None and best_bid_no >= no_price) or (best_ask_no is not None and best_ask_no <= no_price)
+            no_filled = (best_ask_no is not None and best_ask_no <= no_price)
         elif no_id:
             no_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
                 deps.client, no_id, str(no_token), no_size, params.strategy_id, timeout=2.0
@@ -142,3 +142,70 @@ class PendingBothLegsTickHandler(BaseTickHandler):
             deps.risk_manager.release_market_lock(params.strategy_id, market_id, is_live=params.is_live)
             fsm.transition_to(TradeState.FAILED, reason=f"双挂单临近到期未成交，撤单退出 (剩余 {time_to_expiry:.1f}s)")
             return
+
+        # 分支 E: 双边均未成交 -> 执行自适应价差防抖的双挂动态智能跟单 (Dual-Bracket Re-peg)
+        if not yes_filled and not no_filled:
+            last_repeg = float(getattr(ctx, "last_reprice_time", None) or (now_ts - 10.0))
+            spread_yes = max(0.0, (best_ask_yes - best_bid_yes)) if (best_ask_yes is not None and best_bid_yes is not None) else 0.010
+            spread_no = max(0.0, (best_ask_no - best_bid_no)) if (best_ask_no is not None and best_bid_no is not None) else 0.010
+            min_spread = min(spread_yes, spread_no)
+
+            from polymarket.services.pegging import MakerPeggingService
+            adaptive_delay, _, _ = MakerPeggingService.calculate_adaptive_pegging_params(min_spread)
+
+            if (now_ts - last_repeg) >= adaptive_delay:
+                should_repeg, new_yes_p, new_no_p, repeg_reason = MakerPeggingService.calculate_dual_bracket_repeg_prices(
+                    current_yes_price=yes_price,
+                    current_no_price=no_price,
+                    best_bid_yes=best_bid_yes,
+                    best_bid_no=best_bid_no,
+                    best_ask_yes=best_ask_yes,
+                    best_ask_no=best_ask_no,
+                    entry_max_price=params.entry_max_price,
+                    entry_min_price=params.entry_min_price,
+                    min_profit_margin=params.initial_margin or 0.020,
+                    anti_penny_step=0.001
+                )
+                if should_repeg:
+                    safe_yes_p, safe_yes_size = OrderExecutionService.sanitize_order_params(new_yes_p, params.amount)
+                    safe_no_p, safe_no_size = OrderExecutionService.sanitize_order_params(new_no_p, params.amount)
+
+                    if params.is_live:
+                        try:
+                            # 实盘：原子取消旧双挂单并重新批量下发
+                            if yes_id:
+                                await deps.client.cancel_order_async(yes_id)
+                            if no_id:
+                                await deps.client.cancel_order_async(no_id)
+
+                            order_yes = {"token_id": str(yes_token), "price": safe_yes_p, "size": safe_yes_size, "side": "BUY", "order_type": "GTC"}
+                            order_no = {"token_id": str(no_token), "price": safe_no_p, "size": safe_no_size, "side": "BUY", "order_type": "GTC"}
+                            batch_res = await deps.client.post_batch_orders_async([order_yes, order_no])
+
+                            if batch_res and batch_res.get("status") != "ERROR":
+                                ctx.dual_orders = batch_res.get("orders", [])
+                                ctx.last_reprice_time = now_ts
+                                ctx.record_reprice(yes_price, safe_yes_p, reason=repeg_reason, token=str(yes_token), timestamp=now_ts)
+                                ctx.record_reprice(no_price, safe_no_p, reason=repeg_reason, token=str(no_token), timestamp=now_ts)
+                                deps.set_trade(market_id, ctx.to_dict())
+                                logger.info(f"[策略FSM：{params.strategy_id}] 实盘双挂跟价成功: {repeg_reason}")
+                            else:
+                                # 批量改单异常，启动原价保底重发
+                                logger.critical(f"[{params.strategy_id}] 实盘双挂改单失败，启动保底重新挂单 @ ({yes_price}, {no_price})")
+                                fallback_batch = await deps.client.post_batch_orders_async([
+                                    {"token_id": str(yes_token), "price": yes_price, "size": yes_size, "side": "BUY", "order_type": "GTC"},
+                                    {"token_id": str(no_token), "price": no_price, "size": no_size, "side": "BUY", "order_type": "GTC"}
+                                ])
+                                if fallback_batch:
+                                    ctx.dual_orders = fallback_batch.get("orders", [])
+                        except Exception as ex:
+                            logger.error(f"[{params.strategy_id}] 实盘双挂跟价改单异常: {ex}")
+                    else:
+                        # 模拟盘 (PAPER)：直接平滑更新订单价格与重定价记录
+                        yes_order_info["price"] = safe_yes_p
+                        no_order_info["price"] = safe_no_p
+                        ctx.last_reprice_time = now_ts
+                        ctx.record_reprice(yes_price, safe_yes_p, reason=repeg_reason, token=str(yes_token), timestamp=now_ts)
+                        ctx.record_reprice(no_price, safe_no_p, reason=repeg_reason, token=str(no_token), timestamp=now_ts)
+                        deps.set_trade(market_id, ctx.to_dict())
+                        logger.info(f"[策略FSM：{params.strategy_id}] [模拟盘] {repeg_reason}")

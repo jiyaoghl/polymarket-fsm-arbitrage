@@ -233,14 +233,14 @@ def test_pending_both_handler_both_filled():
         )
         trades["m_both"] = ctx.to_dict()
         
-        # 模拟盘买一价同时达到挂单价 (0.46 >= 0.45, 0.53 >= 0.52)
+        # 模拟盘卖盘打穿至挂买价 (0.45 <= 0.45, 0.52 <= 0.52) 触发成交
         tick = TickBundle(
             yes_token="tok_yes",
             no_token="tok_no",
-            best_ask_yes=0.46,
-            best_bid_yes=0.46,
-            best_ask_no=0.54,
-            best_bid_no=0.53,
+            best_ask_yes=0.45,
+            best_bid_yes=0.44,
+            best_ask_no=0.52,
+            best_bid_no=0.51,
         )
         
         await handler.handle(market, fsm, ctx, tick, params, deps, filter_logger)
@@ -273,12 +273,12 @@ def test_pending_both_handler_single_filled_transitions_to_leg1_only():
         )
         trades["m_single_fill"] = ctx.to_dict()
         
-        # 仅 YES 买一达到挂单价 (0.46 >= 0.45)，NO 买一未达到 (0.48 < 0.52)
+        # 仅 YES 卖盘打穿至挂买价 (0.45 <= 0.45)，NO 卖盘未打穿 (0.55 > 0.52)
         tick = TickBundle(
             yes_token="tok_yes",
             no_token="tok_no",
-            best_ask_yes=0.46,
-            best_bid_yes=0.46,
+            best_ask_yes=0.45,
+            best_bid_yes=0.44,
             best_ask_no=0.55,
             best_bid_no=0.48,
         )
