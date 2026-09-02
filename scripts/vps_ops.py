@@ -49,30 +49,38 @@ def print_banner(title: str):
     print(f"{BOLD}{CYAN}{'=' * 75}{RESET}")
 
 
-def fetch_api(endpoint: str, timeout: int = 5) -> Optional[Dict[str, Any]]:
+def fetch_api(endpoint: str, timeout: int = 5, retries: int = 3) -> Optional[Dict[str, Any]]:
     url = f"{DEFAULT_VPS_HOST.rstrip('/')}{endpoint}"
-    try:
-        r = requests.get(url, timeout=timeout)
-        if r.status_code == 200:
-            return r.json()
-        print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
+            return None
+        except requests.exceptions.RequestException as e:
+            if attempt < retries:
+                time.sleep(0.5 * attempt)
+                continue
+            print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
+            return None
 
 
-def post_api(endpoint: str, timeout: int = 10, json_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def post_api(endpoint: str, timeout: int = 10, json_data: Optional[Dict[str, Any]] = None, retries: int = 3) -> Optional[Dict[str, Any]]:
     url = f"{DEFAULT_VPS_HOST.rstrip('/')}{endpoint}"
-    try:
-        r = requests.post(url, json=json_data or {}, timeout=timeout)
-        if r.status_code == 200:
-            return r.json()
-        print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, json=json_data or {}, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
+            return None
+        except requests.exceptions.RequestException as e:
+            if attempt < retries:
+                time.sleep(0.5 * attempt)
+                continue
+            print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
+            return None
 
 
 def cmd_status(args):

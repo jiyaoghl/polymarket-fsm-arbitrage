@@ -111,7 +111,7 @@
         "open_silence_sec": 10,
         "max_spread": 0.06,
         "mm_min_bid": 0.35,
-        "obi_floor": -0.4,
+        "obi_floor": -0.3,
         "leg1_max_unhedged_seconds": 85,
         "circuit_breaker": {
             "max_consecutive_force_closes": 3,
@@ -122,7 +122,7 @@
     {
         "strategy_id": "maker_maker_standard",
         "name": "挂单+挂单 标准策略 (双边并发挂单)",
-        "entry_max_price": 0.42,
+        "entry_max_price": 0.43,
         "entry_min_price": 0.28,
         "reentry_trigger": 0.38,
         "amount": 15.0,
@@ -139,9 +139,9 @@
         "leg2_cancel_before_expiry": 30,
         "leg2_fallback_to_maker": true,
         "open_silence_sec": 10,
-        "max_spread": 0.08,
-        "mm_min_bid": 0.33,
-        "obi_floor": -0.45,
+        "max_spread": 0.07,
+        "mm_min_bid": 0.34,
+        "obi_floor": -0.35,
         "leg1_max_unhedged_seconds": 85,
         "circuit_breaker": {
             "max_consecutive_force_closes": 3,
