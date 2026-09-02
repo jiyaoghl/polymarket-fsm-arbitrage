@@ -21,6 +21,6 @@ backtest_cache/
 *.db
 smoke_test_halt/
 
-.agents/
+# Local temporary dirs
 scratch/
 tmp/
