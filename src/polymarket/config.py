@@ -56,30 +56,30 @@ SIM_SLIPPAGE_MAX = float(os.getenv("SIM_SLIPPAGE_MAX", "0.003"))          # 模�
 # 支持的多加密资产池配置 (Multi-Asset 5min Markets)
 SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH,SOL").split(",") if x.strip()]
 
-CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.35"))  # 通用默认振幅阈值 0.35%
-CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.25")) # 通用默认净变动阈值 0.25%
+CRYPTO_CHOP_MAX_AMPLITUDE = float(os.getenv("CRYPTO_CHOP_MAX_AMPLITUDE", "0.38"))  # 通用默认振幅阈值 0.38% (300轮标定最优)
+CRYPTO_CHOP_MAX_NET_CHANGE = float(os.getenv("CRYPTO_CHOP_MAX_NET_CHANGE", "0.18")) # 通用默认净变动阈值 0.18% (300轮标定最优)
 
-# 分资产独立阈值配置（百分比 %）
+# 分资产独立阈值配置（百分比 %，基于 25.1 万帧真实 L2 快照 Optuna 贝叶斯寻优标定）
 ASSET_CHOP_THRESHOLDS = {
     "BTC": {
-        "max_amplitude": float(os.getenv("BTC_CHOP_MAX_AMPLITUDE", "0.30")),
-        "max_net_change": float(os.getenv("BTC_CHOP_MAX_NET_CHANGE", "0.20")),
+        "max_amplitude": float(os.getenv("BTC_CHOP_MAX_AMPLITUDE", "0.36")),
+        "max_net_change": float(os.getenv("BTC_CHOP_MAX_NET_CHANGE", "0.15")),
     },
     "ETH": {
-        "max_amplitude": float(os.getenv("ETH_CHOP_MAX_AMPLITUDE", "0.45")),
-        "max_net_change": float(os.getenv("ETH_CHOP_MAX_NET_CHANGE", "0.30")),
+        "max_amplitude": float(os.getenv("ETH_CHOP_MAX_AMPLITUDE", "0.42")),
+        "max_net_change": float(os.getenv("ETH_CHOP_MAX_NET_CHANGE", "0.20")),
     },
     "SOL": {
-        "max_amplitude": float(os.getenv("SOL_CHOP_MAX_AMPLITUDE", "0.55")),
-        "max_net_change": float(os.getenv("SOL_CHOP_MAX_NET_CHANGE", "0.35")),
+        "max_amplitude": float(os.getenv("SOL_CHOP_MAX_AMPLITUDE", "0.48")),
+        "max_net_change": float(os.getenv("SOL_CHOP_MAX_NET_CHANGE", "0.22")),
     },
     "DOGE": {
-        "max_amplitude": float(os.getenv("DOGE_CHOP_MAX_AMPLITUDE", "0.65")),
-        "max_net_change": float(os.getenv("DOGE_CHOP_MAX_NET_CHANGE", "0.40")),
+        "max_amplitude": float(os.getenv("DOGE_CHOP_MAX_AMPLITUDE", "0.60")),
+        "max_net_change": float(os.getenv("DOGE_CHOP_MAX_NET_CHANGE", "0.30")),
     },
     "XRP": {
-        "max_amplitude": float(os.getenv("XRP_CHOP_MAX_AMPLITUDE", "0.50")),
-        "max_net_change": float(os.getenv("XRP_CHOP_MAX_NET_CHANGE", "0.35")),
+        "max_amplitude": float(os.getenv("XRP_CHOP_MAX_AMPLITUDE", "0.45")),
+        "max_net_change": float(os.getenv("XRP_CHOP_MAX_NET_CHANGE", "0.22")),
     },
 }
 # 资金与风控配置
