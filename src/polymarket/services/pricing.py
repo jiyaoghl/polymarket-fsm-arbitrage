@@ -448,21 +448,21 @@ class PricingEngine:
         entry_max_price: float = 0.50,
         entry_min_price: float = 0.30,
         min_profit_margin: float = 0.010,
-        leg1_amount: float = 10.0
+        leg1_amount: float = 10.0,
+        crypto_fee_rate: float = POLY_CRYPTO_FEE_RATE
     ) -> Tuple[bool, Optional[str], Optional[float], Optional[float], str]:
         """
-        全盘口净 EV 驱动的 Taker 开首腿套利机会评估 (纯无状态数学函数)。
+        全盘口动态吃单保本门槛与净 EV 驱动的 Taker 开首腿套利机会评估 (纯无状态数学函数)。
         
-        核算流程：
-        1. 路径 A (吃 YES + 挂 NO 对冲)：
-           - 首腿 Taker 吃 YES @ best_ask_yes；
-           - 二腿 Maker 挂 NO @ min(best_bid_no + 0.001, 1.0 - best_ask_yes - fees - margin)；
-           - 严格计算 Net EV 与净利润率。
-        2. 路径 B (吃 NO + 挂 YES 对冲)：
-           - 首腿 Taker 吃 NO @ best_ask_no；
-           - 二腿 Maker 挂 YES @ min(best_bid_yes + 0.001, 1.0 - best_ask_no - fees - margin)；
-           - 严格计算 Net EV 与净利润率。
-        3. 单边超跌保底分支 (min_ask <= entry_max_price)。
+        核算原则：
+        1. 路径 A / B (对冲锁利): 
+           首腿吃单产生抛物线费率 Fee1 = size * feeRate * p1 * (1 - p1)。
+           若二腿以对侧买一挂单 (0 费率)，双腿扣费净收益率 Margin = 1.0 - p1 - opp_bid - (Fee1/size)。
+           当 Margin >= min_profit_margin 时判定为对冲 EV 达标。
+        2. 路径 C (单边超跌做 T):
+           当盘口进入超跌区间 (min_ask <= entry_max_price 且 >= entry_min_price)，且对侧买一 >= 0.20 时，
+           核算首腿保本底线 p1_be = min_ask + (Fee1/size)。
+           若 p1_be + opp_bid <= 1.005 (严格防倒挂)，则放行以做 T 机制盈利。
         
         Returns:
             (is_opportunity, target_side, entry_price, expected_net_ev, reason_msg)
@@ -471,52 +471,67 @@ class PricingEngine:
         max_net_margin = -999.0
 
         # --- 路径 A: 吃 YES ---
-        if best_ask_yes is not None and best_ask_yes >= entry_min_price and best_ask_yes <= 0.95:
-            # 必须要求对侧买一有效且 >= 0.25，保证对冲流动性真实存在
+        if best_ask_yes is not None and entry_min_price <= best_ask_yes <= entry_max_price:
             if best_bid_no is not None and best_bid_no >= 0.25:
-                no_hedge_p = round(max(min(best_bid_no, 1.0 - best_ask_yes - 0.005), 0.01), 4)
                 gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
                     leg1_cost=best_ask_yes, leg1_size=leg1_amount,
-                    leg2_cost=no_hedge_p, leg2_size=leg1_amount,
-                    leg1_order_type="FOK", leg2_order_type="GTC"
+                    leg2_cost=best_bid_no, leg2_size=leg1_amount,
+                    leg1_order_type="FOK", leg2_order_type="GTC",
+                    crypto_fee_rate=crypto_fee_rate
                 )
                 margin = net_ev / leg1_amount if leg1_amount > 0 else 0.0
                 
                 if margin >= min_profit_margin and margin > max_net_margin:
                     max_net_margin = margin
-                    best_opp = (True, "YES", best_ask_yes, net_ev, f"YES侧EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃YES@{best_ask_yes:.4f} 挂NO@{no_hedge_p:.4f})")
+                    best_opp = (
+                        True, "YES", best_ask_yes, net_ev,
+                        f"YES侧动态保本EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃YES@{best_ask_yes:.4f} 挂NO@{best_bid_no:.4f}, 费率=${fee:.4f})"
+                    )
 
         # --- 路径 B: 吃 NO ---
-        if best_ask_no is not None and best_ask_no >= entry_min_price and best_ask_no <= 0.95:
-            # 必须要求对侧买一有效且 >= 0.25
+        if best_ask_no is not None and entry_min_price <= best_ask_no <= entry_max_price:
             if best_bid_yes is not None and best_bid_yes >= 0.25:
-                yes_hedge_p = round(max(min(best_bid_yes, 1.0 - best_ask_no - 0.005), 0.01), 4)
                 gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
                     leg1_cost=best_ask_no, leg1_size=leg1_amount,
-                    leg2_cost=yes_hedge_p, leg2_size=leg1_amount,
-                    leg1_order_type="FOK", leg2_order_type="GTC"
+                    leg2_cost=best_bid_yes, leg2_size=leg1_amount,
+                    leg1_order_type="FOK", leg2_order_type="GTC",
+                    crypto_fee_rate=crypto_fee_rate
                 )
                 margin = net_ev / leg1_amount if leg1_amount > 0 else 0.0
                 
                 if margin >= min_profit_margin and margin > max_net_margin:
                     max_net_margin = margin
-                    best_opp = (True, "NO", best_ask_no, net_ev, f"NO侧EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃NO@{best_ask_no:.4f} 挂YES@{yes_hedge_p:.4f})")
+                    best_opp = (
+                        True, "NO", best_ask_no, net_ev,
+                        f"NO侧动态保本EV达标: Net EV=${net_ev:.4f} (Margin: {margin:.2%}, 吃NO@{best_ask_no:.4f} 挂YES@{best_bid_yes:.4f}, 费率=${fee:.4f})"
+                    )
 
-        # --- 保底分支: 仅在具备明确正净 EV 或极度超跌做 T 空间时才触发 ---
+        # --- 路径 C: 极度超跌深度做 T 空间 (0.02 <= min_ask <= 0.25 且对侧买一 >= 0.15) ---
         if not best_opp[0]:
             min_ask, min_side, opp_bid = (
                 (best_ask_yes, "YES", best_bid_no)
                 if (best_ask_yes is not None and (best_ask_no is None or best_ask_yes <= best_ask_no))
                 else (best_ask_no, "NO", best_bid_yes)
             )
-            # 1. 极度超跌深度做 T 空间 (0.02 <= min_ask <= 0.25 且对侧买一 >= 0.15)
             if min_ask is not None and 0.02 <= min_ask <= 0.25:
                 if opp_bid is not None and opp_bid >= 0.15:
-                    best_opp = (True, min_side, min_ask, 0.0, f"[极度超跌做T达标] 吃{min_side}@{min_ask:.4f} <= 0.25 (对侧买一 {opp_bid:.4f} >= 0.15)")
-            # 2. 单边常规超跌: 必须满足 min_ask <= entry_max_price 且盘口不倒挂 ((min_ask + opp_bid) <= 1.0)
-            elif min_ask is not None and min_ask <= entry_max_price and min_ask >= entry_min_price:
-                if opp_bid is not None and opp_bid >= 0.25 and (min_ask + opp_bid) <= 1.0001:
-                    best_opp = (True, min_side, min_ask, 0.0, f"单边超跌达标: 吃{min_side}@{min_ask:.4f} <= 门槛{entry_max_price:.4f} (对侧买一 {opp_bid:.4f} >= 0.25)")
+                    fee1 = PricingEngine.calculate_parabolic_fee(min_ask, leg1_amount, crypto_fee_rate)
+                    be_p = min_ask + (fee1 / leg1_amount)
+                    best_opp = (
+                        True, min_side, min_ask, 0.0,
+                        f"[极度超跌做T达标] 吃{min_side}@{min_ask:.4f} <= 0.25 (对侧买一 {opp_bid:.4f} >= 0.15, 保本底价={be_p:.4f})"
+                    )
+            # --- 路径 D: 常规单边超跌动态保本做 T (min_ask <= entry_max_price 且对侧买一 >= 0.25) ---
+            elif min_ask is not None and entry_min_price <= min_ask <= entry_max_price:
+                if opp_bid is not None and opp_bid >= 0.25:
+                    fee1 = PricingEngine.calculate_parabolic_fee(min_ask, leg1_amount, crypto_fee_rate)
+                    be_p = min_ask + (fee1 / leg1_amount)
+                    if (be_p + opp_bid) <= 1.015:
+                        net_ev = round(leg1_amount * (1.0 - (be_p + opp_bid)), 4)
+                        best_opp = (
+                            True, min_side, min_ask, max(net_ev, 0.0),
+                            f"单边超跌动态保本达标: 吃{min_side}@{min_ask:.4f} (保本底价 {be_p:.4f} + 对侧买一 {opp_bid:.4f} <= 1.015, 费率=${fee1:.4f})"
+                        )
 
         return best_opp
 

@@ -57,7 +57,8 @@ class Leg1OnlyTickHandler(BaseTickHandler):
             sell_price = PricingEngine.calculate_smart_flip_ladder_price(
                 leg1_cost=leg1.cost, 
                 elapsed_seconds=elapsed_since_leg1,
-                current_bid=(tick.best_bid_yes if is_leg1_yes else tick.best_bid_no) or 0.0
+                current_bid=(tick.best_bid_yes if is_leg1_yes else tick.best_bid_no) or 0.0,
+                leg1_is_taker=(str(params.leg1_order_type).upper() in ("FOK", "IOC", "TAKER"))
             )
             pair_price = PricingEngine.calculate_hedged_pair_price(
                 leg1_cost=leg1.cost, elapsed_seconds=elapsed_since_leg1,
