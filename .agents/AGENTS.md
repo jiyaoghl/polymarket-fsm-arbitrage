@@ -96,7 +96,33 @@
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
 - **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 **184+ 项全量单元测试** 与离线推理。
+  - 本地严禁跑主网连网脚本，依赖本地 **188 项全量单元测试** 与离线推理。
   - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【全量单测 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
+
+---
+
+## 9. Polymarket 2026 官方抛物线费率与 Maker 护城河 (Parabolic Dynamic Fee & Maker Edge)
+- **严格执行官方非线性对称抛物线公式**：
+  - 手续费计算公式：$\text{Fee} = C \times \text{feeRate} \times p \times (1 - p)$，加密货币市场 $\text{feeRate} = 0.07$ (7%)。
+  - **微观惩罚机理**：在 $p=0.50$ 时费率达到顶峰（每份 $\$0.0175$），在 $p=0.40$ 时每份 $\$0.0168$（占成本高达 **4.2%**）。**严禁使用任何过时的 1% 线性模型估算 Taker 净 EV**，必须全链路接入 `PricingEngine.calculate_parabolic_fee`。
+- **Maker-Maker 零费率与 20% 返利作为绝对重仓主力**：
+  - Maker 挂单享有 $0.0\%$ 零手续费并享受 **20% Maker 返利补贴**。所有增量本金与生产权重必须优先向 Maker-Maker 策略倾斜，Taker 系列仅作为严格控仓（≤3U~5U）的高门槛对照组运行。
+
+---
+
+## 10. 离线高保真标定与帕累托前沿去重准则 (Concurrency Lock & Pareto Deduplication)
+- **多资产独立并发周期排他锁 (Multi-Asset 120s Concurrency Lock)**：
+  - 离线回测沙盒（`scripts/calibrate_params.py`）必须为 BTC/ETH/SOL 分别维持独立的 120s 周期排他锁，杜绝在单资产密集采样帧中反复撮合虚增频次，确保与实盘多资产并发严格 1:1 对齐。
+- **帕累托最优报表特征去重 (Signature Deduplication)**：
+  - Optuna 贝叶斯寻优在连续参数空间收敛到最优点后，会在局部产生高密度微扰采样。**生成报告时必须按 `(entry_max, max_spread, initial_margin, obi_floor)` 等核心宏观特征进行分桶去重**，严禁微小扰动的单一参数霸占 Top 5 榜单，确保输出覆盖不同风控水位的真实帕累托前沿。
+
+---
+
+## 11. 配置管理与单一真理源铁律 (Config Single Source of Truth)
+- **策略业务参数单一归一**：
+  - 各策略的买入限价、价差、OBI 门槛、做市买一、目标利润等业务参数，必须且只能维护在 `configs/strategies.json` 中。
+- **全局风控与分资产波动率环境对齐**：
+  - 分资产波动率防爆盾（BTC 0.36%/0.15%, ETH 0.42%/0.20%, SOL 0.48%/0.22%）与费率环境变量统一维护在 `.env` 与 `.env.example` 中。
+  - `src/polymarket/config.py` 中的代码默认值必须与 `.env.example` 保持 **100% 同步对齐**，严禁代码硬编码与外部配置产生脱节歧义。
