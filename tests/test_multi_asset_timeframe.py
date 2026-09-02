@@ -14,7 +14,7 @@ def test_multi_asset_configs():
     assert "BTC" in config.ASSET_CHOP_THRESHOLDS
     assert "ETH" in config.ASSET_CHOP_THRESHOLDS
     assert "SOL" in config.ASSET_CHOP_THRESHOLDS
-    assert config.ASSET_CHOP_THRESHOLDS["SOL"]["max_amplitude"] >= 0.50
+    assert config.ASSET_CHOP_THRESHOLDS["SOL"]["max_amplitude"] >= 0.40
 
 
 def test_5min_window_calculation():

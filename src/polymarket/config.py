@@ -52,6 +52,7 @@ SIM_BASE_FILL_RATE = float(os.getenv("SIM_BASE_FILL_RATE", "0.65"))       # 模�
 SIM_LATENCY_MIN_MS = int(os.getenv("SIM_LATENCY_MIN_MS", "100"))          # 模拟最小网络延迟 ms
 SIM_LATENCY_MAX_MS = int(os.getenv("SIM_LATENCY_MAX_MS", "300"))          # 模拟最大网络延迟 ms
 SIM_SLIPPAGE_MAX = float(os.getenv("SIM_SLIPPAGE_MAX", "0.003"))          # 模拟最大滑点 0.3%
+PAPER_MARKET_LOCK_ENABLED = os.getenv("PAPER_MARKET_LOCK_ENABLED", "false").lower() in ("true", "1", "yes")  # 模拟盘是否启用单市场跨策略排他锁 (默认 false 允许多策略并发演练)
 
 # 支持的多加密资产池配置 (Multi-Asset 5min Markets)
 SUPPORTED_ASSETS = [x.strip() for x in os.getenv("SUPPORTED_ASSETS", "BTC,ETH,SOL").split(",") if x.strip()]

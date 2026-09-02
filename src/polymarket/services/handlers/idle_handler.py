@@ -55,7 +55,7 @@ class IdleTickHandler(BaseTickHandler):
 
         # 2. 单市场跨策略排他锁检查 (Market-Level Concurrency Lock)
         if hasattr(deps.risk_manager, "is_market_occupied"):
-            res = deps.risk_manager.is_market_occupied(market_id, params.strategy_id)
+            res = deps.risk_manager.is_market_occupied(market_id, params.strategy_id, is_live=params.is_live)
             if isinstance(res, (tuple, list)) and len(res) == 2:
                 is_occ, occ_strat = res
                 if is_occ:

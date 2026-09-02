@@ -68,12 +68,19 @@ class RiskManager:
             f"实盘初始敞口: ${self.live_max_exposure:.2f}"
         )
 
-    def is_market_occupied(self, market_id: str, strategy_id: str) -> tuple[bool, Optional[str]]:
+    def is_market_occupied(
+        self, market_id: str, strategy_id: str, is_live: bool = False
+    ) -> tuple[bool, Optional[str]]:
         """
         检查指定市场是否已被其他策略锁定/占用 (单市场排他锁)。
-        若被其他策略占用返回 (True, occupant_strategy_id)；若未占用或已被本策略占用返回 (False, None)。
+        - 模拟盘 (is_live=False)：默认允许各策略在同一市场并发演练 (PAPER_MARKET_LOCK_ENABLED=false 时直接返回未占用)。
+        - 实盘 (is_live=True)：强制执行单市场跨策略排他锁，杜绝多策略重复占用真钱与内部踩踏。
         """
         with self.lock:
+            # 模拟盘且未开启模拟锁时，直接放行
+            if not is_live and not getattr(config, "PAPER_MARKET_LOCK_ENABLED", False):
+                return False, None
+
             occupant = self.active_market_occupants.get(market_id)
             if occupant is not None and occupant != strategy_id:
                 return True, occupant
@@ -170,7 +177,8 @@ class RiskManager:
                     self.paper_used_exposure += amount
                     self.locked_orders[lock_key] = self.locked_orders.get(lock_key, 0.0) + amount
                     self.locked_is_live[lock_key] = False
-                    self.active_market_occupants[market_id] = strategy_id
+                    if getattr(config, "PAPER_MARKET_LOCK_ENABLED", False):
+                        self.active_market_occupants[market_id] = strategy_id
                     logger.info(
                         f"[风控中心] [模拟盘] {lock_key} 成功申请额度 ${amount:.2f}。"
                         f"当前模拟使用: ${self.paper_used_exposure:.2f}/${self.paper_max_exposure:.2f}"

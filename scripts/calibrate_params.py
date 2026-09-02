@@ -134,6 +134,8 @@ class MultiMarketSimulator:
         amount = params.get("amount", 10.0)
         entry_max = params.get("entry_max_price", 0.42)
         entry_min = params.get("entry_min_price", 0.28)
+        max_amp = params.get("max_amplitude", 0.35)
+        max_net_chg = params.get("max_net_change", 0.15)
 
         for ts in sorted_ts:
             tokens_dict = ts_token_map[ts]
@@ -154,16 +156,21 @@ class MultiMarketSimulator:
                 if not f1.best_bid or not f2.best_bid:
                     continue
 
-                # 1. 基础成熟度与价差守门
+                # 1. 资产波动率守门 (Binance 1s 真实行情过滤单边急变)
+                btc_k = f1.kline.get("BTC", {})
+                cur_amp = float(btc_k.get("amplitude", 0.15))
+                cur_net = float(btc_k.get("net_change", 0.05))
+                if cur_amp > max_amp or abs(cur_net) > max_net_chg:
+                    continue
+
+                # 2. 基础成熟度与价差守门
                 if f1.best_bid < mm_min_bid or f2.best_bid < mm_min_bid:
                     continue
                 if f1.spread > max_spread or f2.spread > max_spread:
                     continue
 
-                # 2. 动态 OBI 守门 (联动当前帧波动率)
-                btc_k = f1.kline.get("BTC", {})
-                amp = float(btc_k.get("amplitude", 0.15))
-                dynamic_floor = min(max(obi_floor + (amp * 2.0), obi_floor), 0.0)
+                # 3. 动态 OBI 守门 (联动当前帧波动率)
+                dynamic_floor = min(max(obi_floor + (cur_amp * 2.0), obi_floor), 0.0)
                 if f1.obi < dynamic_floor or f2.obi < dynamic_floor:
                     continue
 
@@ -242,6 +249,8 @@ class OptunaOptimizer:
                 "mm_min_bid": trial.suggest_float("mm_min_bid", 0.34, 0.42, step=0.01),
                 "max_spread": trial.suggest_float("max_spread", 0.03, 0.08, step=0.005),
                 "obi_floor": trial.suggest_float("obi_floor", -0.45, -0.15, step=0.05),
+                "max_amplitude": trial.suggest_float("max_amplitude", 0.20, 0.50, step=0.02),
+                "max_net_change": trial.suggest_float("max_net_change", 0.06, 0.25, step=0.01),
                 "initial_margin": trial.suggest_float("initial_margin", 0.010, 0.025, step=0.001),
                 "amount": 10.0
             }
@@ -262,7 +271,30 @@ class ReportGenerator:
 
     @staticmethod
     def generate(frames: List[SnapshotFrame], results: List[EvalResult], output_path: str):
-        top5 = results[:5]
+        # 提取真正多样化的 5 组不同风格帕累托代表 (按不同 entry_max 与价差梯度各挑最优)
+        seen_entry_max = set()
+        diverse_top5: List[EvalResult] = []
+        # 按得分从高到低遍历
+        sorted_candidates = sorted(results, key=lambda r: r.score, reverse=True)
+        for r in sorted_candidates:
+            p = r.params
+            em = round(float(p.get("entry_max_price", 0)), 2)
+            # 限制同一 entry_max 只出现一次，优先展示不同风控水位
+            if em not in seen_entry_max:
+                seen_entry_max.add(em)
+                diverse_top5.append(r)
+                if len(diverse_top5) >= 5:
+                    break
+
+        # 若不足 5 个，用得分最高者补足
+        if len(diverse_top5) < 5:
+            for r in sorted_candidates:
+                if r not in diverse_top5:
+                    diverse_top5.append(r)
+                    if len(diverse_top5) >= 5:
+                        break
+
+        top5 = diverse_top5
         timestamps = [f.ts for f in frames] if frames else []
         span_min = (max(timestamps) - min(timestamps)) / 60.0 if timestamps else 0.0
         span_hour = span_min / 60.0
@@ -276,18 +308,22 @@ class ReportGenerator:
             "",
             "## 🏆 Top 5 最优参数组合推荐 (帕累托最优前沿)",
             "",
-            "| 排名 | 综合得分 | 独立成交 | 双买锁仓 | 做T变现 | 强平 | 胜率 | 累计净 EV ($) | 平均单笔 EV ($) | 预测小时频次 | entry_max | mm_min_bid | max_spread | obi_floor | initial_margin |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+            "| 排名 | 综合得分 | 独立成交 | 双买锁仓 | 做T变现 | 强平 | 胜率 | 累计净 EV ($) | 平均单笔 EV ($) | 预测小时频次 | entry_max | mm_min_bid | max_spread | obi_floor | max_amp (%) | max_net_chg (%) | initial_margin |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
         ]
 
         for rank, r in enumerate(top5, 1):
             p = r.params
             hourly_freq = (r.total_trades / max(span_hour, 0.01)) if span_hour > 0 else 0
+            max_amp_val = p.get('max_amplitude')
+            max_net_val = p.get('max_net_change')
+            amp_str = f"{max_amp_val:.2f}%" if isinstance(max_amp_val, (int, float)) else "-"
+            net_str = f"{max_net_val:.2f}%" if isinstance(max_net_val, (int, float)) else "-"
             lines.append(
                 f"| #{rank} | **{r.score:.2f}** | {r.total_trades} 笔 | {r.hedged_locked_count} | {r.smart_flip_count} | {r.liquidated_count} | "
                 f"**{r.win_rate:.1f}%** | **+${r.total_net_ev:.4f}** | +${r.avg_net_margin:.4f} | {hourly_freq:.1f} 笔/h | "
                 f"{p.get('entry_max_price', '-')} | {p.get('mm_min_bid', '-')} | {p.get('max_spread', '-')} | "
-                f"{p.get('obi_floor', '-')} | {p.get('initial_margin', '-')} |"
+                f"{p.get('obi_floor', '-')} | {amp_str} | {net_str} | {p.get('initial_margin', '-')} |"
             )
 
         lines.extend([
@@ -309,11 +345,16 @@ class ReportGenerator:
 def main():
     parser = argparse.ArgumentParser(description="Polymarket 离线高保真参数标定引擎 (完美复刻版)")
     parser.add_argument("--snapshots-dir", type=str, default="vps-logs/snapshots", help="L2 快照目录路径")
-    parser.add_argument("--max-frames", type=int, default=50000, help="最多读取的快照帧数")
+    parser.add_argument("--max-frames", type=int, default=500000, help="最多读取的快照帧数 (默认 500000)")
     parser.add_argument("--mode", type=str, default="optuna", choices=["optuna", "grid"], help="寻优模式")
-    parser.add_argument("--trials", type=int, default=150, help="Optuna 试验次数")
+    parser.add_argument("--trials", type=int, default=300, help="Optuna 试验次数 (默认 300)")
     parser.add_argument("--output", type=str, default="data/calibration_report.md", help="输出报告路径")
     args = parser.parse_args()
+
+    # 解析为基于项目根目录的绝对路径
+    out_path = Path(args.output)
+    if not out_path.is_absolute():
+        out_path = repo_root / out_path
 
     print("===========================================================================")
     print("  [*] Polymarket 离线高保真参数标定与贝叶斯寻优 (V3.2 完美复刻版)")
@@ -351,7 +392,7 @@ def main():
             results.append(MultiMarketSimulator.simulate(frames, p))
         results.sort(key=lambda r: r.score, reverse=True)
 
-    ReportGenerator.generate(frames, results, args.output)
+    ReportGenerator.generate(frames, results, str(out_path))
 
 
 if __name__ == "__main__":

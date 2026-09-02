@@ -1,6 +1,22 @@
 # Polymarket 交易机器人开发与架构核心规范 (Project Rules)
 
-本文档是 Polymarket 量化套利机器人系统的核心工程规范。在编写、修改、重构或审查本项目的任何代码时，必须严格遵守以下 8 大工程铁律：
+本文档是 Polymarket 量化套利机器人系统的核心工程规范。在编写、修改、重构或审查本项目的任何代码时，必须严格遵守以下 **12 大工程铁律**：
+
+---
+
+## 目录索引 (Quick Index)
+- [0. 核心数据源铁律 (VPS Single Source of Truth)](#0-核心数据源铁律-vps-single-source-of-truth)
+- [1. 最高交互与决策铁律 (High-Confidence Directive & Persona)](#1-最高交互与决策铁律-high-confidence-directive--persona)
+- [2. 资金与风控生命周期闭环 (Capital & Risk First)](#2-资金与风控生命周期闭环-capital--risk-first)
+- [3. 策略模型与微观执行 (Strategy & Execution Engine)](#3-策略模型与微观执行-strategy--execution-engine)
+- [4. CLOB V2 协议与原生签名规范 (CLOB Guardrails & Native Signing)](#4-clob-v2-协议与原生签名规范-clob-guardrails--native-signing)
+- [5. 极速事件驱动与网络高可用 (Event-Driven Streaming & Resilience)](#5-极速事件驱动与网络高可用-event-driven-streaming--resilience)
+- [6. 链上智能合约自动结算 (On-Chain CTF Auto-Redeem)](#6-链上智能合约自动结算-on-chain-ctf-auto-redeem)
+- [7. 领域模型与系统健壮性 (Domain Layering & Concurrency)](#7-领域模型与系统健壮性-domain-layering--concurrency)
+- [8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)](#8-dev-ops-敏捷闭环与仿真诚实性-agile-dev-ops--paper-fidelity)
+- [9. 2026 官方抛物线费率与 Maker 护城河 (Parabolic Dynamic Fee & Maker Edge)](#9-2026-官方抛物线费率与-maker-护城河-parabolic-dynamic-fee--maker-edge)
+- [10. 真实 L2 快照录包与高保真沙盒标定 (L2 Snapshot Recording & Sandbox Calibration)](#10-真实-l2-快照录包与高保真沙盒标定-l2-snapshot-recording--sandbox-calibration)
+- [11. 配置管理与单一真理源铁律 (Config Single Source of Truth)](#11-配置管理与单一真理源铁律-config-single-source-of-truth)
 
 ---
 
@@ -39,7 +55,7 @@
 
 ## 3. 策略模型与微观执行 (Strategy & Execution Engine)
 - **Maker-Maker 零手续费做市与 Taker 净 EV 严格守门双引擎**：
-  - **Maker-Maker (双边挂单)**：VPS 实盘验证具备 100% 胜率与 0 手续费磨损，作为系统主盈利引擎，严格施加双边买一 $\ge 0.35$ 盘口成熟度守门。
+  - **Maker-Maker (双边挂单)**：VPS 实盘验证具备 80%~100% 胜率与 0 手续费磨损，作为系统主盈利引擎，严格施加双边买一 $\ge 0.35$ 盘口成熟度守门。
   - **Taker-Maker (吃一挂二)**：首腿入场必须严格扣除双边真实手续费且净利差 $\text{Net EV} \ge \$0.005$，并施加 $(P_{\text{leg1}} + P_{\text{opp\_bid}}) \le 1.0$ 防倒挂保护；彻底放弃薄利润吃单。
   - **二腿追单保利天花板**：最高买入价动态钳制在 $P_{\text{max}} = 1.0 - \text{cost} - \text{fees} - \text{breakeven\_margin}$，严禁向上盲目让价。
 - **做 T 优先于超时强平 (Smart Flip Priority)**：
@@ -96,14 +112,20 @@
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
 - **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 **188 项全量单元测试** 与离线推理。
+  - 本地严禁跑主网连网脚本，依赖本地 **192 项全量单元测试** 与离线推理。
   - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【全量单测 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
+- **运维工具链常用指令**：
+  - `python scripts/vps_ops.py status`: 实时查看 VPS 大盘、活跃仓位与分发延迟。
+  - `python scripts/vps_ops.py logs -n 80`: 拉取 VPS 实时运行日志（支持 `-f` 持续跟踪）。
+  - `python scripts/vps_ops.py analyze`: 获取最近 50 笔交易的北极星转化率、胜率与出场归因。
+  - `python scripts/vps_ops.py clean-history`: 清空历史订单并重置大盘统计。
+  - `python scripts/vps_ops.py sync-snapshots`: 从 VPS 拉取真实 L2 盘口快照到本地。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
 
 ---
 
-## 9. Polymarket 2026 官方抛物线费率与 Maker 护城河 (Parabolic Dynamic Fee & Maker Edge)
+## 9. 2026 官方抛物线费率与 Maker 护城河 (Parabolic Dynamic Fee & Maker Edge)
 - **严格执行官方非线性对称抛物线公式**：
   - 手续费计算公式：$\text{Fee} = C \times \text{feeRate} \times p \times (1 - p)$，加密货币市场 $\text{feeRate} = 0.07$ (7%)。
   - **微观惩罚机理**：在 $p=0.50$ 时费率达到顶峰（每份 $\$0.0175$），在 $p=0.40$ 时每份 $\$0.0168$（占成本高达 **4.2%**）。**严禁使用任何过时的 1% 线性模型估算 Taker 净 EV**，必须全链路接入 `PricingEngine.calculate_parabolic_fee`。
@@ -112,7 +134,10 @@
 
 ---
 
-## 10. 离线高保真标定与帕累托前沿去重准则 (Concurrency Lock & Pareto Deduplication)
+## 10. 真实 L2 快照录包与高保真沙盒标定 (L2 Snapshot Recording & Sandbox Calibration)
+- **零阻塞不可变内存网格快照录包 (`L2SnapshotRecorder`)**：
+  - VPS 常驻后台守护线程以 1 帧/秒不可变只读访问 `OrderbookMemoryGrid`，每小时自动轮转生成 gzip 压缩快照，自动维护 7 天历史清理，磁盘异常绝不阻断主交易事件循环。
+  - 快照通过 `python scripts/vps_ops.py sync-snapshots --days 7` 归档至 `vps-logs/snapshots/`，作为离线调参与回测唯一真实数据源。
 - **多资产独立并发周期排他锁 (Multi-Asset 120s Concurrency Lock)**：
   - 离线回测沙盒（`scripts/calibrate_params.py`）必须为 BTC/ETH/SOL 分别维持独立的 120s 周期排他锁，杜绝在单资产密集采样帧中反复撮合虚增频次，确保与实盘多资产并发严格 1:1 对齐。
 - **帕累托最优报表特征去重 (Signature Deduplication)**：
