@@ -112,7 +112,7 @@
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
 - **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 **192 项全量单元测试** 与离线推理。
+  - 本地严禁跑主网连网脚本，依赖本地 **196 项全量单元测试** 与离线推理。
   - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【全量单测 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
 - **运维工具链常用指令**：
   - `python scripts/vps_ops.py status`: 实时查看 VPS 大盘、活跃仓位与分发延迟。
@@ -122,6 +122,7 @@
   - `python scripts/vps_ops.py sync-snapshots`: 从 VPS 拉取真实 L2 盘口快照到本地。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
+  - 挂买单（BUY Limit Order）必须严格以卖盘打穿（`best_ask <= buy_price`）作为模拟成交判定依据，严禁将对手盘买一抬升误判为成交。
 
 ---
 
@@ -151,3 +152,13 @@
 - **全局风控与分资产波动率环境对齐**：
   - 分资产波动率防爆盾（BTC 0.36%/0.15%, ETH 0.42%/0.20%, SOL 0.48%/0.22%）与费率环境变量统一维护在 `.env` 与 `.env.example` 中。
   - `src/polymarket/config.py` 中的代码默认值必须与 `.env.example` 保持 **100% 同步对齐**，严禁代码硬编码与外部配置产生脱节歧义。
+
+---
+
+## 12. Dual-Maker 双挂动态智能跟单与防抖铁律 (Dual-Bracket Re-peg & Pegging Guardrails)
+- **双挂动态智能贴盘跟单 (Dual-Maker Re-peg)**：
+  - 在 `PENDING_BOTH_LEGS` 挂单状态下，当盘口买一向上漂移反超当前挂单时，系统必须在自适应价差防抖冷却（宽价差 1.5s，紧凑价差 3.0s）后自动执行智能改单。
+  - 改单必须严格遵循 **保利天花板底线**（$P_{\text{yes, new}} + P_{\text{no, new}} \le 1.0 - \text{initial\_margin}$），严禁向上盲目让利。
+  - 施加 **阶梯跃迁保护**（仅在变动 $\ge 0.002$ 时触发，杜绝 0.001 互相踩踏）与 **卖一防穿透保护**（$P_{\text{new}} < \text{best\_ask}$），绝不转化为 Taker 吃单。
+- **实盘撤单保底补单容错**：
+  - 实盘批量改单失败时，必须无条件以原价格重新挂出保底订单，严禁留下单边裸奔敞口。

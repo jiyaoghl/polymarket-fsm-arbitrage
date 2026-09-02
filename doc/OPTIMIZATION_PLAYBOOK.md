@@ -158,12 +158,15 @@ graph TD
 - [x] **快照同步 CLI 与 API**：`vps_ops.py sync-snapshots` + `/api/snapshots/list` + `/api/snapshots/download/{file}` 已就绪；
 - [x] **离线高保真参数标定与贝叶斯寻优引擎 (`scripts/calibrate_params.py` V3.2)**：
   - **分市场独立并发锁**：BTC/ETH/SOL 独立维持 120s 周期锁，彻底消除 Tick 重采样过度统计，还原真实多资产并发开仓；
-  - **Optuna TPE 贝叶斯连续寻优**：在连续浮点空间自动寻优，实测单笔净利 **+$0.3847 ~ $0.4037 USDC**（与实盘吻合度 99%）；
+  - **Optuna TPE 贝叶斯连续寻优**：基于 43.8 万帧快照自动寻优，实测单笔净利 **+$0.3972 ~ $0.4033 USDC**（胜率 100%，0 强平）；
   - **全出场路径模拟**：精确复现 `HEDGED_LOCKED`（双买锁仓）、`DUAL_EXIT_SELL_SETTLED`（阶梯做T）与 `FORCE_CLOSED`（VWAP 强平）；
 - [x] **Polymarket 2026 官方抛物线手续费模型全面落地**：
   - 精确实现 $C \times 0.07 \times p \times (1 - p)$ 官方非线性扣费，Maker 享 0 费率与 20% 返利补贴；
   - 全链路净 EV 守门、二腿保利天花板、做 T 保本价与离线沙盒 100% 官方精度对账；
-- [x] **全量单元测试覆盖**：**188 项单元测试 100% 绿灯全部通过**。
+- [x] **Dual-Maker 双挂动态智能跟单引擎 (Smart Re-peg Engine)**：
+  - 攻克 `PENDING_BOTH_LEGS` 双挂被盘口甩开痛点，引入自适应价差防抖（1.5s~3.0s）与阶梯跳跃贴盘跟价，保利天花板严格守门；
+  - 修正模拟盘挂买单被对手盘反超误判为成交的微观撮合逻辑，严格对齐卖盘打穿判定；
+- [x] **全量单元测试覆盖**：**196 项单元测试 100% 绿灯全部通过**。
 
 ### 阶段 4：下一代高精度波动率与自适应时序风控引擎 (💡 未来待优化储备计划，暂不执行)
 - [ ] **Garman-Klass 真实极值波动率估计器**：
@@ -191,7 +194,7 @@ graph TD
 1. **先查 VPS，后做决策**：需要数据时一律先跑 `python scripts/vps_ops.py status / logs / analyze`，严禁打开本地 `trading.db` 或 `logs/` 做推论；
 2. **一次变更只服务一个核心目标**：每次改动清晰说明预期影响的北极星指标；
 3. **策略调参只改 `configs/strategies.json`**：严禁在代码中写死魔法数；
-4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 **184+ 项测试 100% 绿灯**；
+4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 **196 项测试 100% 绿灯**；
 5. **规范化流水线交付**：代码提交必须使用中文 Commit Message，并统一通过 `python scripts/vps_ops.py release "<中文提交>"` 触发 VPS 秒级热更新；
 6. **调参或复盘后及时同步基线**：在 `OPTIMIZATION_PLAYBOOK.md` 中更新最新日期与量化成果。
 

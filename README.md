@@ -111,11 +111,12 @@ flowchart TD
 - **第三重：二腿保利天花板与阶梯做 T**：追单限价严格钳制在 $P_{\text{max}} = 1.0 - \text{Cost}_1 - \text{Fees}_{\text{parabolic}} - \text{Margin}$，并提供 4 阶梯让价保本脱手机制，实盘强平率死死压制在 0.0%。
 
 ### 4. 离线高保真参数标定与贝叶斯连续寻优 (`scripts/calibrate_params.py`)
-- **真实 L2 盘口海量快照驱动**：基于 VPS 连续录制的 25.1 万帧真实深度与 1s 波动率矩阵进行高保真回放；
+- **真实 L2 盘口海量快照驱动**：基于 VPS 连续录制的 43.8 万帧真实深度与 1s 波动率矩阵进行高保真回放；
 - **多资产独立并发排他锁 (BTC/ETH/SOL 120s)**：精确复刻多资产并发真实生命周期，彻底消灭 Tick 重采样虚假撮合；
 - **Optuna TPE 贝叶斯寻优与帕累托前沿去重**：在连续浮点参数空间中自动寻优，输出覆盖极高收益型、标准均衡型与极致防守型的多样化帕累托前沿矩阵。
 
-### 5. 毫秒级二腿直通挂单与 Anti-Pennying (Zero-Latency Leg2 & Anti-Pennying)
+### 5. Dual-Maker 动态智能贴盘跟单与毫秒级直通 (Dual-Bracket Re-peg & Zero-Latency Leg2)
+- **Dual-Maker 双挂动态智能贴盘跟单 (Smart Re-peg Engine)**：在 `PENDING_BOTH_LEGS` 阶段，当盘口买一上涨反超当前挂单时，经过自适应价差防抖冷却（1.5s~3.0s）后自动执行智能平滑改单，始终锁定在买一黄金成交排位，彻底消灭双挂单因被甩开而超时撤单的痛点；
 - **首腿成交就地直通挂二腿 (<5ms)**：私有 WebSocket 捕获到首腿成交后，无需等待下一个公共 WS 盘口帧，直接在当前异步协程中就地调度 `Leg1OnlyTickHandler` 挂出二腿，最大化抢占对手盘队列第一位；
 - **Anti-Pennying 阶梯跟单**：当对侧买一排位被反超且冷却 $\ge 3.0\text{s}$ 时，跳跃加价 $0.002\sim 0.004$ 抢占队列，追价上限严格受净利差 $\ge 0.2\%$ 底线约束。
 
@@ -134,11 +135,11 @@ flowchart TD
 
 | 策略 ID | 策略模式 | 首腿入场 | 出场机制 | 核心特性 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.40** | dual_exit OCO | **极小额对照演练 (3U)**，严格入场门槛，高保利安全空间 | 🟢 活跃模拟 (对照组) |
-| `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.42** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 (5U) | 🟢 活跃模拟 (对照组) |
-| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.44** | dual_exit OCO | 高敏型 Taker-Maker，严格扣费净 EV 守门 (5U) | 🟢 活跃模拟 (对照组) |
-| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.42** | dual_exit OCO | **零手续费主力做市 (10U)**，动态 OBI + 成熟度守门 | 🟢 活跃模拟 (主力引擎) |
-| `maker_maker_standard` | 挂单 + 挂单 | **≤ 0.50** | dual_exit OCO | **宽泛做市副引擎 (10U)**，双边挂单拓宽流动性捕获 | 🟢 活跃模拟 (副引擎) |
+| `taker_maker_conservative` | 吃单 + 挂单 | **≤ 0.36** | dual_exit OCO | **极小额对照演练 (3U)**，严格入场门槛，高保利安全空间 | 🟢 活跃模拟 (对照组) |
+| `taker_maker_standard` | 吃单 + 挂单 | **≤ 0.38** | dual_exit OCO | 兼顾开仓效率与深度风控，全盘口错配净 EV 套利 (3U) | 🟢 活跃模拟 (对照组) |
+| `taker_maker_aggressive` | 吃单 + 挂单 | **≤ 0.39** | dual_exit OCO | 高敏型 Taker-Maker，严格扣费净 EV 守门 (3U) | 🟢 活跃模拟 (对照组) |
+| `maker_maker_conservative` | 挂单 + 挂单 | **≤ 0.40** | dual_exit OCO | **零手续费主力做市 (15U)**，动态 OBI + 成熟度守门 | 🟢 活跃模拟 (主力引擎) |
+| `maker_maker_standard` | 挂单 + 挂单 | **≤ 0.43** | dual_exit OCO | **最优标定做市主力 (15U)**，双挂贴盘跟单拓宽流动性捕获 | 🟢 活跃模拟 (主力引擎) |
 
 ---
 
@@ -153,7 +154,7 @@ pip install -r requirements.txt
 cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
-# 3. 运行自动化单元测试套件 (184 项测试 100% 绿灯通过)
+# 3. 运行自动化单元测试套件 (196 项测试 100% 绿灯通过)
 pytest -s tests/
 
 # 4. 启动 Dashboard 仪表盘
@@ -161,7 +162,7 @@ python -m polymarket.apps.dashboard
 ```
 
 ### 2. 敏捷发布流水线 (Agile Release Pipeline)
-本地开发调试完毕并通过 184 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
+本地开发调试完毕并通过 196 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
 
 ```bash
 # 自动执行【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】
@@ -174,7 +175,7 @@ python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与�
 python scripts/vps_ops.py sync-snapshots # 从 VPS 同步真实 L2 盘口快照到本地 vps-logs/snapshots/
 
 # 离线高保真参数标定与 Optuna 贝叶斯寻优 (纯离线零网络开销)
-python scripts/calibrate_params.py --mode optuna --trials 150 # 运行 150 轮连续贝叶斯寻优并产出报告
+python scripts/calibrate_params.py --mode optuna --trials 200 # 运行 200 轮连续贝叶斯寻优并产出报告
 python scripts/calibrate_params.py --mode grid                 # 运行 8 维网格参数搜索
 ```
 
