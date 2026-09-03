@@ -540,9 +540,90 @@ def cmd_tunnel(args):
         print(f"\n{YELLOW}[*] SSH 隧道已由用户主动断开。{RESET}")
 
 
+def cmd_live_check(args):
+    """实盘真金上线前置五维全链路护航体检 (Live Pilot Pre-flight Check)。"""
+    skip_probe = getattr(args, "skip_probe", False)
+    run_local = getattr(args, "local", False)
+    print_banner("实盘真金上线前置全链路五维自检 (Live Pilot Pre-flight)")
+
+    if run_local:
+        print("[*] 探测视角: 本地开发机直接探测")
+        from polymarket.services.live_checker import LivePreflightChecker
+        checker = LivePreflightChecker()
+        res = checker.run_all(skip_probe=skip_probe)
+    else:
+        print("[*] 探测视角: 远程 VPS 生产节点透视 (真实网络与撮合)")
+        endpoint = f"/api/ops/live-check?skip_probe={str(skip_probe).lower()}"
+        res = fetch_api(endpoint, timeout=20)
+
+    if not res:
+        print(f"{RED}[-] 无法获取实盘体检报告，请检查 VPS 服务或 SSH 隧道状态{RESET}")
+        return
+
+    checks = res.get("checks", {})
+    overall = res.get("overall_status", "UNKNOWN")
+    conclusion = res.get("conclusion", "")
+    elapsed = res.get("elapsed_seconds", 0.0)
+
+    color_map = {"PASS": GREEN, "WARN": YELLOW, "FAIL": RED, "SKIPPED": BLUE}
+
+    def format_status(st: str) -> str:
+        c = color_map.get(st, RESET)
+        return f"{c}[{st}]{RESET}"
+
+    # 1. 凭证
+    c_cred = checks.get("credentials", {})
+    print(f"\n{BOLD}1. 钱包与 API 凭证规范性:{RESET} {format_status(c_cred.get('status', ''))}")
+    print(f"   • 钱包地址: {c_cred.get('masked_address', '--')} (签名类型 Type={c_cred.get('signature_type', 0)})")
+    print(f"   • API Key 凭证: {'✅ 已配置' if c_cred.get('has_api_creds') else '⚠️ 未配置'}")
+    print(f"   • 诊断说明: {c_cred.get('message', '')}")
+
+    # 2. 时钟与网络
+    c_clock = checks.get("clock_and_latency", {})
+    print(f"\n{BOLD}2. NTP 时钟校准与撮合延迟:{RESET} {format_status(c_clock.get('status', ''))}")
+    print(f"   • 本地与撮合时差: {c_clock.get('drift_ms')} ms (要求: |Δt| < 500ms)")
+    print(f"   • CLOB HTTP/2 延迟: {c_clock.get('latency_ms')} ms")
+    print(f"   • 诊断说明: {c_clock.get('message', '')}")
+
+    # 3. 链上资产
+    c_chain = checks.get("chain_balances", {})
+    print(f"\n{BOLD}3. Polygon 链上 Gas 与 USDC 储备:{RESET} {format_status(c_chain.get('status', ''))}")
+    print(f"   • MATIC (POL Gas): {c_chain.get('matic_balance', 0.0)} MATIC (预警线: 0.1 MATIC)")
+    print(f"   • 链上原生 USDC  : ${c_chain.get('usdc_native_balance', 0.0):.2f}")
+    print(f"   • 链上跨链 USDC.e: ${c_chain.get('usdc_bridged_balance', 0.0):.2f}")
+    print(f"   • 响应 RPC 节点  : {c_chain.get('rpc_node', '--')}")
+    print(f"   • 诊断说明: {c_chain.get('message', '')}")
+
+    # 4. CLOB 托管与授权
+    c_clob = checks.get("clob_collateral", {})
+    print(f"\n{BOLD}4. CLOB 托管资金与合约授权 (Allowance):{RESET} {format_status(c_clob.get('status', ''))}")
+    print(f"   • CLOB 内部可交易余额: ${c_clob.get('clob_balance_usdc', 0.0):.2f} USDC")
+    print(f"   • 合约授权额度 (Allowance): ${c_clob.get('clob_allowance_usdc', 0.0):.2f} USDC")
+    print(f"   • 是否已完成 Approve 授权: {'✅ 是' if c_clob.get('is_approved') else '❌ 否 (阻断开仓)'}")
+    print(f"   • 诊断说明: {c_clob.get('message', '')}")
+
+    # 5. 发单/撤单探针
+    c_probe = checks.get("order_roundtrip_probe", {})
+    print(f"\n{BOLD}5. EIP-712 极低价发单/撤单穿透探针:{RESET} {format_status(c_probe.get('status', ''))}")
+    if c_probe.get("order_id"):
+        print(f"   • 测试探测订单 ID: {c_probe.get('order_id')}")
+    print(f"   • 诊断说明: {c_probe.get('message', '')}")
+
+    print(f"\n{BOLD}{CYAN}{'=' * 75}{RESET}")
+    print(f"[*] 综合自检评级: {format_status(overall)} (总耗时: {elapsed}s)")
+    print(f"[*] 评估结论: {conclusion}")
+    print(f"{BOLD}{CYAN}{'=' * 75}{RESET}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket VPS 敏捷运维与闭环分析 CLI")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
+
+    # live-check
+    p_live = subparsers.add_parser("live-check", help="实盘真金上线前置全链路五维自检")
+    p_live.add_argument("--skip-probe", action="store_true", help="跳过发单与撤单穿透探针 (仅做纯只读检查)")
+    p_live.add_argument("--local", action="store_true", help="在本地开发机执行检查 (默认连接远程 VPS 探测)")
+    p_live.set_defaults(func=cmd_live_check)
 
     # tunnel
     p_tunnel = subparsers.add_parser("tunnel", help="一键建立并保持与 VPS 的 SSH 端口加密安全隧道")

@@ -626,6 +626,17 @@ def remote_sync_strategies(strategies: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/ops/live-check")
+def remote_live_check(skip_probe: bool = False) -> Dict[str, Any]:
+    """
+    实盘真金上线前置护航自检接口 (Live Pilot Pre-flight Check)。
+    五维全链路体检：私钥凭证、链上 Gas/USDC、CLOB 托管与授权、时钟时延、极低价发单穿透探针。
+    """
+    from polymarket.services.live_checker import LivePreflightChecker
+    checker = LivePreflightChecker()
+    return checker.run_all(skip_probe=skip_probe)
+
+
 @app.post("/api/ops/clean-history")
 def remote_clean_history() -> Dict[str, Any]:
     """
