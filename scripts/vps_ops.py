@@ -460,7 +460,9 @@ def cmd_sync_snapshots(args):
 def cmd_sync_strategies(args):
     """一键将本地 configs/strategies.json 投递并热重载至 VPS。"""
     print_banner("远程同步并动态热重载策略配置 (Zero-Downtime Reload)")
-    strat_file = os.path.join(PROJECT_ROOT, "configs", "strategies.json")
+    import json
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    strat_file = os.path.join(project_root, "configs", "strategies.json")
     if not os.path.exists(strat_file):
         print(f"{RED}[-] 策略配置文件不存在: {strat_file}{RESET}")
         return

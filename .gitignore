@@ -24,3 +24,7 @@ smoke_test_halt/
 # Local temporary dirs
 scratch/
 tmp/
+
+# Snapshots & VPS Logs
+data/snapshots/
+vps-logs/
