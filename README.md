@@ -154,15 +154,18 @@ pip install -r requirements.txt
 cp configs/.env.example .env
 # 编辑 .env 填入私钥与 API 配置
 
-# 3. 运行自动化单元测试套件 (196 项测试 100% 绿灯通过)
+# 3. 运行自动化单元测试套件 (208 项测试 100% 绿灯通过)
 pytest -s tests/
 
-# 4. 启动 Dashboard 仪表盘
+# 4. 运行实盘上线全链路五维前置体检
+python scripts/vps_ops.py live-check --local
+
+# 5. 启动 Dashboard 仪表盘
 python -m polymarket.apps.dashboard
 ```
 
 ### 2. 敏捷发布流水线 (Agile Release Pipeline)
-本地开发调试完毕并通过 196 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
+本地开发调试完毕并通过 208 项全量测试后，可通过敏捷流水线实现秒级一键发布与 VPS 热更新：
 
 ```bash
 # 自动执行【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】
@@ -170,6 +173,8 @@ python scripts/vps_ops.py release "feat: 中文提交说明"
 
 # 常用运维与量化标定指令
 python scripts/vps_ops.py status         # 查看远程 VPS 运行大盘、各策略盈亏与延迟快照
+python scripts/vps_ops.py tunnel         # 一键建立本地 127.0.0.1:8888 与 VPS 的 SSH 加密安全隧道
+python scripts/vps_ops.py live-check     # 运行五维实盘上线前置自检 (凭证、POL/USDC/pUSD 储备、时延、发单探针)
 python scripts/vps_ops.py logs -n 50     # 查看远程 VPS 实时业务与风控日志流
 python scripts/vps_ops.py analyze        # 查看北极星转化率指标卡与出场路径透视表
 python scripts/vps_ops.py sync-snapshots # 从 VPS 同步真实 L2 盘口快照到本地 vps-logs/snapshots/
@@ -179,7 +184,7 @@ python scripts/calibrate_params.py --mode optuna --trials 200 # 运行 200 轮�
 python scripts/calibrate_params.py --mode grid                 # 运行 8 维网格参数搜索
 ```
 
-启动成功后，在浏览器中访问 `http://<你的IP>:8888` 即可进入实时量化大盘。
+启动安全隧道后，在浏览器中访问 `http://localhost:8888` 即可安全进入实时量化大盘。
 ---
 
 ## ⚙️ 关键配置项详解 (`.env` / `config.py`)

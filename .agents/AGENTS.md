@@ -1,6 +1,6 @@
 # Polymarket 交易机器人开发与架构核心规范 (Project Rules)
 
-本文档是 Polymarket 量化套利机器人系统的核心工程规范。在编写、修改、重构或审查本项目的任何代码时，必须严格遵守以下 **12 大工程铁律**：
+本文档是 Polymarket 量化套利机器人系统的核心工程规范。在编写、修改、重构或审查本项目的任何代码时，必须严格遵守以下 **13 大工程铁律**：
 
 ---
 
@@ -17,6 +17,8 @@
 - [9. 2026 官方抛物线费率与 Maker 护城河 (Parabolic Dynamic Fee & Maker Edge)](#9-2026-官方抛物线费率与-maker-护城河-parabolic-dynamic-fee--maker-edge)
 - [10. 真实 L2 快照录包与高保真沙盒标定 (L2 Snapshot Recording & Sandbox Calibration)](#10-真实-l2-快照录包与高保真沙盒标定-l2-snapshot-recording--sandbox-calibration)
 - [11. 配置管理与单一真理源铁律 (Config Single Source of Truth)](#11-配置管理与单一真理源铁律-config-single-source-of-truth)
+- [12. Dual-Maker 双挂动态智能跟单与防抖铁律 (Dual-Bracket Re-peg & Pegging Guardrails)](#12-dual-maker-双挂动态智能跟单与防抖铁律-dual-bracket-re-peg--pegging-guardrails)
+- [13. 实盘真金钱包纯净度与物理隔离铁律 (Wallet Purity & Anti-Sweeper Isolation)](#13-实盘真金钱包纯净度与物理隔离铁律-wallet-purity--anti-sweeper-isolation)
 
 ---
 
@@ -162,3 +164,16 @@
   - 施加 **阶梯跃迁保护**（仅在变动 $\ge 0.002$ 时触发，杜绝 0.001 互相踩踏）与 **卖一防穿透保护**（$P_{\text{new}} < \text{best\_ask}$），绝不转化为 Taker 吃单。
 - **实盘撤单保底补单容错**：
   - 实盘批量改单失败时，必须无条件以原价格重新挂出保底订单，严禁留下单边裸奔敞口。
+
+---
+
+## 13. 实盘真金钱包纯净度与物理隔离铁律 (Wallet Purity & Anti-Sweeper Isolation)
+- **纯净出生与独立私钥隔离**：
+  - 实盘做市钱包必须由本地完全离线环境独立生成全新助记词/私钥（或硬件钱包派生），**严禁复用任何曾用于日常浏览器交互、网页空投、测试 DApp 或社交账号快捷登录（Google/Web3Auth）的受污染地址**。
+- **EIP-7702 委托与 Permit2 离线签名排他审查**：
+  - 在实盘充值与启动前，必须通过 `python scripts/vps_ops.py live-check` 严格核查底层账户属性；
+  - 一旦检测到地址存在任何外部智能合约代码指针（`is_contract: true` 或 `proxy_type: eip7702`，即 `0xef0100...` 前缀），或存在对未开源、非官方 Spender 的异常授权，**系统必须立即红灯强制阻断，坚决拒绝向受污染地址注入资金**。
+- **0.1 POL 哨兵资金探针机制 (Sentinel Probe)**：
+  - 首次实盘充值前，强制先充入 0.1~0.2 个 POL 并在链上静置观察 5~10 分钟，严密监控是否有任何自动化抢跑扫币程序（Sweeper Bot）在暗中监听。
+- **专用做市白名单与权限最小化**：
+  - 做市钱包仅允许与 Polymarket 官方受审计的核心交易所合约（`CTF Exchange 0xE11118...` 与 `Neg Risk Exchange 0xe2222d...`）交互，绝不签署任何形式的非官方 Approve 或不可知的离线 Permit2 支票。

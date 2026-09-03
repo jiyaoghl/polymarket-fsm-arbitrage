@@ -91,3 +91,15 @@
   - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【回归测试 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
 - **模拟盘高保真度 (Paper Fidelity)**：
   - 模拟模式必须包含真实的 Taker/Maker 手续费扣除、基于 `SIM_BASE_FILL_RATE` 的非 100% 成交判定、以及随机网络延迟与滑点模拟。
+
+---
+
+## 9. 实盘真金钱包纯净度与物理隔离铁律 (Wallet Purity & Anti-Sweeper Isolation)
+- **纯净出生与独立私钥隔离**：
+  - 实盘做市钱包必须由本地完全离线环境独立生成全新助记词/私钥（或硬件钱包派生），严禁复用任何曾用于日常浏览器交互、网页空投、测试 DApp 或社交账号快捷登录（Google/Web3Auth）的受污染地址。
+- **EIP-7702 委托与 Permit2 离线签名排他审查**：
+  - 在实盘充值与启动前，必须通过 `python scripts/vps_ops.py live-check` 严格核查底层账户属性；
+  - 一旦检测到地址存在任何外部智能合约代码指针（`is_contract: true` 或 `proxy_type: eip7702`，即 `0xef0100...` 前缀），或存在对未开源、非官方 Spender 的异常授权，系统必须立即红灯强制阻断，坚决拒绝向受污染地址注入资金。
+- **0.1 POL 哨兵资金探针机制 (Sentinel Probe)**：
+  - 首次实盘充值前，强制先充入 0.1~0.2 个 POL 并在链上静置观察 5~10 分钟，严密监控是否有任何自动化抢跑扫币程序（Sweeper Bot）在暗中监听。
+
