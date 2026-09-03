@@ -176,9 +176,13 @@ graph TD
   - `.gitignore` 忽略快照并解绑索引，`vps.sh` 升级为 `git fetch + git reset --hard` 幂等更新；
 - [x] **全量自动化测试基线**：**196 项单元测试 100% 绿灯全部通过**。
 
-### 阶段 4：实盘前置护航与下一代高精度时序风控 (💡 后续储备推进方向)
-- [ ] **小额实盘前置自检套件 (`vps_ops.py live-check`)**：
-  - 自动化检查 EOA 钱包 USDC 与 MATIC 余额、CTF 与 Exchange 授权状态、EIP-712 签名有效性与时间戳对齐，为小额实盘（50U~100U）提供 100% 确定性安全护航；
+### 阶段 4：实盘前置护航与下一代高精度时序风控 (🔥 进行中/部分已归档)
+- [x] **小额实盘前置自检套件 (`vps_ops.py live-check`)**：
+  - 自动化全链路五维体检：私钥凭证、Polygon 链上 Gas/USDC/pUSD 储备、CLOB V2 托管抵押品与 allowances 无限额度授权映射、NTP 时钟时延、极低价发单撤单穿透探针；
+- [x] **链上自动赎回 0 成本静态模拟预检护盾 (`eth_call Dry-Run`)**：
+  - 彻底终结链上 Revert 交易消耗 Gas 漏洞：在广播前本地调用 `contract.functions.redeemPositions(...).call()` 模拟执行，未结算或 0 持仓在本地 100% 拦截，绝不广播主网交易，彻底杜绝 Gas 浪费；
+- [x] **方案 A：取消公网暴露与 SSH 端口加密隧道 (`vps_ops.py tunnel`)**：
+  - VPS 监听地址收敛为 `127.0.0.1:8888` 拒绝外网扫描，本地一键建立并保持 SSH 端口加密映射，CLI 自动探测自适应切换；
 - [ ] **Garman-Klass 真实极值波动率估计器**：
   - 融合 Binance 1m K 线的 $Open, High, Low, Close$ 四价，方差估计效率较传统收盘价提升 7.4 倍，彻底消灭宽幅插针但收盘回归导致的漏判；
 - [ ] **EWMA 指数时间衰减平滑加权**：
@@ -201,7 +205,7 @@ graph TD
 1. **先查 VPS，后做决策**：需要数据时一律先跑 `python scripts/vps_ops.py status / logs / analyze`，严禁打开本地 `trading.db` 或 `logs/` 做推论；
 2. **一次变更只服务一个核心目标**：每次改动清晰说明预期影响的北极星指标；
 3. **策略调参只改 `configs/strategies.json`**：严禁在代码中写死魔法数；
-4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 **196 项测试 100% 绿灯**；
+4. **全量测试通过方可发布**：每次代码修改后必须运行 `pytest -s tests/` 确保 **208 项测试 100% 绿灯**；
 5. **规范化流水线交付**：代码提交必须使用中文 Commit Message，并统一通过 `python scripts/vps_ops.py release "<中文提交>"` 触发 VPS 秒级热更新；
 6. **调参或复盘后及时同步基线**：在 `OPTIMIZATION_PLAYBOOK.md` 中更新最新日期与量化成果。
 
