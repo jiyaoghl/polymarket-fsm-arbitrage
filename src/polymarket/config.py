@@ -83,6 +83,14 @@ ASSET_CHOP_THRESHOLDS = {
         "max_net_change": float(os.getenv("XRP_CHOP_MAX_NET_CHANGE", "0.22")),
     },
 }
+
+# Garman-Klass + EWMA 波动率估计器超参数
+# GK_EWMA_ENABLED=true  → 启用 GK+EWMA 替代旧 close 3σ 法（默认开启）
+# GK_EWMA_HALF_LIFE     → EWMA 半衰期（单位：K 线根数），半衰期越大历史记忆越长、抗噪越强
+#                          默认 4 根（≈4 分钟），最旧第 1/10 根权重衰减至 ~0.84^9 ≈ 17%
+GK_EWMA_ENABLED = os.getenv("GK_EWMA_ENABLED", "true").lower() in ("true", "1", "yes")
+GK_EWMA_HALF_LIFE = int(os.getenv("GK_EWMA_HALF_LIFE", "4"))
+
 # 资金与风控配置
 DAILY_MAX_DRAWDOWN = float(os.getenv("DAILY_MAX_DRAWDOWN", "0.05"))  # 5% 最大回撤
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100.0"))       # 默认资金基准（100 USDC）
