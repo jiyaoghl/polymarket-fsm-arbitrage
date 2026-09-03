@@ -392,8 +392,9 @@ def main():
     parser.add_argument("--max-frames", type=int, default=500000, help="最多读取的快照帧数 (默认 500000)")
     parser.add_argument("--mode", type=str, default="optuna", choices=["optuna", "grid"], help="寻优模式")
     parser.add_argument("--trials", type=int, default=300, help="Optuna 试验次数 (默认 300)")
-    parser.add_argument("--output", type=str, default="data/calibration_report.md", help="输出报告路径")
+    parser.add_argument("--output", type=str, default="doc/CALIBRATION_REPORT.md", help="输出报告路径")
     args = parser.parse_args()
+
 
     # 解析为基于项目根目录的绝对路径
     out_path = Path(args.output)
