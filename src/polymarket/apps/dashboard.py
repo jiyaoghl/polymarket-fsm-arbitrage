@@ -601,6 +601,31 @@ def remote_restart() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/ops/sync-strategies")
+def remote_sync_strategies(strategies: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    远程直接同步并热重载策略配置 (Zero-Downtime Dynamic Reload)。
+    """
+    import json
+    from pathlib import Path
+    config_path = Path(manager.config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(strategies, f, indent=4, ensure_ascii=False)
+    
+    # 动态热重载策略
+    manager.load_strategies()
+    loaded_names = [bot.strategy_id for bot in getattr(manager, "bots", [])]
+    return {
+        "status": "ok",
+        "action": "sync-strategies",
+        "loaded_strategies": loaded_names,
+        "count": len(loaded_names),
+        "message": f"策略配置已成功更新并热重载！当前活跃策略: {loaded_names}",
+        "timestamp": time.time()
+    }
+
+
 @app.post("/api/ops/clean-history")
 def remote_clean_history() -> Dict[str, Any]:
     """

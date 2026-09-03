@@ -177,8 +177,9 @@ clean_logs() {
 
 # 9. 更新代码并重启
 update_and_restart() {
-    echo "正在从 Git 拉取最新代码..."
-    git pull origin main || echo "Git pull 失败，跳过直接重启..."
+    echo "正在从 Git 拉取最新代码 (强制重置对齐 origin/main)..."
+    git fetch origin main || true
+    git reset --hard origin/main || git pull origin main || echo "Git pull 失败，跳过直接重启..."
     setup_environment
     stop_service
     start_service

@@ -457,8 +457,27 @@ def cmd_sync_snapshots(args):
         except Exception as e:
             print(f"  {RED}✗{RESET} {fname} 下载失败: {e}")
 
-    print(f"\n{GREEN}[+] 同步完成：下载 {downloaded} 个，跳过 {skipped} 个 (已存在){RESET}")
-    print(f"[*] 本地路径: {local_dir}")
+def cmd_sync_strategies(args):
+    """一键将本地 configs/strategies.json 投递并热重载至 VPS。"""
+    print_banner("远程同步并动态热重载策略配置 (Zero-Downtime Reload)")
+    strat_file = os.path.join(PROJECT_ROOT, "configs", "strategies.json")
+    if not os.path.exists(strat_file):
+        print(f"{RED}[-] 策略配置文件不存在: {strat_file}{RESET}")
+        return
+    try:
+        with open(strat_file, "r", encoding="utf-8") as f:
+            strategies = json.load(f)
+    except Exception as e:
+        print(f"{RED}[-] 读取本地策略配置失败: {e}{RESET}")
+        return
+
+    print(f"[*] 正在向 VPS 投递 {len(strategies)} 组策略配置...")
+    res = post_api("/api/ops/sync-strategies", timeout=15, json_data=strategies)
+    if res and res.get("status") == "ok":
+        print(f"{GREEN}[+] {res.get('message')}{RESET}")
+        print(f"{GREEN}[+] 当前活跃策略数: {res.get('count')} 个: {res.get('loaded_strategies')}{RESET}")
+    else:
+        print(f"{RED}[-] 同步失败: {res}{RESET}")
 
 
 def main():
@@ -504,6 +523,10 @@ def main():
     p_sync = subparsers.add_parser("sync-snapshots", help="从 VPS 拉取 L2 盘口快照到本地 vps-logs/snapshots/")
     p_sync.add_argument("--days", type=int, default=1, help="拉取最近 N 天的快照 (默认: 1)")
     p_sync.set_defaults(func=cmd_sync_snapshots)
+
+    # sync-strategies
+    p_sync_strat = subparsers.add_parser("sync-strategies", help="一键将本地 configs/strategies.json 投递并热重载至 VPS")
+    p_sync_strat.set_defaults(func=cmd_sync_strategies)
 
     args = parser.parse_args()
     if not args.command:
