@@ -30,8 +30,108 @@ except ImportError:
     print("[-] 缺少 requests 依赖，请运行 pip install requests")
     sys.exit(1)
 
+from pathlib import Path
+# 自动加载根目录 .env
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+if _env_file.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=_env_file)
+    except Exception:
+        pass
+
 # 默认 VPS 地址，支持环境变量覆盖
 DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://161.120.187.156:8888")
+
+
+class SSHRemoteExecutor:
+    """基于 Paramiko 的免交互 SSH 远程执行器 (通过 .env 密码直接直连 VPS 回环，永不断联)"""
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        return bool(os.getenv("VPS_SSH_PASSWORD")) or bool(os.getenv("VPS_SSH_KEY_FILE"))
+
+    @classmethod
+    def get_ssh_client(cls):
+        import paramiko
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        raw_host = os.getenv("VPS_HOST", "161.120.187.156")
+        raw_host = raw_host.replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
+        user = os.getenv("VPS_SSH_USER", "ubuntu")
+        pwd = os.getenv("VPS_SSH_PASSWORD", "")
+        port = int(os.getenv("VPS_SSH_PORT", "22"))
+        key_file = os.getenv("VPS_SSH_KEY_FILE", "")
+
+        connect_kwargs = {
+            "hostname": raw_host,
+            "port": port,
+            "username": user,
+            "timeout": 8,
+        }
+        if pwd:
+            connect_kwargs["password"] = pwd
+        if key_file and os.path.exists(key_file):
+            connect_kwargs["key_filename"] = key_file
+
+        client.connect(**connect_kwargs)
+        return client
+
+    @classmethod
+    def exec_cmd(cls, cmd: str, timeout: int = 15):
+        client = cls.get_ssh_client()
+        try:
+            stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode("utf-8", errors="replace")
+            err = stderr.read().decode("utf-8", errors="replace")
+            return exit_code, out, err
+        finally:
+            client.close()
+
+    @classmethod
+    def curl_api(cls, endpoint: str, timeout: int = 10, method: str = "GET", json_data: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+        import json
+        if method == "GET":
+            cmd = f"curl -s --max-time {timeout} http://127.0.0.1:8888{endpoint}"
+        else:
+            payload_str = json.dumps(json_data or {}).replace('"', '\\"')
+            cmd = f'curl -s -X POST -H "Content-Type: application/json" -d "{payload_str}" --max-time {timeout} http://127.0.0.1:8888{endpoint}'
+        code, out, err = cls.exec_cmd(cmd, timeout=timeout + 3)
+        if code == 0 and out.strip():
+            try:
+                return json.loads(out)
+            except Exception:
+                pass
+        return None
+
+    @classmethod
+    def tail_logs(cls, lines: int = 80, source: str = "all") -> list:
+        remote_dir = os.getenv("VPS_REMOTE_DIR", "/home/ubuntu/polymarket-fsm-arbitrage")
+        if source == "trade":
+            log_file = f"{remote_dir}/logs/trading.log"
+        elif source == "paper":
+            log_file = f"{remote_dir}/logs/paper.log"
+        else:
+            log_file = f"{remote_dir}/logs/system.log"
+        cmd = f"tail -n {lines} {log_file} 2>/dev/null || tail -n {lines} {remote_dir}/logs/trading.log"
+        code, out, err = cls.exec_cmd(cmd, timeout=10)
+        if code == 0 and out:
+            return [l for l in out.splitlines() if l.strip()]
+        return []
+
+    @classmethod
+    def sftp_download(cls, remote_path: str, local_path: str) -> bool:
+        client = cls.get_ssh_client()
+        try:
+            sftp = client.open_sftp()
+            sftp.get(remote_path, local_path)
+            sftp.close()
+            return True
+        except Exception:
+            return False
+        finally:
+            client.close()
 
 
 def get_active_vps_host() -> str:
@@ -39,8 +139,8 @@ def get_active_vps_host() -> str:
     智能解析最优先的 VPS 端点：
     1. 若配置了显式环境变量 VPS_HOST，直接使用；
     2. 优先探测本地 SSH 隧道 (http://127.0.0.1:8888)；
-    3. 若本地隧道连通，走本地安全通道；
-    4. 否则使用 DEFAULT_VPS_HOST (公网地址)。
+    3. 若本地未开启隧道，但配置了 VPS_SSH_PASSWORD，标记使用 SSH 密码通道；
+    4. 否则使用 DEFAULT_VPS_HOST。
     """
     if os.getenv("VPS_HOST"):
         return os.getenv("VPS_HOST")
@@ -64,7 +164,12 @@ RESET = "\033[0m"
 
 def print_banner(title: str):
     active_host = get_active_vps_host()
-    channel_tag = f"{GREEN}[安全隧道]{RESET}" if "127.0.0.1" in active_host or "localhost" in active_host else f"{YELLOW}[公网通道]{RESET}"
+    if "127.0.0.1" in active_host or "localhost" in active_host:
+        channel_tag = f"{GREEN}[本地隧道]{RESET}"
+    elif SSHRemoteExecutor.is_configured():
+        channel_tag = f"{GREEN}[SSH密码通道]{RESET}"
+    else:
+        channel_tag = f"{YELLOW}[公网通道]{RESET}"
     print(f"\n{BOLD}{CYAN}{'=' * 75}{RESET}")
     print(f"{BOLD}{CYAN}  [*] {title} ({channel_tag} {active_host}){RESET}")
     print(f"{BOLD}{CYAN}{'=' * 75}{RESET}")
@@ -78,15 +183,22 @@ def fetch_api(endpoint: str, timeout: int = 5, retries: int = 3) -> Optional[Dic
             r = requests.get(url, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
-            print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
             return None
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             if attempt < retries:
-                time.sleep(0.5 * attempt)
+                time.sleep(0.3 * attempt)
                 continue
+            # HTTP 失败时自动无缝降级到 SSH 密码直连
+            if SSHRemoteExecutor.is_configured():
+                try:
+                    res = SSHRemoteExecutor.curl_api(endpoint, timeout=timeout, method="GET")
+                    if res is not None:
+                        return res
+                except Exception:
+                    pass
             print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
-            if "127.0.0.1" not in host:
-                print(f"{YELLOW}[提示] 若公网已关闭，请先运行: python scripts/vps_ops.py tunnel 建立 SSH 加密隧道{RESET}")
+            if "127.0.0.1" not in host and not SSHRemoteExecutor.is_configured():
+                print(f"{YELLOW}[提示] 可在 .env 中配置 VPS_SSH_PASSWORD 即可实现免隧道密码直连{RESET}")
             return None
 
 
@@ -98,14 +210,23 @@ def post_api(endpoint: str, timeout: int = 10, json_data: Optional[Dict[str, Any
             r = requests.post(url, json=json_data or {}, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
-            print(f"{RED}[-] 请求 {url} 失败 [HTTP {r.status_code}]: {r.text[:200]}{RESET}")
             return None
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             if attempt < retries:
-                time.sleep(0.5 * attempt)
+                time.sleep(0.3 * attempt)
                 continue
+            # HTTP 失败时自动无缝降级到 SSH 密码直连
+            if SSHRemoteExecutor.is_configured():
+                try:
+                    res = SSHRemoteExecutor.curl_api(endpoint, timeout=timeout, method="POST", json_data=json_data)
+                    if res is not None:
+                        return res
+                except Exception:
+                    pass
             print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
             return None
+
+
 
 
 def cmd_status(args):
@@ -181,11 +302,17 @@ def cmd_logs(args):
     while True:
         res = fetch_api(f"/api/logs/tail?lines={lines}&source={source}")
         if not res or res.get("status") != "ok":
-            print(f"{RED}获取日志失败: {res.get('message') if res else '网络异常'}{RESET}")
-            if not follow:
-                break
-            time.sleep(2)
-            continue
+            # 尝试通过 SSH 密码直连直接抓取日志文件
+            if SSHRemoteExecutor.is_configured():
+                direct_lines = SSHRemoteExecutor.tail_logs(lines=lines, source=source)
+                if direct_lines:
+                    res = {"status": "ok", "lines": direct_lines}
+            if not res or res.get("status") != "ok":
+                print(f"{RED}获取日志失败: {res.get('message') if res else '网络异常'}{RESET}")
+                if not follow:
+                    break
+                time.sleep(2)
+                continue
 
         log_lines = res.get("lines", [])
         new_lines = []
@@ -470,7 +597,8 @@ def cmd_sync_snapshots(args):
             skipped += 1
             continue
 
-        url = f"{DEFAULT_VPS_HOST.rstrip('/')}/api/snapshots/download/{fname}"
+        host = get_active_vps_host()
+        url = f"{host.rstrip('/')}/api/snapshots/download/{fname}"
         try:
             r = requests.get(url, timeout=30, stream=True)
             r.raise_for_status()
@@ -480,7 +608,15 @@ def cmd_sync_snapshots(args):
             downloaded += 1
             print(f"  {GREEN}↓{RESET} {fname} ({remote_size / 1024:.1f} KB)")
         except Exception as e:
-            print(f"  {RED}✗{RESET} {fname} 下载失败: {e}")
+            # 尝试通过 SFTP 密码通道直接下载
+            remote_dir = os.getenv("VPS_REMOTE_DIR", "/home/ubuntu/polymarket-fsm-arbitrage")
+            remote_snap_path = f"{remote_dir}/data/snapshots/{fname}"
+            if SSHRemoteExecutor.is_configured() and SSHRemoteExecutor.sftp_download(remote_snap_path, local_path):
+                downloaded += 1
+                print(f"  {GREEN}↓ (SFTP){RESET} {fname} ({remote_size / 1024:.1f} KB)")
+            else:
+                print(f"  {RED}✗{RESET} {fname} 下载失败: {e}")
+
 
 def cmd_sync_strategies(args):
     """一键将本地 configs/strategies.json 投递并热重载至 VPS。"""

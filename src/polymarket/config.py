@@ -156,3 +156,11 @@ SNAPSHOT_ENABLED = os.getenv("SNAPSHOT_ENABLED", "true").lower() in ("true", "1"
 SNAPSHOT_INTERVAL_SEC = float(os.getenv("SNAPSHOT_INTERVAL_SEC", "1.0"))       # 采样频率：1 帧/秒
 SNAPSHOT_RETENTION_DAYS = int(os.getenv("SNAPSHOT_RETENTION_DAYS", "7"))        # 保留最近 7 天
 SNAPSHOT_DIR = str(paths.data_dir() / "snapshots")
+
+# VPS 远程自动化免交互运维配置 (严禁上传 GitHub)
+VPS_HOST = os.getenv("VPS_HOST", "161.120.187.156").strip()
+VPS_SSH_USER = os.getenv("VPS_SSH_USER", "ubuntu").strip()
+VPS_SSH_PASSWORD = os.getenv("VPS_SSH_PASSWORD", "").strip()
+VPS_SSH_PORT = int(os.getenv("VPS_SSH_PORT", "22"))
+VPS_REMOTE_DIR = os.getenv("VPS_REMOTE_DIR", "/home/ubuntu/polymarket-fsm-arbitrage").strip()
+
