@@ -109,35 +109,52 @@ class LivePreflightChecker:
         erc20_data = f"0x70a08231{clean_wallet}"
         pusd_contract = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 
+        # 优化多候选公共 RPC 节点轮换（优先使用高可用免封锁节点）
+        rpc_nodes = [
+            "https://1rpc.io/matic",
+            "https://polygon-bor-rpc.publicnode.com",
+            self.rpc_url,
+            "https://polygon.gateway.tenderly.co",
+            "https://polygon-rpc.com"
+        ]
+        # 去重且保留顺序
+        rpc_nodes = [r for idx, r in enumerate(rpc_nodes) if r and r.startswith("http") and r not in rpc_nodes[:idx]]
+
         for rpc in rpc_nodes:
-            if not rpc or not rpc.startswith("http"):
-                continue
             try:
                 # 1. 查询 Polygon 主网原生代币 POL (原 MATIC Gas 费)
                 p_pol = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [addr, "latest"], "id": 1}
-                r1 = requests.post(rpc, json=p_pol, timeout=3.5)
-                res1 = r1.json().get("result")
+                r1 = requests.post(rpc, json=p_pol, timeout=4.0)
+                d1 = r1.json()
+                if "error" in d1 or "result" not in d1:
+                    continue
+                res1 = d1.get("result")
                 if res1 and res1 != "0x":
                     pol_balance = int(res1, 16) / 1e18
 
                 # 2. 查询 pUSD (Polymarket 原生抵押品代币)
                 p_pusd = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": pusd_contract, "data": erc20_data}, "latest"], "id": 2}
-                r_p = requests.post(rpc, json=p_pusd, timeout=3.5)
-                res_p = r_p.json().get("result")
+                r_p = requests.post(rpc, json=p_pusd, timeout=4.0)
+                dp = r_p.json()
+                if "error" in dp or "result" not in dp:
+                    continue
+                res_p = dp.get("result")
                 if res_p and res_p != "0x":
                     pusd_balance = int(res_p, 16) / 1e6
 
                 # 3. 查询 Bridged USDC (USDC.e)
                 p_usdc1 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_BRIDGED_ADDRESS, "data": erc20_data}, "latest"], "id": 3}
-                r2 = requests.post(rpc, json=p_usdc1, timeout=3.5)
-                res2 = r2.json().get("result")
+                r2 = requests.post(rpc, json=p_usdc1, timeout=4.0)
+                d2 = r2.json()
+                res2 = d2.get("result")
                 if res2 and res2 != "0x":
                     usdc_bridged = int(res2, 16) / 1e6
 
                 # 4. 查询 Native USDC
                 p_usdc2 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_NATIVE_ADDRESS, "data": erc20_data}, "latest"], "id": 4}
-                r3 = requests.post(rpc, json=p_usdc2, timeout=3.5)
-                res3 = r3.json().get("result")
+                r3 = requests.post(rpc, json=p_usdc2, timeout=4.0)
+                d3 = r3.json()
+                res3 = d3.get("result")
                 if res3 and res3 != "0x":
                     usdc_native = int(res3, 16) / 1e6
 
