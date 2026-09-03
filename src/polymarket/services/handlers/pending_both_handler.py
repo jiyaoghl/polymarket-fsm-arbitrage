@@ -62,32 +62,63 @@ class PendingBothLegsTickHandler(BaseTickHandler):
 
         # 判定 YES 挂买单成交情况 (只有卖盘打穿至挂买价时才成交)
         yes_filled = False
+        actual_yes_size = yes_size
+        actual_yes_cost = yes_price
+        is_yes_partial = False
+
         if not params.is_live:
             yes_filled = (best_ask_yes is not None and best_ask_yes <= yes_price)
+            sim_partial = getattr(ctx, "_sim_partial_fill_size", None)
+            if yes_filled and sim_partial is not None:
+                actual_yes_size = float(sim_partial)
+                is_yes_partial = actual_yes_size < yes_size * 0.99
         elif yes_id:
-            yes_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+            yes_filled, yes_pos = await OrderExecutionService.async_reconcile_phantom_fill(
                 deps.client, yes_id, str(yes_token), yes_size, params.strategy_id, timeout=2.0
             )
+            if yes_pos:
+                actual_yes_size = yes_pos.size
+                actual_yes_cost = yes_pos.cost
+                is_yes_partial = yes_pos.is_partially_filled or (actual_yes_size < yes_size * 0.99)
 
         # 判定 NO 挂买单成交情况 (只有卖盘打穿至挂买价时才成交)
         no_filled = False
+        actual_no_size = no_size
+        actual_no_cost = no_price
+        is_no_partial = False
+
         if not params.is_live:
             no_filled = (best_ask_no is not None and best_ask_no <= no_price)
+            sim_partial_no = getattr(ctx, "_sim_partial_fill_size_no", None)
+            if no_filled and sim_partial_no is not None:
+                actual_no_size = float(sim_partial_no)
+                is_no_partial = actual_no_size < no_size * 0.99
         elif no_id:
-            no_filled, _ = await OrderExecutionService.async_reconcile_phantom_fill(
+            no_filled, no_pos = await OrderExecutionService.async_reconcile_phantom_fill(
                 deps.client, no_id, str(no_token), no_size, params.strategy_id, timeout=2.0
             )
+            if no_pos:
+                actual_no_size = no_pos.size
+                actual_no_cost = no_pos.cost
+                is_no_partial = no_pos.is_partially_filled or (actual_no_size < no_size * 0.99)
 
         # 分支 A: 双腿均被吃单，达成无风险对冲 (秒级锁定)
         if yes_filled and no_filled:
-            ctx.leg1 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
-            ctx.leg2 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+            min_matched_size = round(min(actual_yes_size, actual_no_size), 2)
+            ctx.leg1 = LegPosition(
+                token=str(yes_token), side="BUY", cost=actual_yes_cost, size=min_matched_size,
+                original_size=yes_size, is_partially_filled=is_yes_partial, order_id=yes_id or "sim_yes"
+            )
+            ctx.leg2 = LegPosition(
+                token=str(no_token), side="BUY", cost=actual_no_cost, size=min_matched_size,
+                original_size=no_size, is_partially_filled=is_no_partial, order_id=no_id or "sim_no"
+            )
             ctx.leg1_dir = "YES"
             ctx.leg2_dir = "NO"
 
             gross_ev, fee, net_ev = PricingEngine.calculate_net_ev(
-                leg1_cost=yes_price, leg1_size=yes_size,
-                leg2_cost=no_price, leg2_size=no_size,
+                leg1_cost=actual_yes_cost, leg1_size=min_matched_size,
+                leg2_cost=actual_no_cost, leg2_size=min_matched_size,
                 leg1_order_type="GTC", leg2_order_type="GTC"
             )
             ctx.profit_usdc = net_ev
@@ -101,35 +132,106 @@ class PendingBothLegsTickHandler(BaseTickHandler):
 
         # 分支 B: YES 率先成交，立即撤销 NO 挂单并流转至 LEG1_ONLY 触发自适应做 T 与配对 OCO
         if yes_filled and not no_filled:
+            # 1. 碎单保护：交易所最小下单限制为 5.0 份，若成交份数不足 5.0 份，保持挂单等待对手盘继续吃单
+            if actual_yes_size < 5.0:
+                logger.info(
+                    f"[策略FSM：{params.strategy_id}] YES 侧仅发生碎单成交 ({actual_yes_size:.2f} < 5.0 份)，"
+                    f"保持双边挂单继续等待对手盘吃满安全对冲门槛。"
+                )
+                return
+
             now_time = time.time()
+            # 2. 方案 A：即时锁定当前批次，撤销对手盘 NO 挂单
             if no_id:
                 await deps.client.cancel_order_async(no_id)
-            ctx.leg1 = LegPosition(token=str(yes_token), side="BUY", cost=yes_price, size=yes_size, order_id=yes_id or "sim_yes")
+
+            # 若 YES 挂单存在未成交尾巴 (如 15/40)，主动撤销盘口残留单，防止后续被单边毒性流动性穿透
+            if yes_id and is_yes_partial:
+                await deps.client.cancel_order_async(yes_id)
+                logger.info(
+                    f"[策略FSM：{params.strategy_id}] [部分成交锁定] YES 实际成交 {actual_yes_size:.2f}/{yes_size:.2f} 份，"
+                    f"已主动撤销剩余 {yes_size - actual_yes_size:.2f} 份盘口尾巴挂单。"
+                )
+
+            # 3. 释放多余未使用的风控额度
+            unused_yes_shares = max(0.0, yes_size - actual_yes_size)
+            if unused_yes_shares > 0:
+                unused_amount = round(unused_yes_shares * yes_price, 2)
+                deps.risk_manager.release_trade_lock(params.strategy_id, market_id, unused_amount, is_live=params.is_live)
+
+            ctx.leg1 = LegPosition(
+                token=str(yes_token),
+                side="BUY",
+                cost=actual_yes_cost,
+                size=actual_yes_size,
+                original_size=yes_size,
+                is_partially_filled=is_yes_partial,
+                order_id=yes_id or "sim_yes"
+            )
             ctx.leg2 = None
             ctx.leg1_dir = "YES"
             ctx.leg2_dir = None
             ctx.leg1_filled_time = now_time
             ctx.dual_orders = []
             deps.set_trade(market_id, ctx.to_dict())
-            logger.info(f"[策略FSM：{params.strategy_id}] 双挂单 YES 侧率先成交 (price={yes_price:.4f}, size={yes_size:.2f})，已撤销 NO 挂单，流转至 LEG1_ONLY 触发 OCO 双向自适应变现。")
+            logger.info(
+                f"[策略FSM：{params.strategy_id}] 双挂单 YES 侧达成有效成交 (price={actual_yes_cost:.4f}, size={actual_yes_size:.2f}"
+                f"{' [部分成交]' if is_yes_partial else ''})，流转至 LEG1_ONLY 触发 1:1 精准对冲。"
+            )
             fsm.transition_to(TradeState.LEG1_ONLY)
             return
 
         # 分支 C: NO 率先成交，立即撤销 YES 挂单并流转至 LEG1_ONLY 触发自适应做 T 与配对 OCO
         if no_filled and not yes_filled:
+            # 1. 碎单保护：交易所最小下单限制为 5.0 份，若成交份数不足 5.0 份，保持挂单等待对手盘继续吃单
+            if actual_no_size < 5.0:
+                logger.info(
+                    f"[策略FSM：{params.strategy_id}] NO 侧仅发生碎单成交 ({actual_no_size:.2f} < 5.0 份)，"
+                    f"保持双边挂单继续等待对手盘吃满安全对冲门槛。"
+                )
+                return
+
             now_time = time.time()
+            # 2. 方案 A：即时锁定当前批次，撤销对手盘 YES 挂单
             if yes_id:
                 await deps.client.cancel_order_async(yes_id)
-            ctx.leg1 = LegPosition(token=str(no_token), side="BUY", cost=no_price, size=no_size, order_id=no_id or "sim_no")
+
+            # 若 NO 挂单存在未成交尾巴 (如 15/40)，主动撤销盘口残留单，防止后续被单边毒性流动性穿透
+            if no_id and is_no_partial:
+                await deps.client.cancel_order_async(no_id)
+                logger.info(
+                    f"[策略FSM：{params.strategy_id}] [部分成交锁定] NO 实际成交 {actual_no_size:.2f}/{no_size:.2f} 份，"
+                    f"已主动撤销剩余 {no_size - actual_no_size:.2f} 份盘口尾巴挂单。"
+                )
+
+            # 3. 释放多余未使用的风控额度
+            unused_no_shares = max(0.0, no_size - actual_no_size)
+            if unused_no_shares > 0:
+                unused_amount = round(unused_no_shares * no_price, 2)
+                deps.risk_manager.release_trade_lock(params.strategy_id, market_id, unused_amount, is_live=params.is_live)
+
+            ctx.leg1 = LegPosition(
+                token=str(no_token),
+                side="BUY",
+                cost=actual_no_cost,
+                size=actual_no_size,
+                original_size=no_size,
+                is_partially_filled=is_no_partial,
+                order_id=no_id or "sim_no"
+            )
             ctx.leg2 = None
             ctx.leg1_dir = "NO"
             ctx.leg2_dir = None
             ctx.leg1_filled_time = now_time
             ctx.dual_orders = []
             deps.set_trade(market_id, ctx.to_dict())
-            logger.info(f"[策略FSM：{params.strategy_id}] 双挂单 NO 侧率先成交 (price={no_price:.4f}, size={no_size:.2f})，已撤销 YES 挂单，流转至 LEG1_ONLY 触发 OCO 双向自适应变现。")
+            logger.info(
+                f"[策略FSM：{params.strategy_id}] 双挂单 NO 侧达成有效成交 (price={actual_no_cost:.4f}, size={actual_no_size:.2f}"
+                f"{' [部分成交]' if is_no_partial else ''})，流转至 LEG1_ONLY 触发 1:1 精准对冲。"
+            )
             fsm.transition_to(TradeState.LEG1_ONLY)
             return
+
 
         # 分支 D: 双边均未成交且临近到期，原子撤单安全退出
         time_to_expiry = ctx.end_time - now_ts if ctx.end_time > 0 else 999.0

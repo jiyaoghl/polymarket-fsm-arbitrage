@@ -158,13 +158,18 @@ class UserOrderStreamer:
     def _process_single_event(self, event: Dict[str, Any]):
         """解析单条订单推送事件并唤醒等待协程"""
         order_id = str(event.get("order_id") or event.get("id") or event.get("orderID") or "")
-        status = str(event.get("status") or event.get("event_type") or "").upper()
+        raw_status = str(event.get("status") or event.get("event_type") or "").upper()
         
-        # 兼容 trades 推送
-        if "trade" in status.lower() or status in ("FILLED", "MATCHED", "TRADE"):
+        # 兼容 trades 推送与部分成交推送
+        if "PARTIAL" in raw_status:
+            status = "PARTIALLY_FILLED"
+        elif "TRADE" in raw_status or raw_status in ("FILLED", "MATCHED"):
             status = "FILLED"
+        else:
+            status = raw_status
 
         logger.info(f"[UserStreamer] 收到订单事件: order_id={order_id}, status={status}")
+
 
         with self._lock:
             # 检查是否有协程在等待该订单

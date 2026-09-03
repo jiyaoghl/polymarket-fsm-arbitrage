@@ -4,12 +4,14 @@ import time
 
 @dataclass
 class LegPosition:
-    """单腿持仓/订单明细"""
+    """单腿持仓/订单明细 (支持部分成交 Partial Fill 精准追踪)"""
     order_id: Optional[str] = None
     token: Optional[str] = None
     side: str = "BUY"
     cost: float = 0.0
-    size: float = 0.0
+    size: float = 0.0                    # 实际成交份额
+    original_size: Optional[float] = None # 原始挂单计划份额
+    is_partially_filled: bool = False    # 是否为部分成交
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -18,19 +20,26 @@ class LegPosition:
             "side": self.side,
             "cost": self.cost,
             "size": self.size,
+            "original_size": self.original_size if self.original_size is not None else self.size,
+            "is_partially_filled": self.is_partially_filled,
         }
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> Optional["LegPosition"]:
         if not data:
             return None
+        sz = float(data.get("size") or data.get("amount") or 0.0)
+        orig_sz = float(data.get("original_size") or sz)
         return cls(
             order_id=data.get("order_id"),
             token=data.get("token") or data.get("token_id"),
             side=data.get("side", "BUY"),
             cost=float(data.get("cost") or data.get("price") or 0.0),
-            size=float(data.get("size") or data.get("amount") or 0.0),
+            size=sz,
+            original_size=orig_sz,
+            is_partially_filled=bool(data.get("is_partially_filled", False) or (orig_sz > sz > 0)),
         )
+
 
 @dataclass
 class TradeContext:

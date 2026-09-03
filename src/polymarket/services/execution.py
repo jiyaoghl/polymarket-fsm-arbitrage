@@ -115,14 +115,22 @@ class OrderExecutionService:
             streamer = UserOrderStreamer.get_instance()
             if streamer.is_authenticated:
                 ws_result = await streamer.wait_for_order_fill(order_id, timeout=min(timeout, 3.0))
-                if ws_result and ws_result.get("status") == "FILLED":
-                    logger.info(f"[执行服务：{strategy_id}] [私有WS] 毫秒级捕获到订单成交回报！Order: {order_id}")
+                if ws_result and ws_result.get("status") in ("FILLED", "PARTIALLY_FILLED"):
+                    actual_sz = float(ws_result.get("size") or expected_size)
+                    is_partial = (ws_result.get("status") == "PARTIALLY_FILLED") or (actual_sz < expected_size * 0.99)
+                    logger.info(
+                        f"[执行服务：{strategy_id}] [私有WS] 捕获到订单成交回报！Order: {order_id}, "
+                        f"Size: {actual_sz:.2f}/{expected_size:.2f}{' [部分成交]' if is_partial else ''}"
+                    )
                     return True, LegPosition(
                         order_id=order_id,
                         token=token_id,
                         cost=float(ws_result.get("price") or 0.5),
-                        size=float(ws_result.get("size") or expected_size)
+                        size=actual_sz,
+                        original_size=expected_size,
+                        is_partially_filled=is_partial
                     )
+
         except Exception as e:
             logger.warning(f"[执行服务：{strategy_id}] 私有 WS 监听异常，转入 REST 对账: {e}")
 
