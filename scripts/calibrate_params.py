@@ -42,6 +42,7 @@ class SnapshotFrame:
     mid_price: float
     obi: float
     kline: Dict[str, Any] = field(default_factory=dict)
+    asset: Optional[str] = None
 
 
 @dataclass
@@ -90,7 +91,8 @@ class SnapshotLoader:
                                 spread=float(d.get("spread", 0.0)),
                                 mid_price=float(d.get("mid_price", 0.5)),
                                 obi=float(d.get("obi", 0.0)),
-                                kline=d.get("kline", {})
+                                kline=d.get("kline", {}),
+                                asset=d.get("asset")
                             )
                             frames.append(frame)
                             if max_frames and len(frames) >= max_frames:
@@ -158,10 +160,22 @@ class MultiMarketSimulator:
                 if not f1.best_bid or not f2.best_bid:
                     continue
 
-                # 1. 资产波动率守门 (Binance 1s 真实行情过滤单边急变)
-                btc_k = f1.kline.get("BTC", {})
-                cur_amp = float(btc_k.get("amplitude", 0.15))
-                cur_net = float(btc_k.get("net_change", 0.05))
+                # 1. 资产波动率守门 (Garman-Klass + EWMA 多资产微观极值方差过滤)
+                # 动态识别盘口所属资产 (BTC/ETH/SOL)，优先读取当前币种的 GK 数据
+                target_asset = (f1.asset or f2.asset or "BTC").upper()
+                asset_k = f1.kline.get(target_asset) or f1.kline.get("BTC") or (next(iter(f1.kline.values())) if f1.kline else {})
+                
+                # 双模态自适应感知：
+                # A. 最新快照显式携带 gk_volatility，直接采用真实 GK+EWMA 极值波动率；
+                # B. 历史旧快照仅含收盘价 3σ amplitude，采用 0.35x 理论折算系数平滑映射至 GK 尺度。
+                if "gk_volatility" in asset_k:
+                    cur_amp = float(asset_k["gk_volatility"])
+                    cur_net = float(asset_k.get("net_change", 0.02))
+                else:
+                    raw_amp = float(asset_k.get("amplitude", 0.15))
+                    cur_amp = round(raw_amp * 0.35, 4)
+                    cur_net = round(float(asset_k.get("net_change", 0.05)) * 0.35, 4)
+
                 if cur_amp > max_amp or abs(cur_net) > max_net_chg:
                     continue
 
@@ -171,8 +185,8 @@ class MultiMarketSimulator:
                 if f1.spread > max_spread or f2.spread > max_spread:
                     continue
 
-                # 3. 动态 OBI 守门 (联动当前帧波动率)
-                dynamic_floor = min(max(obi_floor + (cur_amp * 2.0), obi_floor), 0.0)
+                # 3. 动态 OBI 守门 (GK 极值尺度下联动，维持卖盘高压自适应收紧)
+                dynamic_floor = min(max(obi_floor + (cur_amp * 3.0), obi_floor), 0.0)
                 if f1.obi < dynamic_floor or f2.obi < dynamic_floor:
                     continue
 
@@ -293,8 +307,9 @@ class OptunaOptimizer:
                 "mm_min_bid": trial.suggest_float("mm_min_bid", 0.34, 0.42, step=0.01),
                 "max_spread": trial.suggest_float("max_spread", 0.03, 0.08, step=0.005),
                 "obi_floor": trial.suggest_float("obi_floor", -0.45, -0.15, step=0.05),
-                "max_amplitude": trial.suggest_float("max_amplitude", 0.20, 0.50, step=0.02),
-                "max_net_change": trial.suggest_float("max_net_change", 0.06, 0.25, step=0.01),
+                # GK 极值尺度校准：真实高低价比值方差更紧凑细腻 (覆盖 0.02% ~ 0.35%)
+                "max_amplitude": trial.suggest_float("max_amplitude", 0.02, 0.35, step=0.01),
+                "max_net_change": trial.suggest_float("max_net_change", 0.01, 0.20, step=0.01),
                 "initial_margin": trial.suggest_float("initial_margin", 0.010, 0.025, step=0.001),
                 "amount": 10.0
             }
@@ -425,6 +440,8 @@ def main():
             "mm_min_bid": [0.35, 0.38, 0.40],
             "max_spread": [0.04, 0.05, 0.06],
             "obi_floor": [-0.40, -0.35, -0.25],
+            "max_amplitude": [0.03, 0.06, 0.12],
+            "max_net_change": [0.02, 0.04, 0.08],
             "initial_margin": [0.015, 0.018],
             "amount": [10.0]
         }

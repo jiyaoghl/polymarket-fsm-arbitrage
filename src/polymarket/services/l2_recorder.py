@@ -117,7 +117,7 @@ class L2SnapshotRecorder:
                     time.sleep(SNAPSHOT_INTERVAL_SEC)
                     continue
 
-                # 构建资产到 K 线状态的映射缓存
+                # 构建资产到 K 线状态的映射缓存 (双轨记录 GK 与旧版 3σ)
                 kline_cache = {}
                 for asset in SUPPORTED_ASSETS:
                     try:
@@ -126,9 +126,28 @@ class L2SnapshotRecorder:
                             "amplitude": round(st.get("amplitude", 0.0), 4),
                             "net_change": round(st.get("net_change", 0.0), 4),
                             "is_choppy": st.get("is_choppy", True),
+                            "gk_volatility": round(st.get("gk_volatility", 0.0), 4),
+                            "close_volatility_3sigma": round(st.get("close_volatility_3sigma", 0.0), 4),
                         }
                     except Exception:
                         pass
+
+                # 动态尝试反查当前活跃 Token 对应的资产类型 (BTC / ETH / SOL)
+                token_asset_map = {}
+                try:
+                    from polymarket.apps.manager import BotManager
+                    mgr = getattr(BotManager, "_instance", None)
+                    if mgr and hasattr(mgr, "current_markets"):
+                        for m in (mgr.current_markets or []):
+                            atype = m.get("__asset_type")
+                            if atype:
+                                tokens = m.get("tokens", {})
+                                for s in ("YES", "NO"):
+                                    tid = str(tokens.get(s, ""))
+                                    if tid:
+                                        token_asset_map[tid] = atype
+                except Exception:
+                    pass
 
                 # 序列化每个 Token 的快照
                 for token_id, snap in books.items():
@@ -138,6 +157,7 @@ class L2SnapshotRecorder:
                     record = {
                         "ts": round(now, 3),
                         "token_id": token_id,
+                        "asset": token_asset_map.get(token_id),  # 显式持久化所属币种资产 (BTC/ETH/SOL)
                         "best_bid": snap.best_bid,
                         "best_ask": snap.best_ask,
                         "bids": list(snap.bids[:10]),
@@ -145,7 +165,7 @@ class L2SnapshotRecorder:
                         "spread": snap.spread,
                         "mid_price": snap.mid_price,
                         "obi": snap.obi,
-                        "kline": kline_cache,  # 附带当时三大资产的实时波动率矩阵，赋能高保真离线回测
+                        "kline": kline_cache,  # 附带多资产实时波动率矩阵，赋能高保真离线回测
                     }
                     try:
                         current_file.write(json.dumps(record, ensure_ascii=False) + "\n")
