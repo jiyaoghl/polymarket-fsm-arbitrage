@@ -61,3 +61,27 @@ def test_onchain_redeemer_mock_success(mock_web3_class):
     res = redeemer.redeem_positions("0xaa5e61862b3b5e09f62b56b1d570c34a267b01f45bac330397e1c51274156646")
     assert res.get("status") == "SUCCESS"
     assert "tx_hash" in res
+
+
+@patch("web3.Web3")
+def test_onchain_redeemer_dry_run_revert_intercepts_without_broadcasting(mock_web3_class):
+    """验证当链上静态模拟预检 Revert 时，系统在本地直接拦截，绝不上链，绝不消耗 Gas"""
+    dummy_pk = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    redeemer = OnChainRedeemer(private_key=dummy_pk, rpc_candidates=["https://polygon-rpc.com"])
+
+    mock_w3 = MagicMock()
+    mock_web3_class.return_value = mock_w3
+    mock_w3.is_connected.return_value = True
+
+    mock_contract = MagicMock()
+    mock_w3.eth.contract.return_value = mock_contract
+    # 模拟 call() 抛出异常 (比如 Condition not resolved 或零持仓)
+    mock_contract.functions.redeemPositions.return_value.call.side_effect = Exception("execution reverted: Condition not resolved")
+
+    res = redeemer.redeem_positions("0xaa5e61862b3b5e09f62b56b1d570c34a267b01f45bac330397e1c51274156646")
+
+    assert res.get("status") == "SKIPPED"
+    assert "Dry-run reverted" in res.get("reason", "")
+    # 核心铁律验证：绝对没有向网络广播过真实交易
+    mock_w3.eth.send_raw_transaction.assert_not_called()
+

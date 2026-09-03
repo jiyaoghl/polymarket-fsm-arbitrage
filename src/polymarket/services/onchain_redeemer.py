@@ -169,6 +169,25 @@ class OnChainRedeemer:
                 )
 
                 account_address = self.wallet.address
+
+                # 【防 Gas 浪费核心护盾】：零成本本地静态模拟预检 (Dry-Run eth_call)
+                # 纯节点只读模拟，若市场未交割或持仓为 0，合约会提前抛出异常并在本地捕获拦截，绝不上链，0 费用消耗！
+                try:
+                    contract.functions.redeemPositions(
+                        Web3.to_checksum_address(collat),
+                        parent_col,
+                        cond_bytes,
+                        idx_sets
+                    ).call({"from": account_address})
+                except Exception as sim_err:
+                    err_msg = str(sim_err)
+                    logger.info(f"[OnChainRedeemer] 链上模拟预检拦截 (无需赎回或未决出胜负，已阻断真实广播防 Gas 浪费): {err_msg}")
+                    return {
+                        "status": "SKIPPED",
+                        "reason": f"Dry-run reverted (Zero position or not resolved): {err_msg}",
+                        "market_id": condition_id
+                    }
+
                 nonce = w3.eth.get_transaction_count(account_address)
                 gas_price = w3.eth.gas_price
 
