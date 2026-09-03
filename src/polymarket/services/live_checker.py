@@ -99,6 +99,7 @@ class LivePreflightChecker:
         # 候选 RPC 节点轮换
         rpc_nodes = [self.rpc_url] + [r for r in DEFAULT_RPC_CANDIDATES if r != self.rpc_url]
         matic_balance = 0.0
+        pusd_balance = 0.0
         usdc_bridged = 0.0
         usdc_native = 0.0
         rpc_success = False
@@ -106,6 +107,7 @@ class LivePreflightChecker:
 
         clean_wallet = addr.lower().replace("0x", "").zfill(64)
         erc20_data = f"0x70a08231{clean_wallet}"
+        pusd_contract = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 
         for rpc in rpc_nodes:
             if not rpc or not rpc.startswith("http"):
@@ -118,15 +120,22 @@ class LivePreflightChecker:
                 if res1 and res1 != "0x":
                     matic_balance = int(res1, 16) / 1e18
 
-                # 2. 查询 Bridged USDC (USDC.e)
-                p_usdc1 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_BRIDGED_ADDRESS, "data": erc20_data}, "latest"], "id": 2}
+                # 2. 查询 pUSD (Polymarket 原生抵押品代币)
+                p_pusd = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": pusd_contract, "data": erc20_data}, "latest"], "id": 2}
+                r_p = requests.post(rpc, json=p_pusd, timeout=3.5)
+                res_p = r_p.json().get("result")
+                if res_p and res_p != "0x":
+                    pusd_balance = int(res_p, 16) / 1e6
+
+                # 3. 查询 Bridged USDC (USDC.e)
+                p_usdc1 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_BRIDGED_ADDRESS, "data": erc20_data}, "latest"], "id": 3}
                 r2 = requests.post(rpc, json=p_usdc1, timeout=3.5)
                 res2 = r2.json().get("result")
                 if res2 and res2 != "0x":
                     usdc_bridged = int(res2, 16) / 1e6
 
-                # 3. 查询 Native USDC
-                p_usdc2 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_NATIVE_ADDRESS, "data": erc20_data}, "latest"], "id": 3}
+                # 4. 查询 Native USDC
+                p_usdc2 = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_NATIVE_ADDRESS, "data": erc20_data}, "latest"], "id": 4}
                 r3 = requests.post(rpc, json=p_usdc2, timeout=3.5)
                 res3 = r3.json().get("result")
                 if res3 and res3 != "0x":
@@ -143,16 +152,17 @@ class LivePreflightChecker:
                 "status": "WARN",
                 "message": "Polygon RPC 节点网络抖动或超时，暂时无法拉取链上余额",
                 "matic": 0.0,
+                "pusd_balance": 0.0,
                 "usdc_bridged": 0.0,
                 "usdc_native": 0.0
             }
 
-        total_usdc = usdc_bridged + usdc_native
+        total_usdc = pusd_balance + usdc_bridged + usdc_native
         warnings = []
         if matic_balance < 0.1:
             warnings.append(f"MATIC (POL) 余额偏低 ({matic_balance:.4f} MATIC)，可能导致链上自动赎回 CTF 失败，建议充值 ≥0.5 MATIC")
         if total_usdc < 5.0:
-            warnings.append(f"链上未质押 USDC 余额较少 (${total_usdc:.2f})")
+            warnings.append(f"链上未质押资产余额较少 (${total_usdc:.4f})")
 
         status = "PASS" if matic_balance >= 0.1 else "WARN"
         msg = "链上 Gas 与代币储备正常" if not warnings else "；".join(warnings)
@@ -162,55 +172,59 @@ class LivePreflightChecker:
             "message": msg,
             "rpc_node": used_rpc,
             "matic_balance": round(matic_balance, 4),
+            "pusd_balance": round(pusd_balance, 4),
             "usdc_bridged_balance": round(usdc_bridged, 2),
             "usdc_native_balance": round(usdc_native, 2),
-            "total_chain_usdc": round(total_usdc, 2)
+            "total_chain_usdc": round(total_usdc, 4)
         }
 
     def check_clob_collateral_and_allowance(self) -> Dict[str, Any]:
-        """第三维：检查 CLOB 托管可用抵押品余额与 Exchange 合约授权"""
+        """第三维：检查 CLOB 托管可用抵押品余额与 Exchange 合约授权 (CLOB V2 allowances 映射)"""
         if not self.wallet:
             return {"status": "FAIL", "message": "未加载有效钱包，跳过 CLOB 托管校验"}
 
+        # 优先通过官方 ClobClient 获取标准 BalanceAllowance
         try:
-            gateway = LiveClobV2Gateway(host=self.host, private_key=self.private_key, warm_up=False)
-            res = gateway._get_signed("/balance-allowance?asset_type=COLLATERAL")
-            if not res or "error" in res:
-                return {
-                    "status": "FAIL",
-                    "message": f"CLOB 余额与授权探测失败: {res.get('error') or '鉴权未通过'}",
-                    "balance": 0.0,
-                    "allowance": 0.0
-                }
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, ApiCreds
+            clean_pk = self.private_key if self.private_key.startswith("0x") else f"0x{self.private_key}"
+            c = ClobClient(host=self.host, key=clean_pk, chain_id=137)
+            if self.api_key and self.api_secret and self.api_passphrase:
+                c.set_api_creds(ApiCreds(api_key=self.api_key, api_secret=self.api_secret, api_passphrase=self.api_passphrase))
+            res = c.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
 
             raw_bal = float(res.get("balance", 0.0))
-            raw_allow = float(res.get("allowance", 0.0))
             bal = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
-            allow = raw_allow / 1e6 if raw_allow > 1000 else raw_allow
+
+            # 解析 allowances 字典，以 Exchange V2 主合约为主
+            allowances_dict = res.get("allowances") or {}
+            exchange_v2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+            allow_raw = float(allowances_dict.get(exchange_v2, 0.0))
+            is_approved = allow_raw > 1e12
 
             warnings = []
-            if allow <= 0.0:
-                warnings.append("对 Polymarket Exchange 合约的 Allowance 授权为 0，需先执行 approve 授权")
+            if not is_approved:
+                warnings.append("对 Polymarket Exchange V2 合约的 Allowance 授权未完成，需先执行 approve")
             if bal < 5.0:
-                warnings.append(f"CLOB 托管可用余额偏低 (${bal:.2f})，建议确保 CLOB 余额 ≥20U 以支持主力做市")
+                warnings.append(f"CLOB 托管可用余额较少 (${bal:.4f} USDC)，建议充值至 ≥20U 以支持主力做市")
 
-            status = "PASS" if (allow > 0.0 and bal >= 5.0) else ("WARN" if allow > 0.0 else "FAIL")
+            status = "PASS" if (is_approved and bal >= 5.0) else ("WARN" if is_approved else "FAIL")
             msg = "CLOB 抵押品与授权正常就绪" if not warnings else "；".join(warnings)
 
             return {
                 "status": status,
                 "message": msg,
-                "clob_balance_usdc": round(bal, 2),
-                "clob_allowance_usdc": round(allow, 2),
-                "is_approved": allow > 0.0
+                "clob_balance_usdc": round(bal, 4),
+                "is_approved": is_approved,
+                "allowance_status": "无限额度授权 (已就绪)" if is_approved else "未授权"
             }
         except Exception as e:
             return {
                 "status": "FAIL",
                 "message": f"请求 CLOB balance-allowance 异常: {e}",
                 "clob_balance_usdc": 0.0,
-                "clob_allowance_usdc": 0.0,
-                "is_approved": False
+                "is_approved": False,
+                "allowance_status": "查询异常"
             }
 
     def check_clock_and_latency(self) -> Dict[str, Any]:
@@ -274,6 +288,19 @@ class LivePreflightChecker:
                 "message": "未加载私钥，无法进行发单探针测试",
                 "order_id": None
             }
+
+        # 检查 CLOB 可用抵押金，低于 1.0U 优雅跳过穿透探针
+        try:
+            clob_status = self.check_clob_collateral_and_allowance()
+            avail_bal = clob_status.get("clob_balance_usdc", 0.0)
+            if avail_bal < 1.0:
+                return {
+                    "status": "WARN",
+                    "message": f"当前 CLOB 可用余额为 ${avail_bal:.4f} USDC (低于实盘最小发单门槛 ≥1.0 USDC)，已跳过发单探针；请充值至 ≥20U 支持主力做市",
+                    "order_id": None
+                }
+        except Exception:
+            pass
 
         # 获取一个活跃市场的 Token ID
         test_token = None

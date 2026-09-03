@@ -589,6 +589,7 @@ def cmd_live_check(args):
     c_chain = checks.get("chain_balances", {})
     print(f"\n{BOLD}3. Polygon 链上 Gas 与 USDC 储备:{RESET} {format_status(c_chain.get('status', ''))}")
     print(f"   • MATIC (POL Gas): {c_chain.get('matic_balance', 0.0)} MATIC (预警线: 0.1 MATIC)")
+    print(f"   • 链上原生 pUSD  : ${c_chain.get('pusd_balance', 0.0):.4f}")
     print(f"   • 链上原生 USDC  : ${c_chain.get('usdc_native_balance', 0.0):.2f}")
     print(f"   • 链上跨链 USDC.e: ${c_chain.get('usdc_bridged_balance', 0.0):.2f}")
     print(f"   • 响应 RPC 节点  : {c_chain.get('rpc_node', '--')}")
@@ -597,8 +598,8 @@ def cmd_live_check(args):
     # 4. CLOB 托管与授权
     c_clob = checks.get("clob_collateral", {})
     print(f"\n{BOLD}4. CLOB 托管资金与合约授权 (Allowance):{RESET} {format_status(c_clob.get('status', ''))}")
-    print(f"   • CLOB 内部可交易余额: ${c_clob.get('clob_balance_usdc', 0.0):.2f} USDC")
-    print(f"   • 合约授权额度 (Allowance): ${c_clob.get('clob_allowance_usdc', 0.0):.2f} USDC")
+    print(f"   • CLOB 内部可交易余额: ${c_clob.get('clob_balance_usdc', 0.0):.4f} USDC")
+    print(f"   • 合约授权状态: {c_clob.get('allowance_status', '已就绪')}")
     print(f"   • 是否已完成 Approve 授权: {'✅ 是' if c_clob.get('is_approved') else '❌ 否 (阻断开仓)'}")
     print(f"   • 诊断说明: {c_clob.get('message', '')}")
 

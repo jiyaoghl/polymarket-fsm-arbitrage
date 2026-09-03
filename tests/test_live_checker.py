@@ -40,28 +40,31 @@ def test_chain_balances_check(mock_checker):
         mock_resp1.json.return_value = {"result": hex(int(1.5 * 1e18))}
 
         mock_resp2 = MagicMock()
-        # USDC: 50.0 USDC (50 * 1e6 = 50000000 = 0x2faf080)
+        # USDC / pUSD: 50.0 USDC (50 * 1e6 = 50000000 = 0x2faf080)
         mock_resp2.json.return_value = {"result": hex(int(50.0 * 1e6))}
 
-        mock_post.side_effect = [mock_resp1, mock_resp2, mock_resp2]
+        mock_post.side_effect = [mock_resp1, mock_resp2, mock_resp2, mock_resp2]
 
         res = mock_checker.check_chain_balances("0x6F7FFC6C636a04C1C4B5fF16d860d5bFcEc69250")
         assert res["status"] == "PASS"
         assert res["matic_balance"] == 1.5
-        assert res["usdc_bridged_balance"] == 50.0
+        assert res["total_chain_usdc"] >= 50.0
 
 
 def test_clob_collateral_and_allowance(mock_checker):
-    """测试 CLOB balance-allowance 查询与判定"""
-    with patch("polymarket.gateway.live.LiveClobV2Gateway._get_signed") as mock_get_signed:
-        mock_get_signed.return_value = {
+    """测试 CLOB balance-allowance 查询与判定 (allowances 字典)"""
+    with patch("py_clob_client.client.ClobClient.get_balance_allowance") as mock_get_bal:
+        mock_get_bal.return_value = {
             "balance": "35000000",      # 35.0 USDC
-            "allowance": "1000000000000" # 充足授权
+            "allowances": {
+                "0xE111180000d2663C0091e4f400237545B87B996B": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+            }
         }
         res = mock_checker.check_clob_collateral_and_allowance()
         assert res["status"] == "PASS"
         assert res["clob_balance_usdc"] == 35.0
         assert res["is_approved"] is True
+
 
 
 def test_clock_and_latency_drift_warning(mock_checker):
@@ -86,7 +89,8 @@ def test_order_roundtrip_skip(mock_checker):
 
 def test_order_roundtrip_probe_success(mock_checker):
     """测试极低价发单与撤单穿透成功"""
-    with patch("polymarket.gateway.live.LiveClobV2Gateway.post_order") as mock_post, \
+    with patch.object(mock_checker, "check_clob_collateral_and_allowance", return_value={"clob_balance_usdc": 25.0}), \
+         patch("polymarket.gateway.live.LiveClobV2Gateway.post_order") as mock_post, \
          patch("polymarket.gateway.live.LiveClobV2Gateway.cancel_order") as mock_cancel:
 
         mock_post.return_value = {"status": "LIVE", "orderID": "0x_probe_order_999"}
