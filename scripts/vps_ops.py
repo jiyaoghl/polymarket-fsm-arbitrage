@@ -588,7 +588,8 @@ def cmd_live_check(args):
     # 3. 链上资产
     c_chain = checks.get("chain_balances", {})
     print(f"\n{BOLD}3. Polygon 链上 Gas 与 USDC 储备:{RESET} {format_status(c_chain.get('status', ''))}")
-    print(f"   • MATIC (POL Gas): {c_chain.get('matic_balance', 0.0)} MATIC (预警线: 0.1 MATIC)")
+    pol_val = c_chain.get('pol_balance', c_chain.get('matic_balance', 0.0))
+    print(f"   • POL 原生代币 (Gas 费): {pol_val} POL (预警线: 0.1 POL)")
     print(f"   • 链上原生 pUSD  : ${c_chain.get('pusd_balance', 0.0):.4f}")
     print(f"   • 链上原生 USDC  : ${c_chain.get('usdc_native_balance', 0.0):.2f}")
     print(f"   • 链上跨链 USDC.e: ${c_chain.get('usdc_bridged_balance', 0.0):.2f}")

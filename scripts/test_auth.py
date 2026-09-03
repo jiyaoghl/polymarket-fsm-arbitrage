@@ -233,13 +233,13 @@ def test_onchain_balances_and_allowance(wallet_address: str):
             
     if pol_success:
         if pol_val >= 0.05:
-            print(f"   POL/MATIC (Gas): {GREEN}{pol_val:.4f} POL (充足){RESET}")
+            print(f"   POL (Polygon Gas): {GREEN}{pol_val:.4f} POL (充足){RESET}")
         elif pol_val > 0:
-            print(f"   POL/MATIC (Gas): {YELLOW}{pol_val:.4f} POL (建议充值 >= 0.05 POL){RESET}")
+            print(f"   POL (Polygon Gas): {YELLOW}{pol_val:.4f} POL (建议充值 >= 0.05 POL){RESET}")
         else:
-            print(f"   POL/MATIC (Gas): {RED}0.0000 POL (需充值至少 0.05 POL 作为 Gas){RESET}")
+            print(f"   POL (Polygon Gas): {RED}0.0000 POL (需充值至少 0.05 POL 作为 Gas){RESET}")
     else:
-        print(f"   POL/MATIC (Gas): {YELLOW}查询受限 (已尝试多个公共节点){RESET}")
+        print(f"   POL (Polygon Gas): {YELLOW}查询受限 (已尝试多个公共节点){RESET}")
 
     # 2. 查 USDC 余额
     for name, contract in [("USDC (Native)", USDC_NATIVE), ("USDC.e (Bridged)", USDC_BRIDGED)]:

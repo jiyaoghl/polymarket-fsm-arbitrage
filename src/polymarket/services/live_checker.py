@@ -98,7 +98,7 @@ class LivePreflightChecker:
 
         # 候选 RPC 节点轮换
         rpc_nodes = [self.rpc_url] + [r for r in DEFAULT_RPC_CANDIDATES if r != self.rpc_url]
-        matic_balance = 0.0
+        pol_balance = 0.0
         pusd_balance = 0.0
         usdc_bridged = 0.0
         usdc_native = 0.0
@@ -113,12 +113,12 @@ class LivePreflightChecker:
             if not rpc or not rpc.startswith("http"):
                 continue
             try:
-                # 1. 查询 MATIC
-                p_matic = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [addr, "latest"], "id": 1}
-                r1 = requests.post(rpc, json=p_matic, timeout=3.5)
+                # 1. 查询 Polygon 主网原生代币 POL (原 MATIC Gas 费)
+                p_pol = {"jsonrpc": "2.0", "method": "eth_getBalance", "params": [addr, "latest"], "id": 1}
+                r1 = requests.post(rpc, json=p_pol, timeout=3.5)
                 res1 = r1.json().get("result")
                 if res1 and res1 != "0x":
-                    matic_balance = int(res1, 16) / 1e18
+                    pol_balance = int(res1, 16) / 1e18
 
                 # 2. 查询 pUSD (Polymarket 原生抵押品代币)
                 p_pusd = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": pusd_contract, "data": erc20_data}, "latest"], "id": 2}
@@ -151,7 +151,8 @@ class LivePreflightChecker:
             return {
                 "status": "WARN",
                 "message": "Polygon RPC 节点网络抖动或超时，暂时无法拉取链上余额",
-                "matic": 0.0,
+                "pol_balance": 0.0,
+                "matic_balance": 0.0,
                 "pusd_balance": 0.0,
                 "usdc_bridged": 0.0,
                 "usdc_native": 0.0
@@ -159,19 +160,20 @@ class LivePreflightChecker:
 
         total_usdc = pusd_balance + usdc_bridged + usdc_native
         warnings = []
-        if matic_balance < 0.1:
-            warnings.append(f"MATIC (POL) 余额偏低 ({matic_balance:.4f} MATIC)，可能导致链上自动赎回 CTF 失败，建议充值 ≥0.5 MATIC")
+        if pol_balance < 0.1:
+            warnings.append(f"POL (Polygon Gas) 余额偏低 ({pol_balance:.4f} POL)，可能导致链上自动赎回 CTF 失败，建议充值 ≥0.5 POL")
         if total_usdc < 5.0:
             warnings.append(f"链上未质押资产余额较少 (${total_usdc:.4f})")
 
-        status = "PASS" if matic_balance >= 0.1 else "WARN"
+        status = "PASS" if pol_balance >= 0.1 else "WARN"
         msg = "链上 Gas 与代币储备正常" if not warnings else "；".join(warnings)
 
         return {
             "status": status,
             "message": msg,
             "rpc_node": used_rpc,
-            "matic_balance": round(matic_balance, 4),
+            "pol_balance": round(pol_balance, 4),
+            "matic_balance": round(pol_balance, 4),
             "pusd_balance": round(pusd_balance, 4),
             "usdc_bridged_balance": round(usdc_bridged, 2),
             "usdc_native_balance": round(usdc_native, 2),

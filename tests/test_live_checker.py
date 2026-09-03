@@ -33,10 +33,10 @@ def test_credentials_check_fail_when_pk_empty():
 
 
 def test_chain_balances_check(mock_checker):
-    """测试通过 RPC 模拟查询链上 MATIC 与 USDC 余额"""
+    """测试通过 RPC 模拟查询链上 POL 与 USDC 余额"""
     with patch("requests.post") as mock_post:
         mock_resp1 = MagicMock()
-        # MATIC: 1.5 MATIC (1.5 * 1e18 = 1500000000000000000 = 0x14d1120d7b160000)
+        # POL: 1.5 POL (1.5 * 1e18 = 1500000000000000000 = 0x14d1120d7b160000)
         mock_resp1.json.return_value = {"result": hex(int(1.5 * 1e18))}
 
         mock_resp2 = MagicMock()
@@ -47,6 +47,7 @@ def test_chain_balances_check(mock_checker):
 
         res = mock_checker.check_chain_balances("0x6F7FFC6C636a04C1C4B5fF16d860d5bFcEc69250")
         assert res["status"] == "PASS"
+        assert res["pol_balance"] == 1.5
         assert res["matic_balance"] == 1.5
         assert res["total_chain_usdc"] >= 50.0
 

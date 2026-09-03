@@ -219,7 +219,7 @@ def check_balance():
     proxies = get_proxies_dict()
 
     tokens = {
-        "POL/MATIC (Gas 费)": ("NATIVE", 18),
+        "POL (Polygon 原生 Gas 费)": ("NATIVE", 18),
         "pUSD (Polymarket USD 抵押品)": ("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", 6),
         "USDC.e (Bridged USDC)": ("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", 6),
         "USDC (Native USDC)": ("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6),
