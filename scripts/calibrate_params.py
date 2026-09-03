@@ -119,8 +119,10 @@ class MultiMarketSimulator:
             ts_token_map[f.ts][f.token_id] = f
 
         sorted_ts = sorted(ts_token_map.keys())
+        ts_idx_map = {t: idx for idx, t in enumerate(sorted_ts)}
         # 分市场并发锁：market_key -> last_trade_ts
         market_locks: Dict[str, float] = {}
+
 
         total_pnl = 0.0
         locked_cnt = 0
@@ -197,18 +199,60 @@ class MultiMarketSimulator:
                 )
 
                 if is_prof and net_ev > 0:
-                    # 模拟真实撮合出场形态：
-                    # 大部分良性盘口走双买锁仓 (HEDGED_LOCKED)
-                    # 少数边缘流动性走阶梯做 T
-                    if f1.obi >= -0.10 and f2.obi >= -0.10:
+                    # 高保真时序撮合演化追踪 (Forward Temporal Scan)
+                    # 模拟真实 TradeFSM：首腿挂单成交后，在未来 85s TTL 窗口内检查二腿是否被卖盘击穿
+                    cur_idx = ts_idx_map.get(ts, 0)
+                    window_ts = sorted_ts[cur_idx + 1 : cur_idx + 90]
+                    
+                    is_settled = False
+                    # 默认假设首腿在 yes_p 成交，持仓份额为 shares
+                    shares = round(amount / max(yes_p, 0.01), 2)
+
+                    # 1. 优先判定当前帧二腿卖一是否即时打穿二腿买单 (best_ask_2 <= no_p)
+                    if f2.best_ask and f2.best_ask <= no_p:
                         locked_cnt += 1
                         total_pnl += net_ev
-                    else:
-                        # 做 T 让价出场 (获取 45s~70s 保费/微利)
-                        flip_cnt += 1
-                        total_pnl += (net_ev * 0.65)
+                        is_settled = True
+
+                    if not is_settled:
+                        for fut_ts in window_ts:
+                            fut_tokens = ts_token_map.get(fut_ts, {})
+                            fut_f1 = fut_tokens.get(tid1)
+                            fut_f2 = fut_tokens.get(tid2)
+                            if not fut_f1 or not fut_f2:
+                                continue
+
+                            # 2. 时序双买锁仓判定：未来窗口内二腿卖一打穿二腿买单 (best_ask_2 <= no_p)
+                            if fut_f2.best_ask and fut_f2.best_ask <= no_p:
+                                locked_cnt += 1
+                                total_pnl += net_ev
+                                is_settled = True
+                                break
+
+                            # 3. 阶梯做 T 判定：首腿买一回升突破保利高抛线 (best_bid_1 >= yes_p + 0.005)
+                            if fut_f1.best_bid and fut_f1.best_bid >= (yes_p + 0.005):
+                                flip_cnt += 1
+                                flip_pnl = round(shares * 0.005, 4)
+                                total_pnl += flip_pnl
+                                is_settled = True
+                                break
+
+
+                    # 3. 超时真实强平：85s 内二腿未打穿且未能做 T，市价割肉斩仓并扣除 2026 抛物线手续费
+                    if not is_settled:
+                        liq_cnt += 1
+                        # 取窗口末期或当前买一价格进行市价割肉
+                        last_fut_ts = window_ts[-1] if window_ts else ts
+                        last_f1 = ts_token_map.get(last_fut_ts, {}).get(tid1, f1)
+                        exit_price = last_f1.best_bid if last_f1.best_bid else max(yes_p - 0.04, 0.01)
+                        
+                        gross_loss = round(shares * (exit_price - yes_p), 4)
+                        liq_fee = PricingEngine.calculate_parabolic_fee(shares, exit_price, fee_rate=0.07)
+                        net_loss = round(gross_loss - liq_fee, 4)
+                        total_pnl += net_loss
 
                     market_locks[m_key] = ts
+
 
         total_trades = locked_cnt + flip_cnt + liq_cnt
         res.total_trades = total_trades

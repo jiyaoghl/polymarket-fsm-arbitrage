@@ -159,7 +159,7 @@ def test_idle_handler_dual_bracket():
             "status": "OK",
             "orders": [
                 {"order_id": "ord_yes", "token_id": "tok_yes", "price": 0.451, "size": 10.0},
-                {"order_id": "ord_no", "token_id": "tok_no", "price": 0.534, "size": 10.0},
+                {"order_id": "ord_no", "token_id": "tok_no", "price": 0.451, "size": 10.0},
             ]
         }
         params = create_sample_params(dual_bracket_entry=True, leg1_order_type="GTC", leg2_order_type="GTC")
@@ -175,8 +175,8 @@ def test_idle_handler_dual_bracket():
             no_token="tok_no",
             best_ask_yes=0.46,
             best_bid_yes=0.45,
-            best_ask_no=0.55,
-            best_bid_no=0.54,
+            best_ask_no=0.46,
+            best_bid_no=0.45,
         )
 
         from polymarket.services.grid import OrderbookMemoryGrid, OrderbookSnapshot
@@ -194,12 +194,12 @@ def test_idle_handler_dual_bracket():
         )
         grid._books["tok_no"] = OrderbookSnapshot(
             token_id="tok_no",
-            best_bid=0.54,
-            best_ask=0.55,
-            bids=((0.54, 50.0), (0.53, 50.0)),
-            asks=((0.55, 20.0), (0.56, 20.0)),
+            best_bid=0.45,
+            best_ask=0.46,
+            bids=((0.45, 50.0), (0.44, 50.0)),
+            asks=((0.46, 20.0), (0.47, 20.0)),
             spread=0.01,
-            mid_price=0.545,
+            mid_price=0.455,
             obi=0.43,
             last_update_ts=time.time()
         )

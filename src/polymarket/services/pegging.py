@@ -120,6 +120,10 @@ class MakerPeggingService:
         if not is_prof:
             return False, current_yes_price, current_no_price, f"跟价后利差不足: {p_msg}"
 
+        # 铁律：改单跟价绝不可突破单边最高买入限价 entry_max_price
+        if new_yes > entry_max_price or new_no > entry_max_price:
+            return False, current_yes_price, current_no_price, f"改单价格突破单边上限 (YES={new_yes:.4f}, NO={new_no:.4f} > {entry_max_price:.4f})"
+
         # 校验是否有 >= 0.002 的实质性改价
         diff_yes = round(new_yes - current_yes_price, 4)
         diff_no = round(new_no - current_no_price, 4)

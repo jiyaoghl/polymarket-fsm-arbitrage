@@ -78,11 +78,11 @@ def test_verify_hedged_profitability_fail():
     assert net_ev == 0.10
 
 def test_calculate_dual_bracket_prices_pass():
-    # 盘口利差充裕：双边买一各 +0.001 贴盘挂单
+    # 盘口利差充裕：双边买一各 +0.001 贴盘挂单 (且均处于 entry_max_price 以内)
     yes_p, no_p, reason = PricingEngine.calculate_dual_bracket_prices(
         best_bid_yes=0.42,
         best_bid_no=0.56,
-        entry_max_price=0.45,
+        entry_max_price=0.58,
         min_profit_margin=0.015
     )
     # target_yes = 0.421, target_no = 0.561, total_cost = 0.982 <= 0.985
@@ -91,7 +91,7 @@ def test_calculate_dual_bracket_prices_pass():
     assert reason is None
 
 def test_calculate_dual_bracket_prices_overflow():
-    # 利差不足 (0.495 + 0.495 = 0.990 > 0.985) 且强行压低单边导致另一侧溢价拦截
+    # 利差不足 (0.495 + 0.495 = 0.990 > 0.985) 且强行压低单边导致另一侧超限或溢价拦截
     yes_p, no_p, reason = PricingEngine.calculate_dual_bracket_prices(
         best_bid_yes=0.495,
         best_bid_no=0.495,
@@ -100,7 +100,8 @@ def test_calculate_dual_bracket_prices_overflow():
     )
     assert yes_p is None
     assert no_p is None
-    assert "溢价过高" in reason
+    assert "溢价过高" in reason or "单边挂单价格超限" in reason
+
 
 def test_calculate_obi():
     # 1. 深度充足且买盘占优

@@ -301,14 +301,18 @@ class PricingEngine:
                 no_bid_price = round(min(target_no, entry_max_price), 4)
                 yes_bid_price = round(1.0 - no_bid_price - min_profit_margin, 4)
 
+        if yes_bid_price > entry_max_price or no_bid_price > entry_max_price:
+            return None, None, f"单边挂单价格超限: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} > max={entry_max_price:.4f}"
+
         if yes_bid_price < entry_min_price or no_bid_price < entry_min_price:
-            return None, None, f"双挂价格偏斜: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} < {entry_min_price}"
+            return None, None, f"双挂价格偏斜: YES={yes_bid_price:.4f}, NO={no_bid_price:.4f} < {entry_min_price:.4f}"
 
         # 溢价防爆盾：两边挂单均不得高出当前买一 0.010 以上（防止市价高位被动接盘）
         if yes_bid_price > (best_bid_yes + 0.010):
             return None, None, f"YES 侧溢价过高 ({yes_bid_price:.4f} > 买一 {best_bid_yes:.4f} + 0.01)"
         if no_bid_price > (best_bid_no + 0.010):
             return None, None, f"NO 侧溢价过高 ({no_bid_price:.4f} > 买一 {best_bid_no:.4f} + 0.01)"
+
 
         return yes_bid_price, no_bid_price, None
 
