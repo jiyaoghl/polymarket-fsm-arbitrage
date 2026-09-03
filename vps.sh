@@ -65,7 +65,7 @@ check_env() {
     fi
 }
 
-# 3. 获取运行端口
+# 3. 获取运行端口与监听地址
 get_port() {
     local port=8888
     if [ -f "$PROJECT_DIR/.env" ]; then
@@ -76,6 +76,18 @@ get_port() {
         fi
     fi
     echo "$port"
+}
+
+get_host() {
+    local host="127.0.0.1"
+    if [ -f "$PROJECT_DIR/.env" ]; then
+        local env_host
+        env_host=$(grep -E "^HOST=" "$PROJECT_DIR/.env" | cut -d '=' -f2 | tr -d ' "\r\n' || true)
+        if [ -n "$env_host" ]; then
+            host=$env_host
+        fi
+    fi
+    echo "$host"
 }
 
 # 4. 停止服务
@@ -128,9 +140,10 @@ start_service() {
     fi
 
     PORT=$(get_port)
+    HOST=$(get_host)
 
-    # 后台启动进程
-    nohup env PYTHONPATH="$PROJECT_DIR/src" "$VENV_DIR/bin/python3" -m polymarket.apps.dashboard >> "$LOG_FILE" 2>&1 &
+    # 后台启动进程 (安全绑定 HOST，默认 127.0.0.1 拒绝公网直连)
+    nohup env PYTHONPATH="$PROJECT_DIR/src" HOST="$HOST" PORT="$PORT" "$VENV_DIR/bin/python3" -m polymarket.apps.dashboard >> "$LOG_FILE" 2>&1 &
     NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"
 
@@ -139,7 +152,12 @@ start_service() {
     # 验证是否成功启动
     if kill -0 "$NEW_PID" 2>/dev/null; then
         echo "🚀 服务启动成功！[PID: $NEW_PID]"
-        echo "🌐 Web 仪表盘访问: http://<你的VPS公网IP>:$PORT"
+        if [ "$HOST" = "127.0.0.1" ]; then
+            echo "🔒 [安全模式生效] Dashboard 仅监听本机 127.0.0.1:$PORT (公网未授权访问已彻底阻断)"
+            echo "🔑 请在本地通过 SSH 加密隧道访问: ssh -N -L $PORT:127.0.0.1:$PORT ubuntu@<VPS公网IP>"
+        else
+            echo "🌐 [公网模式] Web 仪表盘访问: http://<你的VPS公网IP>:$PORT"
+        fi
         echo "📜 查看实时日志请运行: bash vps.sh logs"
     else
         echo "❌ 启动失败，请检查日志:"
@@ -152,7 +170,8 @@ status_service() {
     PIDS=$(pgrep -f "polymarket.apps.dashboard" || true)
     if [ -n "$PIDS" ]; then
         PORT=$(get_port)
-        echo "🟢 服务运行正常 [PID: $PIDS] | 端口: $PORT"
+        HOST=$(get_host)
+        echo "🟢 服务运行正常 [PID: $PIDS] | 监听: $HOST:$PORT"
     else
         echo "🔴 服务未运行"
     fi

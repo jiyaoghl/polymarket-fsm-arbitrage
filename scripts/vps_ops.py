@@ -33,6 +33,25 @@ except ImportError:
 # 默认 VPS 地址，支持环境变量覆盖
 DEFAULT_VPS_HOST = os.getenv("VPS_HOST", "http://161.120.187.156:8888")
 
+
+def get_active_vps_host() -> str:
+    """
+    智能解析最优先的 VPS 端点：
+    1. 若配置了显式环境变量 VPS_HOST，直接使用；
+    2. 优先探测本地 SSH 隧道 (http://127.0.0.1:8888)；
+    3. 若本地隧道连通，走本地安全通道；
+    4. 否则使用 DEFAULT_VPS_HOST (公网地址)。
+    """
+    if os.getenv("VPS_HOST"):
+        return os.getenv("VPS_HOST")
+    try:
+        r = requests.get("http://127.0.0.1:8888/api/status", timeout=0.6)
+        if r.status_code == 200:
+            return "http://127.0.0.1:8888"
+    except Exception:
+        pass
+    return DEFAULT_VPS_HOST
+
 # ANSI 终端色彩
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -44,13 +63,16 @@ RESET = "\033[0m"
 
 
 def print_banner(title: str):
+    active_host = get_active_vps_host()
+    channel_tag = f"{GREEN}[安全隧道]{RESET}" if "127.0.0.1" in active_host or "localhost" in active_host else f"{YELLOW}[公网通道]{RESET}"
     print(f"\n{BOLD}{CYAN}{'=' * 75}{RESET}")
-    print(f"{BOLD}{CYAN}  [*] {title} (VPS: {DEFAULT_VPS_HOST}){RESET}")
+    print(f"{BOLD}{CYAN}  [*] {title} ({channel_tag} {active_host}){RESET}")
     print(f"{BOLD}{CYAN}{'=' * 75}{RESET}")
 
 
 def fetch_api(endpoint: str, timeout: int = 5, retries: int = 3) -> Optional[Dict[str, Any]]:
-    url = f"{DEFAULT_VPS_HOST.rstrip('/')}{endpoint}"
+    host = get_active_vps_host()
+    url = f"{host.rstrip('/')}{endpoint}"
     for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, timeout=timeout)
@@ -63,11 +85,14 @@ def fetch_api(endpoint: str, timeout: int = 5, retries: int = 3) -> Optional[Dic
                 time.sleep(0.5 * attempt)
                 continue
             print(f"{RED}[-] 无法连接到 VPS ({url}): {e}{RESET}")
+            if "127.0.0.1" not in host:
+                print(f"{YELLOW}[提示] 若公网已关闭，请先运行: python scripts/vps_ops.py tunnel 建立 SSH 加密隧道{RESET}")
             return None
 
 
 def post_api(endpoint: str, timeout: int = 10, json_data: Optional[Dict[str, Any]] = None, retries: int = 3) -> Optional[Dict[str, Any]]:
-    url = f"{DEFAULT_VPS_HOST.rstrip('/')}{endpoint}"
+    host = get_active_vps_host()
+    url = f"{host.rstrip('/')}{endpoint}"
     for attempt in range(1, retries + 1):
         try:
             r = requests.post(url, json=json_data or {}, timeout=timeout)
@@ -482,9 +507,49 @@ def cmd_sync_strategies(args):
         print(f"{RED}[-] 同步失败: {res}{RESET}")
 
 
+def cmd_tunnel(args):
+    """一键建立并保持与 VPS 的 SSH 端口加密隧道。"""
+    print_banner("建立与管理 VPS SSH 加密安全隧道 (Port Forwarding)")
+    vps_ip = getattr(args, "host", "161.120.187.156")
+    ssh_user = getattr(args, "user", "ubuntu")
+    remote_port = 8888
+    local_port = getattr(args, "port", 8888)
+
+    print(f"[*] 目标 VPS: {ssh_user}@{vps_ip}")
+    print(f"[*] 映射端口: 本地 localhost:{local_port} -> VPS 127.0.0.1:{remote_port}")
+
+    # 检查本地端口是否已经打通
+    try:
+        r = requests.get(f"http://127.0.0.1:{local_port}/api/status", timeout=0.8)
+        if r.status_code == 200:
+            print(f"\n{GREEN}[+] 检测到本地 SSH 隧道当前已处于连通状态！{RESET}")
+            print(f"[*] 本地 Web 仪表盘: {CYAN}http://localhost:{local_port}{RESET}")
+            print(f"[*] 此时运行任何 vps_ops.py 命令均已自动走本地加密安全通道。")
+            return
+    except Exception:
+        pass
+
+    ssh_cmd = f"ssh -N -L {local_port}:127.0.0.1:{remote_port} {ssh_user}@{vps_ip}"
+    print(f"\n{BOLD}[+] 正在启动 SSH 加密隧道进程...{RESET}")
+    print(f"{YELLOW}提示: 若提示输入密码，请输入 VPS 的 SSH 登录密码。{RESET}")
+    print(f"{YELLOW}提示: 保持此窗口开启即可维持加密隧道；按 Ctrl+C 可随时断开。{RESET}")
+    print(f"{CYAN}命令: {ssh_cmd}{RESET}\n")
+    try:
+        os.system(ssh_cmd)
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}[*] SSH 隧道已由用户主动断开。{RESET}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Polymarket VPS 敏捷运维与闭环分析 CLI")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
+
+    # tunnel
+    p_tunnel = subparsers.add_parser("tunnel", help="一键建立并保持与 VPS 的 SSH 端口加密安全隧道")
+    p_tunnel.add_argument("--user", type=str, default="ubuntu", help="VPS SSH 用户名 (默认: ubuntu)")
+    p_tunnel.add_argument("--host", type=str, default="161.120.187.156", help="VPS IP 地址")
+    p_tunnel.add_argument("-p", "--port", type=int, default=8888, help="本地映射端口 (默认: 8888)")
+    p_tunnel.set_defaults(func=cmd_tunnel)
 
     # status
     p_status = subparsers.add_parser("status", help="获取 VPS 实时大盘、活跃仓位与延迟")
