@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from typing import Dict, Any, List, Set, Optional
 import websockets
 
@@ -45,6 +46,10 @@ class MarketDataStreamer:
             # 防抖重订阅 Handle
             self._resubscribe_handle = None
             
+            # 订阅补偿与静默看门狗状态
+            self._invalid_op_retries = 0
+            self._last_market_data_ts = time.time()
+            
             # 接入全局统一异步运行时
             self.runtime = AsyncRuntime.get_instance()
             self.loop = self.runtime.get_loop()
@@ -69,6 +74,8 @@ class MarketDataStreamer:
                     
                 self.ws = ws_conn
                 retry_delay = 1.0  # 连接成功，重置退避时间
+                self._invalid_op_retries = 0
+                self._last_market_data_ts = time.time()
                 
                 # 重新发送所有活跃资产订阅
                 with self._lock:
@@ -87,6 +94,17 @@ class MarketDataStreamer:
                             except Exception:
                                 logger.warning("[Streamer] WS 心跳失败，准备重连...")
                                 break
+                        # ── 静默看门狗 (Silence Watchdog) ──
+                        # 若存在活跃资产但超过 15 秒完全未收到任何盘口数据，触发看门狗主动重新下发订阅
+                        with self._lock:
+                            has_assets = bool(self.active_assets)
+                        now_ts = time.time()
+                        if has_assets and (now_ts - self._last_market_data_ts > 15.0):
+                            logger.warning(
+                                "[Streamer] 活跃市场静默超过 15s 未收到任何盘口数据，触发看门狗主动补偿重新订阅..."
+                            )
+                            self._last_market_data_ts = now_ts  # 重置避免高频触发
+                            self._schedule_resubscribe(delay=0.2)
                         continue
                     except websockets.exceptions.ConnectionClosed as e:
                         logger.warning(f"[Streamer] 远端关闭 ({e.code}): {e.reason}")
@@ -97,9 +115,34 @@ class MarketDataStreamer:
                         if msg in ("OK", "PONG", ""):
                             continue
                         if msg == "INVALID OPERATION":
-                            logger.warning("[Streamer] 远端返回了 INVALID OPERATION，忽略该消息")
+                            self._invalid_op_retries += 1
+                            # 指数退避: 1.5s -> 2.25s -> 3.38s -> 上限 5.0s
+                            backoff_delay = min(1.5 * (1.5 ** (self._invalid_op_retries - 1)), 5.0)
+                            with self._lock:
+                                cur_assets = list(self.active_assets)
+                            if self._invalid_op_retries <= 5:
+                                logger.warning(
+                                    f"[Streamer] 远端返回 INVALID OPERATION (撮合端初始化时延，重试第 {self._invalid_op_retries} 次)，"
+                                    f"将在 {backoff_delay:.2f}s 后自动补偿重新订阅 (当前监控 {len(cur_assets)} 个资产)..."
+                                )
+                                if self._invalid_op_retries >= 3:
+                                    logger.warning(f"[Streamer] [诊断详情] 当前重试订阅的资产 Token 列表: {cur_assets}")
+                                self._schedule_resubscribe(delay=backoff_delay)
+                            else:
+                                logger.error(
+                                    f"[Streamer] 连续 {self._invalid_op_retries} 次收到 INVALID OPERATION，暂停高频重试，"
+                                    f"降级为 15s 周期保底探针。资产列表: {cur_assets}"
+                                )
+                                self._schedule_resubscribe(delay=15.0)
                             continue
+
                         data = json.loads(msg)
+                        # 成功接收到正常行情，刷新看门狗并解除异常退避状态
+                        self._last_market_data_ts = time.time()
+                        if self._invalid_op_retries > 0:
+                            logger.info("[Streamer] 成功接收到正常盘口行情，INVALID OPERATION 状态解除，重置补偿重试计数器。")
+                            self._invalid_op_retries = 0
+
                         # 更新全局共享盘口内存网格
                         updated_tokens = OrderbookMemoryGrid.get_instance().update_from_ws(data)
                         prices = BaseStrategy._parse_ws_prices_full(data)
@@ -168,8 +211,8 @@ class MarketDataStreamer:
         except Exception as e:
             logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
-    def _schedule_resubscribe(self):
-        """防抖定时器：跨线程安全调度，延迟 0.5s 发送聚合订阅，防止瞬间密集请求触发 INVALID OPERATION"""
+    def _schedule_resubscribe(self, delay: float = 0.5):
+        """防抖与补偿定时器：跨线程安全调度，支持自定义延迟合并订阅，防止瞬间密集请求触发 INVALID OPERATION"""
         def _arm_timer():
             if self._resubscribe_handle is not None:
                 try:
@@ -179,12 +222,15 @@ class MarketDataStreamer:
             
             def _do_send():
                 if self.ws:
-                    self.runtime.spawn_task(
-                        self._send_subscription(self.ws, list(self.active_assets)),
-                        key="Streamer_Resubscribe"
-                    )
+                    with self._lock:
+                        assets = list(self.active_assets)
+                    if assets:
+                        self.runtime.spawn_task(
+                            self._send_subscription(self.ws, assets),
+                            key="Streamer_Resubscribe"
+                        )
             
-            self._resubscribe_handle = self.loop.call_later(0.5, _do_send)
+            self._resubscribe_handle = self.loop.call_later(delay, _do_send)
 
         try:
             self.loop.call_soon_threadsafe(_arm_timer)
