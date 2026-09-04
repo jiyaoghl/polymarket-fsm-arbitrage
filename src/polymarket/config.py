@@ -10,16 +10,16 @@ def _load_dotenv() -> None:
     # 优先级：显式 DOTENV_PATH > 仓库根 .env > configs/.env
     explicit = os.getenv("DOTENV_PATH")
     if explicit:
-        load_dotenv(dotenv_path=explicit, override=False)
+        load_dotenv(dotenv_path=explicit, override=True)
         return
 
     root_env = paths.repo_root() / ".env"
     if root_env.exists():
-        load_dotenv(dotenv_path=str(root_env), override=False)
+        load_dotenv(dotenv_path=str(root_env), override=True)
         return
 
     cfg_env = paths.configs_dir() / ".env"
-    load_dotenv(dotenv_path=str(cfg_env), override=False)
+    load_dotenv(dotenv_path=str(cfg_env), override=True)
 
 
 _load_dotenv()
