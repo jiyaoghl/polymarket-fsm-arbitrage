@@ -38,13 +38,17 @@ class MarketDataStreamer:
             self.ws_uri = ws_uri
             self.ws: Optional[websockets.WebSocketClientProtocol] = None
             self.active_assets: Set[str] = set()
+            self.confirmed_assets: Set[str] = set()  # 已确认正常推流的 Token
+            self.pending_assets: Set[str] = set()    # 待首次确认行情的 Token
             # 记录资产与所属市场: asset_id -> set(market_id)
             self.asset_to_markets: Dict[str, Set[str]] = {}
             # subscribers: market_id -> list of asyncio.Queue
             self.subscribers: Dict[str, List[asyncio.Queue]] = {}
             
-            # 防抖重订阅 Handle
+            # 防抖重订阅 Handle 与节流控制
             self._resubscribe_handle = None
+            self._last_subscription_send_ts = 0.0
+            self._min_send_interval = 2.0  # 最小发送间隔 2.0s 严格节流防抖
             
             # 订阅补偿与静默看门狗状态
             self._invalid_op_retries = 0
@@ -77,9 +81,11 @@ class MarketDataStreamer:
                 self._invalid_op_retries = 0
                 self._last_market_data_ts = time.time()
                 
-                # 重新发送所有活跃资产订阅
+                # 重新发送所有活跃资产订阅，并初始化确认集合
                 with self._lock:
                     assets = list(self.active_assets)
+                    self.confirmed_assets.clear()
+                    self.pending_assets = set(self.active_assets)
                 if assets:
                     await self._send_subscription(self.ws, assets)
                     logger.info(f"[Streamer] 已恢复 {len(assets)} 个资产的订阅")
@@ -104,7 +110,7 @@ class MarketDataStreamer:
                                 "[Streamer] 活跃市场静默超过 15s 未收到任何盘口数据，触发看门狗主动补偿重新订阅..."
                             )
                             self._last_market_data_ts = now_ts  # 重置避免高频触发
-                            self._schedule_resubscribe(delay=0.2)
+                            self._schedule_resubscribe(delay=0.5)
                         continue
                     except websockets.exceptions.ConnectionClosed as e:
                         logger.warning(f"[Streamer] 远端关闭 ({e.code}): {e.reason}")
@@ -116,32 +122,30 @@ class MarketDataStreamer:
                             continue
                         if msg == "INVALID OPERATION":
                             self._invalid_op_retries += 1
-                            # 指数退避: 1.5s -> 2.25s -> 3.38s -> 上限 5.0s
-                            backoff_delay = min(1.5 * (1.5 ** (self._invalid_op_retries - 1)), 5.0)
+                            # 指数退避: 1.5s -> 2.25s -> 3.38s -> 上限 15.0s
+                            backoff_delay = min(1.5 * (1.5 ** (self._invalid_op_retries - 1)), 15.0)
                             with self._lock:
-                                cur_assets = list(self.active_assets)
+                                pending_cnt = len(self.pending_assets)
+                                total_cnt = len(self.active_assets)
+                                cur_pending = list(self.pending_assets)
                             if self._invalid_op_retries <= 5:
                                 logger.warning(
                                     f"[Streamer] 远端返回 INVALID OPERATION (撮合端初始化时延，重试第 {self._invalid_op_retries} 次)，"
-                                    f"将在 {backoff_delay:.2f}s 后自动补偿重新订阅 (当前监控 {len(cur_assets)} 个资产)..."
+                                    f"将在 {backoff_delay:.2f}s 后自动补偿重新订阅 (待确认资产: {pending_cnt}/{total_cnt})..."
                                 )
                                 if self._invalid_op_retries >= 3:
-                                    logger.warning(f"[Streamer] [诊断详情] 当前重试订阅的资产 Token 列表: {cur_assets}")
+                                    logger.warning(f"[Streamer] [诊断详情] 待确认 Token 列表: {cur_pending}")
                                 self._schedule_resubscribe(delay=backoff_delay)
                             else:
                                 logger.error(
                                     f"[Streamer] 连续 {self._invalid_op_retries} 次收到 INVALID OPERATION，暂停高频重试，"
-                                    f"降级为 15s 周期保底探针。资产列表: {cur_assets}"
+                                    f"降级为 15s 周期保底探针。待确认: {cur_pending}"
                                 )
                                 self._schedule_resubscribe(delay=15.0)
                             continue
 
                         data = json.loads(msg)
-                        # 成功接收到正常行情，刷新看门狗并解除异常退避状态
                         self._last_market_data_ts = time.time()
-                        if self._invalid_op_retries > 0:
-                            logger.info("[Streamer] 成功接收到正常盘口行情，INVALID OPERATION 状态解除，重置补偿重试计数器。")
-                            self._invalid_op_retries = 0
 
                         # 更新全局共享盘口内存网格
                         updated_tokens = OrderbookMemoryGrid.get_instance().update_from_ws(data)
@@ -153,6 +157,23 @@ class MarketDataStreamer:
                                 snap = OrderbookMemoryGrid.get_instance().get_snapshot(tid)
                                 if snap and snap.best_bid is not None and snap.best_ask is not None:
                                     prices[tid] = {"ask": snap.best_ask, "bid": snap.best_bid}
+
+                        # 资产级确认与退避解耦：
+                        # 仅当收到数据的 Token 命中待确认列表时才将其标记为确认
+                        active_tokens_in_msg = set(updated_tokens) | set(prices.keys() if prices else [])
+                        if active_tokens_in_msg:
+                            with self._lock:
+                                newly_confirmed = active_tokens_in_msg.intersection(self.pending_assets)
+                                if newly_confirmed:
+                                    self.confirmed_assets.update(newly_confirmed)
+                                    self.pending_assets.difference_update(newly_confirmed)
+                                    # 只有当全部待确认资产均就绪时，才重置退避计数器；绝不被已有资产日常推送误冲刷
+                                    if not self.pending_assets and self._invalid_op_retries > 0:
+                                        logger.info(
+                                            f"[Streamer] 全部待就绪资产已确认推流 ({len(self.confirmed_assets)} 个)，"
+                                            f"INVALID OPERATION 状态解除，重置补偿重试计数器。"
+                                        )
+                                        self._invalid_op_retries = 0
 
                         if not prices:
                             await asyncio.sleep(0)
@@ -208,11 +229,12 @@ class MarketDataStreamer:
         }
         try:
             await ws.send(json.dumps(msg))
+            self._last_subscription_send_ts = time.time()
         except Exception as e:
             logger.warning(f"[Streamer] 发送订阅消息异常: {e}")
 
     def _schedule_resubscribe(self, delay: float = 0.5):
-        """防抖与补偿定时器：跨线程安全调度，支持自定义延迟合并订阅，防止瞬间密集请求触发 INVALID OPERATION"""
+        """防抖与补偿定时器：跨线程安全调度，支持严格发送节流与自适应延迟，防止高频触发 INVALID OPERATION"""
         def _arm_timer():
             if self._resubscribe_handle is not None:
                 try:
@@ -220,6 +242,13 @@ class MarketDataStreamer:
                 except Exception:
                     pass
             
+            # 严格计算距离上次发送的冷却时间，确保不突破最小发送间隔节流阀
+            now = time.time()
+            elapsed_since_last_send = now - self._last_subscription_send_ts
+            effective_delay = max(delay, 0.1)
+            if elapsed_since_last_send < self._min_send_interval:
+                effective_delay = max(effective_delay, self._min_send_interval - elapsed_since_last_send)
+
             def _do_send():
                 if self.ws:
                     with self._lock:
@@ -230,7 +259,7 @@ class MarketDataStreamer:
                             key="Streamer_Resubscribe"
                         )
             
-            self._resubscribe_handle = self.loop.call_later(delay, _do_send)
+            self._resubscribe_handle = self.loop.call_later(effective_delay, _do_send)
 
         try:
             self.loop.call_soon_threadsafe(_arm_timer)
@@ -246,9 +275,11 @@ class MarketDataStreamer:
     ):
         """策略端调用，注册一个队列"""
         with self._lock:
-            # 加入资产映射
+            # 加入资产映射与待就绪集合
             for asset in assets:
                 self.active_assets.add(asset)
+                if asset not in self.confirmed_assets:
+                    self.pending_assets.add(asset)
                 if asset not in self.asset_to_markets:
                     self.asset_to_markets[asset] = set()
                 self.asset_to_markets[asset].add(market_id)
@@ -260,7 +291,7 @@ class MarketDataStreamer:
                 self.subscribers[market_id].append(caller_queue)
             
             if self.ws:
-                self._schedule_resubscribe()
+                self._schedule_resubscribe(delay=0.5)
 
     def unsubscribe(self, market_id: str, caller_queue: asyncio.Queue):
         """策略端注销"""
@@ -280,11 +311,17 @@ class MarketDataStreamer:
                             assets_to_remove.add(asset)
                             del self.asset_to_markets[asset]
                 
-                # 从 active_assets 中彻底移除这些没有任何市场关心的 token
+                # 从 active_assets、confirmed_assets、pending_assets 中彻底移除这些没有任何市场关心的 token
                 if assets_to_remove:
                     self.active_assets.difference_update(assets_to_remove)
+                    self.confirmed_assets.difference_update(assets_to_remove)
+                    self.pending_assets.difference_update(assets_to_remove)
+                    # 若移除后待确认队列变空，自动解除异常退避状态
+                    if not self.pending_assets and self._invalid_op_retries > 0:
+                        logger.info("[Streamer] 注销资产后待就绪队列已清空，重置退避计数器。")
+                        self._invalid_op_retries = 0
                     if self.ws:
-                        self._schedule_resubscribe()
+                        self._schedule_resubscribe(delay=0.5)
 
     def purge_expired_markets(self, active_market_ids: Set[str]):
         """主动清理已到期/已不在活跃列表中的市场和资产，防止陈旧 Token 引发 INVALID OPERATION 订阅被拒。"""
@@ -300,6 +337,13 @@ class MarketDataStreamer:
                     new_asset_to_markets[asset] = alive_markets
             self.asset_to_markets = new_asset_to_markets
             self.active_assets = set(self.asset_to_markets.keys())
+            self.confirmed_assets.intersection_update(self.active_assets)
+            self.pending_assets.intersection_update(self.active_assets)
             
+            # 若清理后不再存在任何待确认资产，自动重置退避计数器
+            if not self.pending_assets and self._invalid_op_retries > 0:
+                logger.info("[Streamer] 清理陈旧市场后待就绪资产已清空，重置退避计数器。")
+                self._invalid_op_retries = 0
+
             if self.ws:
-                self._schedule_resubscribe()
+                self._schedule_resubscribe(delay=0.5)

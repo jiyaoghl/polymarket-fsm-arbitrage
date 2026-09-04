@@ -54,6 +54,10 @@ class RiskManager:
         
         # 紧急熔断与暂停标志
         self.is_emergency_halted = False
+        
+        # 原生 Gas 代币 (POL) 水位状态
+        self.pol_balance: float = 0.0
+        self.is_gas_starved: bool = False
 
         self.last_balance_refresh = 0.0
         
@@ -132,9 +136,27 @@ class RiskManager:
                 with self.lock:
                     real_usdc = float(bal_info['usdc'])
                     self.live_max_exposure = max(real_usdc * 0.95, 0.0)  # 保留 5% 缓冲
+                    
+                    # 检查 Native POL 原生 Gas 资产水位
+                    pol_amt = float(bal_info.get('pol') or bal_info.get('matic') or 0.0)
+                    self.pol_balance = pol_amt
+                    if pol_amt < 0.1 and pol_amt > 0.0:
+                        self.is_gas_starved = True
+                        logger.error(
+                            f"[风控中心] 【严重Gas警报】链上 POL 余额极度匮乏 (${pol_amt:.4f} POL < 0.1 POL)，"
+                            f"已触发实盘保护性熔断，禁止开启新仓以保全已有持仓交割 Gas！"
+                        )
+                    elif pol_amt < 0.5 and pol_amt > 0.0:
+                        self.is_gas_starved = False
+                        logger.warning(
+                            f"[风控中心] 【Gas低水位预警】链上 POL 余额偏低 (${pol_amt:.4f} POL < 0.5 POL)，请尽快补充燃料。"
+                        )
+                    else:
+                        self.is_gas_starved = False
+
                     logger.info(
                         f"[风控中心] 实盘模式：从链上刷新真实 USDC 余额 ${real_usdc:.2f} 成功，"
-                        f"设置实盘安全敞口上限为: ${self.live_max_exposure:.2f}"
+                        f"设置实盘安全敞口上限为: ${self.live_max_exposure:.2f} | POL 水位: {self.pol_balance:.4f}"
                     )
                     return True
         except Exception as e:
@@ -149,6 +171,16 @@ class RiskManager:
         根据 is_live 分别从实盘资金池或模拟盘资金池中扣除。
         """
         with self.lock:
+            # 实盘 Gas 匮乏保护拦截
+            if is_live and self.is_gas_starved:
+                logger.error(
+                    f"[风控拦截] 实盘当前处于 Gas 匮乏保护熔断期 (POL={self.pol_balance:.4f} < 0.1)，"
+                    f"拒绝策略 {strategy_id} 新开仓，防止交割失效！"
+                )
+                self.total_intercepted_count += 1
+                self.total_intercepted_amount += amount
+                return False
+
             lock_key = f"{strategy_id}_{market_id}"
             
             if is_live:

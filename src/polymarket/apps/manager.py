@@ -271,7 +271,14 @@ class StrategyManager:
     def _loop_redeem_closed_markets(self) -> None:
         """定期对自己交易过的已结束市场执行 redeem。"""
         logger.info("启动结算扫描循环...")
-        redeemed = set()
+        from polymarket.db import get_all_redeemed_market_ids, mark_market_redeemed
+        try:
+            redeemed = get_all_redeemed_market_ids()
+            if redeemed:
+                logger.info(f"[结算管理器] 已从本地数据库预热加载 {len(redeemed)} 个已赎回市场记录，跳过冗余探测。")
+        except Exception as e:
+            logger.warning(f"[结算管理器] 预热已赎回记录异常: {e}")
+            redeemed = set()
 
         while True:
             traded_ids = self._get_traded_market_ids()
@@ -287,6 +294,14 @@ class StrategyManager:
                     if res.get("status") != "SIMULATED":
                         logger.info(f"市场 {m_id} redeem 结果：{res}")
                     redeemed.add(m_id)
+
+                    # 持久化已赎回状态至 SQLite，彻底杜绝重启后的重复 RPC 轮询探测
+                    try:
+                        tx_h = str(res.get("tx_hash") or res.get("transaction_hash") or "")
+                        amt = float(res.get("amount") or 0.0)
+                        mark_market_redeemed(m_id, tx_hash=tx_h, amount=amt)
+                    except Exception as db_err:
+                        logger.warning(f"[结算管理器] 持久化赎回记录异常 ({m_id}): {db_err}")
 
                     # 赎回完成：联动通知所有策略流转至 SETTLED 终态并释放风控额度
                     for bot in self.bots:

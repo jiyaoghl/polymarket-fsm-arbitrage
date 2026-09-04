@@ -254,14 +254,16 @@ class PricingEngine:
         min_profit_margin: float = 0.015,
         best_ask_yes: Optional[float] = None,
         best_ask_no: Optional[float] = None,
-        anti_penny_step: float = 0.001
+        anti_penny_step: float = 0.001,
+        obi_yes: float = 0.0
     ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
         """
-        计算 Maker-Maker 双挂做市定价（对称贴盘 + Anti-Pennying 防穿透做市机制）。
+        计算 Maker-Maker 双挂做市定价（对称贴盘 + Anti-Pennying 防穿透 + OBI Skew 非对称防毒流）。
         1. 基于动态阶梯 step 贴盘做市；
-        2. 严格施加 safe_price <= best_ask - 0.001 防穿透保护，绝不意外成为 Taker 吃单；
-        3. 校验双边总成本 (yes_bid + no_bid) <= 1.0 - min_profit_margin 保证纯利；
-        4. 溢价防爆盾：两边挂单均不得高出买一 0.010 以上。
+        2. OBI Skew 防毒流护盾：当 |OBI| > 0.25 时，仅调低劣势侧挂单 0.002~0.004，优势侧不追高；
+        3. 严格施加 safe_price <= best_ask - 0.001 防穿透保护，绝不意外成为 Taker 吃单；
+        4. 校验双边总成本 (yes_bid + no_bid) <= 1.0 - min_profit_margin 保证纯利；
+        5. 溢价防爆盾：两边挂单均不得高出买一 0.010 以上。
         
         Returns:
             (yes_bid_price, no_bid_price, filter_reason)
@@ -271,14 +273,31 @@ class PricingEngine:
 
         step = max(anti_penny_step, 0.001)
 
-        # 尝试双边贴买一 + step，并施加卖一防穿透保护
-        raw_yes = best_bid_yes + step
+        # ── 微观 OBI Skew 非对称倾斜核算 (保守护盾型：仅弱势侧让步防砸盘) ──
+        skew_step = 0.0
+        if abs(obi_yes) > 0.25:
+            # 倾斜幅度按失衡度线性缩放，上限 0.004
+            skew_step = min(round((abs(obi_yes) - 0.25) * 0.008, 4), 0.004)
+
+        if obi_yes > 0.25:
+            # YES 强势(买盘厚)，NO 为劣势侧(卖压大) -> NO 侧挂单下退 skew_step
+            raw_yes = best_bid_yes + step
+            raw_no = max(best_bid_no - skew_step, entry_min_price)
+        elif obi_yes < -0.25:
+            # NO 强势，YES 为劣势侧 -> YES 侧挂单下退 skew_step
+            raw_yes = max(best_bid_yes - skew_step, entry_min_price)
+            raw_no = best_bid_no + step
+        else:
+            # 震荡均衡盘口 -> 双边对称贴盘
+            raw_yes = best_bid_yes + step
+            raw_no = best_bid_no + step
+
+        # 施加卖一防穿透保护
         if best_ask_yes is not None and best_ask_yes > best_bid_yes:
             target_yes = round(min(raw_yes, best_ask_yes - 0.001), 4)
         else:
             target_yes = round(raw_yes, 4)
 
-        raw_no = best_bid_no + step
         if best_ask_no is not None and best_ask_no > best_bid_no:
             target_no = round(min(raw_no, best_ask_no - 0.001), 4)
         else:
@@ -538,4 +557,89 @@ class PricingEngine:
                         )
 
         return best_opp
+
+    @staticmethod
+    def calculate_market_quality_score(
+        spread: float,
+        total_depth_5_levels: float,
+        obi: float = 0.0,
+        asset_amplitude: float = 0.0,
+        max_amplitude_threshold: float = 0.35,
+        min_depth_for_boost: float = 80.0
+    ) -> Tuple[float, float, str]:
+        """
+        核算盘口微观质量评分 (Market Quality Score, MQS) 与弹性头寸分配。
+        满分 100 分，融合价差、前 5 档深度、订单簿失衡度与极值波动率。
+
+        评分权重：
+        1. 价差紧凑度 (35%): spread <= 0.015 得 35 分，>= 0.050 得 0 分；
+        2. 前 5 档物理深度 (35%): depth >= 100.0 得 35 分，< 25.0 得 0 分；
+        3. 波动率平稳度 (20%): amp/max_amp <= 0.30 得 20 分，>= 1.0 得 0 分；
+        4. OBI 均衡度 (10%): |obi| <= 0.10 得 10 分，>= 0.60 得 0 分。
+
+        资金弹性规则 (决断 Q3 选 A：深度强约束弹性)：
+        - MQS >= 85: 优质行情，申请 1.5x 头寸放大 (如 20U -> 30U)；
+          【物理硬防线】：双边前 5 档总深度必须 >= min_depth_for_boost (默认 80.0 份)，否则强制退回 1.0x 基准规模！
+        - 65 <= MQS < 85: 标准行情，保持 1.0x 基准规模；
+        - MQS < 65: 薄弱或偏弱盘口，收缩为 0.5x 试探性规模 (如 20U -> 10U)。
+
+        Returns:
+            (mqs_score, size_multiplier, evaluation_summary)
+        """
+        # 1. 价差得分
+        if spread <= 0.015:
+            s_spread = 35.0
+        elif spread >= 0.050:
+            s_spread = 0.0
+        else:
+            s_spread = 35.0 * (0.050 - spread) / (0.050 - 0.015)
+
+        # 2. 深度得分
+        if total_depth_5_levels >= 100.0:
+            s_depth = 35.0
+        elif total_depth_5_levels < 25.0:
+            s_depth = 0.0
+        else:
+            s_depth = 35.0 * (total_depth_5_levels - 25.0) / (100.0 - 25.0)
+
+        # 3. 波动平稳度得分
+        if max_amplitude_threshold > 0:
+            vol_ratio = max(0.0, asset_amplitude / max_amplitude_threshold)
+            if vol_ratio <= 0.30:
+                s_vol = 20.0
+            elif vol_ratio >= 1.0:
+                s_vol = 0.0
+            else:
+                s_vol = 20.0 * (1.0 - vol_ratio) / (1.0 - 0.30)
+        else:
+            s_vol = 10.0
+
+        # 4. OBI 均衡度得分
+        abs_obi = abs(obi)
+        if abs_obi <= 0.10:
+            s_obi = 10.0
+        elif abs_obi >= 0.60:
+            s_obi = 0.0
+        else:
+            s_obi = 10.0 * (0.60 - abs_obi) / (0.60 - 0.10)
+
+        total_score = round(s_spread + s_depth + s_vol + s_obi, 1)
+
+        # 确定资金弹性乘数
+        if total_score >= 80.0:
+            if total_depth_5_levels >= min_depth_for_boost:
+                multiplier = 1.5
+                reason = f"MQS优质盘口 ({total_score:.1f}分，深度 {total_depth_5_levels:.1f} >= {min_depth_for_boost:.1f})，头寸放大 1.5x"
+            else:
+                multiplier = 1.0
+                reason = f"MQS高分 ({total_score:.1f}分) 但深度不足防线 ({total_depth_5_levels:.1f} < {min_depth_for_boost:.1f})，保护性维持 1.0x"
+        elif total_score >= 50.0:
+            multiplier = 1.0
+            reason = f"MQS标准盘口 ({total_score:.1f}分)，维持 1.0x 基准头寸"
+        else:
+            multiplier = 0.5
+            reason = f"MQS偏弱盘口 ({total_score:.1f}分)，头寸紧缩为 0.5x 防御试探"
+
+        return total_score, multiplier, reason
+
 

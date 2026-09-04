@@ -130,6 +130,17 @@ def init_db(path: str = _DB_PATH) -> None:
         """)
         conn.commit()
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS redeemed_markets (
+                market_id TEXT PRIMARY KEY,
+                tx_hash TEXT,
+                amount REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'SETTLED',
+                redeemed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
 # ================= active_trades_cache 操作 =================
 
 def upsert_trade_cache(market_id: str, strategy_id: str, trade_json: str, path: str = _DB_PATH) -> None:
@@ -353,5 +364,37 @@ def get_all_historical_pnl_summary(path: str = _DB_PATH) -> dict:
             "total_trades": valid_trades_cnt,
             "win_rate": win_rate
         }
+
+
+# ================= redeemed_markets 结算持久化操作 =================
+
+def mark_market_redeemed(market_id: str, tx_hash: str = "", amount: float = 0.0, path: str = _DB_PATH) -> None:
+    """标记市场已完成链上赎回或已交割结算，并持久化至 SQLite"""
+    with get_conn(path) as conn:
+        conn.execute("""
+            INSERT INTO redeemed_markets (market_id, tx_hash, amount, status, redeemed_at)
+            VALUES (?, ?, ?, 'SETTLED', CURRENT_TIMESTAMP)
+            ON CONFLICT(market_id) DO UPDATE SET
+                tx_hash=excluded.tx_hash,
+                amount=excluded.amount,
+                redeemed_at=CURRENT_TIMESTAMP
+        """, (market_id, tx_hash, amount))
+        conn.commit()
+
+
+def get_all_redeemed_market_ids(path: str = _DB_PATH) -> set:
+    """从数据库预热加载所有已完成赎回/结算的市场 ID 集合，杜绝重启后冗余 RPC 探测"""
+    with get_conn(path) as conn:
+        cursor = conn.execute("SELECT market_id FROM redeemed_markets")
+        rows = cursor.fetchall()
+        return {str(r[0]) for r in rows if r and r[0]}
+
+
+def is_market_redeemed(market_id: str, path: str = _DB_PATH) -> bool:
+    """检查指定市场是否已在数据库中标记为已赎回"""
+    with get_conn(path) as conn:
+        cursor = conn.execute("SELECT 1 FROM redeemed_markets WHERE market_id=?", (market_id,))
+        return cursor.fetchone() is not None
+
 
 

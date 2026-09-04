@@ -331,7 +331,8 @@ class LiveClobV2Gateway(ITradingGateway):
                 raw_bal = float(res.get("balance", 0.0))
                 balance = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
                 metrics.balance_usdc.set(balance, labels={"asset_type": "collateral"})
-                return {"usdc": balance, "pending": 0.0}
+                pol_bal = self._get_native_pol_balance()
+                return {"usdc": balance, "pending": 0.0, "pol": pol_bal}
         except Exception:
             pass
 
@@ -341,10 +342,26 @@ class LiveClobV2Gateway(ITradingGateway):
             raw_bal = float(result.get("balance", 0))
             balance = raw_bal / 1e6 if raw_bal > 1000 else raw_bal
             metrics.balance_usdc.set(balance, labels={"asset_type": "collateral"})
-            return {"usdc": balance, "pending": 0.0}
+            pol_bal = self._get_native_pol_balance()
+            return {"usdc": balance, "pending": 0.0, "pol": pol_bal}
         except Exception as e:
             logger.error(f"[LiveGateway] 获取余额失败: {e}")
-            return {"usdc": 0.0, "pending": 0.0}
+            return {"usdc": 0.0, "pending": 0.0, "pol": 0.0}
+
+    def _get_native_pol_balance(self) -> float:
+        """从 Polygon RPC 查询当前钱包的 Native POL 代币余额"""
+        if not self.wallet or not getattr(self, "_onchain_redeemer", None):
+            return 0.0
+        try:
+            from web3 import Web3
+            rpc_url = self._onchain_redeemer.get_active_rpc()
+            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 4}))
+            if w3.is_connected():
+                wei = w3.eth.get_balance(self.wallet.address)
+                return round(float(Web3.from_wei(wei, "ether")), 4)
+        except Exception:
+            pass
+        return 0.0
 
     def get_position(self, token_id: str) -> Dict[str, Any]:
         """获取持仓数据"""

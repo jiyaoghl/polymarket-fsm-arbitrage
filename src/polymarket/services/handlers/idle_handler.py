@@ -138,7 +138,8 @@ class IdleTickHandler(BaseTickHandler):
                 min_profit_margin=params.initial_margin or 0.015,
                 best_ask_yes=tick.best_ask_yes,
                 best_ask_no=tick.best_ask_no,
-                anti_penny_step=0.001
+                anti_penny_step=0.001,
+                obi_yes=obi_y
             )
             if err:
                 filter_logger.intercept(market_id, asset_type, err, ctx, deps)
