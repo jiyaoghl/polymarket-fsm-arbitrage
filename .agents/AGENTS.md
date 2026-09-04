@@ -58,6 +58,8 @@
 ## 3. 策略模型与微观执行 (Strategy & Execution Engine)
 - **Maker-Maker 零手续费做市与 Taker 净 EV 严格守门双引擎**：
   - **Maker-Maker (双边挂单)**：VPS 实盘验证具备 80%~100% 胜率与 0 手续费磨损，作为系统主盈利引擎，严格施加双边买一 $\ge 0.35$ 盘口成熟度守门。
+  - **双边对手盘深度物理防线 (Opposing Depth Guardrail)**：
+    - 入场前必须严格核验 YES/NO 双边前 5 档买卖总和 $\ge 25.0$ 份（约 $\$12.5\text{ USDC}$ 物理最低深度）。在 5 分钟短命合约中，某一侧流动性跌破 25 份即意味着做市商毫秒级撤单逃逸与毒流（Toxic Flow）倾泻；严禁在单边流动性荒漠中开仓，坚决防御“幽灵利差陷阱”。
   - **Taker-Maker (吃一挂二)**：首腿入场必须严格扣除双边真实手续费且净利差 $\text{Net EV} \ge \$0.005$，并施加 $(P_{\text{leg1}} + P_{\text{opp\_bid}}) \le 1.0$ 防倒挂保护；彻底放弃薄利润吃单。
   - **二腿追单保利天花板**：最高买入价动态钳制在 $P_{\text{max}} = 1.0 - \text{cost} - \text{fees} - \text{breakeven\_margin}$，严禁向上盲目让价。
 - **做 T 优先于超时强平 (Smart Flip Priority)**：
@@ -113,11 +115,12 @@
 ---
 
 ## 8. Dev-Ops 敏捷闭环与仿真诚实性 (Agile Dev-Ops & Paper Fidelity)
-- **本地断网开发与闭环发布流水线**：
-  - 本地严禁跑主网连网脚本，依赖本地 **196 项全量单元测试** 与离线推理。
-  - 代码上线统一使用敏捷流水线 `python scripts/vps_ops.py release "feat: 中文提交说明"`，自动完成【全量单测 -> 中文 Commit -> Push -> 远程调用 VPS POST /api/ops/update 免登录秒级热更】。
+- **双轨敏捷运维与零停机平滑更新 (Dual-Track Deployment)**：
+  - **参数微调轨 (秒级零停机)**：仅修改 `configs/strategies.json` 业务参数时，强制执行 `python scripts/vps_ops.py sync-strategies`，通过 VPS 管理端点执行内存原地热重载，杜绝不必要的进程重启与 WS 断连。
+  - **代码发布轨 (全量流水线)**：涉及源码变动时统一使用 `python scripts/vps_ops.py release "feat: 中文说明"`，自动串联【196+项单测 -> 中文 Commit -> Push -> 远程拉取热更】。
 - **运维工具链常用指令**：
   - `python scripts/vps_ops.py status`: 实时查看 VPS 大盘、活跃仓位与分发延迟。
+  - `python scripts/vps_ops.py sync-strategies`: 一键向 VPS 投递并零停机热重载策略参数配置。
   - `python scripts/vps_ops.py logs -n 80`: 拉取 VPS 实时运行日志（支持 `-f` 持续跟踪）。
   - `python scripts/vps_ops.py analyze`: 获取最近 50 笔交易的北极星转化率、胜率与出场归因。
   - `python scripts/vps_ops.py clean-history`: 清空历史订单并重置大盘统计。
@@ -154,6 +157,7 @@
 - **全局风控与分资产波动率环境对齐**：
   - 分资产波动率防爆盾（BTC 0.36%/0.15%, ETH 0.42%/0.20%, SOL 0.48%/0.22%）与费率环境变量统一维护在 `.env` 与 `.env.example` 中。
   - `src/polymarket/config.py` 中的代码默认值必须与 `.env.example` 保持 **100% 同步对齐**，严禁代码硬编码与外部配置产生脱节歧义。
+  - **环境变量继承防污染**：全系统调用 `load_dotenv` 必须强制声明 `override=True`，彻底杜绝守护进程或父进程已存在陈旧环境变量导致的配置僵死与假生效。
 
 ---
 
